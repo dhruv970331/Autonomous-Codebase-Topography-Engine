@@ -38,3 +38,43 @@ class EdgeInfo:
     file_path: str
     line: int = 0
     extra: dict = field(default_factory=dict)
+
+# ---------------------------------------------------------------------------
+# Language Syntax Mappings
+# ---------------------------------------------------------------------------
+
+EXTENSION_TO_LANGUAGE: Dict[str, str] = {
+    ".py": "python",
+    ".js": "javascript",
+    ".ts": "typescript",
+    ".tsx": "tsx",
+    ".java": "java",
+}
+
+_CLASS_TYPES: Dict[str, List[str]] = {
+    "python": ["class_definition"],
+    "javascript": ["class_declaration", "class"],
+    "typescript": ["class_declaration", "class"],
+    "java": ["class_declaration", "interface_declaration", "enum_declaration"],
+}
+
+_FUNCTION_TYPES: Dict[str, List[str]] = {
+    "python": ["function_definition"],
+    "javascript": ["function_declaration", "method_definition", "arrow_function"],
+    "typescript": ["function_declaration", "method_definition", "arrow_function"],
+    "java": ["method_declaration", "constructor_declaration"],
+}
+
+_CALL_TYPES: Dict[str, List[str]] = {
+    "python": ["call"],
+    "javascript": ["call_expression", "new_expression"],
+    "typescript": ["call_expression", "new_expression"],
+    "java": ["method_invocation", "object_creation_expression"],
+}
+
+_IMPORT_TYPES: Dict[str, List[str]] = {
+    "python": ["import_statement", "import_from_statement"],
+    "javascript": ["import_statement"],
+    "typescript": ["import_statement"],
+    "java": ["import_declaration"],
+}
