@@ -78,3 +78,74 @@ _IMPORT_TYPES: Dict[str, List[str]] = {
     "typescript": ["import_statement"],
     "java": ["import_declaration"],
 }
+
+# ---------------------------------------------------------------------------
+# Parser Engine
+# ---------------------------------------------------------------------------
+
+class CodeParser:
+    """Parses source files using Tree-sitter and extracts structural topography."""
+
+    def __init__(self) -> None:
+        self._parsers: Dict[str, object] = {}
+
+    def _get_parser(self, language: str):
+        if language not in self._parsers:
+            try:
+                self._parsers[language] = tslp.get_parser(language)
+            except (LookupError, ValueError, ImportError) as exc:
+                logger.debug("Tree-sitter parser unavailable for %s: %s", language, exc)
+                return None
+        return self._parsers[language]
+
+    def detect_language(self, path: Path) -> Optional[str]:
+        return EXTENSION_TO_LANGUAGE.get(path.suffix.lower())
+
+    def parse_file(self, path: Path) -> tuple[List[NodeInfo], List[EdgeInfo]]:
+        try:
+            source = path.read_bytes()
+        except (OSError, PermissionError):
+            return [], []
+
+        language = self.detect_language(path)
+        if not language:
+            return [], []
+
+        parser = self._get_parser(language)
+        if not parser:
+            return [], []
+
+        tree = parser.parse(source)
+        nodes: List[NodeInfo] = []
+        edges: List[EdgeInfo] = []
+        file_path_str = str(path)
+
+        # Base File Node
+        nodes.append(NodeInfo(
+            kind="File",
+            name=file_path_str,
+            file_path=file_path_str,
+            line_start=1,
+            line_end=source.count(b"\n") + 1,
+            language=language,
+        ))
+
+        self._extract_from_tree(
+            tree.root_node, source, language, file_path_str, nodes, edges
+        )
+
+        return nodes, edges
+
+    def _extract_from_tree(
+        self,
+        root,
+        source: bytes,
+        language: str,
+        file_path: str,
+        nodes: List[NodeInfo],
+        edges: List[EdgeInfo],
+        enclosing_class: Optional[str] = None,
+        enclosing_func: Optional[str] = None,
+        _depth: int = 0,
+    ) -> None:
+        pass
