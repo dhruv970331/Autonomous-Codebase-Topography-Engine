@@ -148,4 +148,127 @@ class CodeParser:
         enclosing_func: Optional[str] = None,
         _depth: int = 0,
     ) -> None:
-        pass
+        if _depth > 180:  # Prevent recursion crashes on generated/minified code
+            return
+
+        class_types = set(_CLASS_TYPES.get(language, []))
+        func_types = set(_FUNCTION_TYPES.get(language, []))
+        call_types = set(_CALL_TYPES.get(language, []))
+        import_types = set(_IMPORT_TYPES.get(language, []))
+
+        for child in root.children:
+            node_type = child.type
+
+            # Extract Classes
+            if node_type in class_types:
+                name = self._get_name(child, language)
+                if name:
+                    qualified = self._qualify(name, file_path, enclosing_class)
+                    nodes.append(NodeInfo(
+                        kind="Class",
+                        name=name,
+                        file_path=file_path,
+                        line_start=child.start_point[0] + 1,
+                        line_end=child.end_point[0] + 1,
+                        language=language,
+                        parent_name=enclosing_class,
+                    ))
+                    edges.append(EdgeInfo(
+                        kind="CONTAINS",
+                        source=file_path if not enclosing_class else self._qualify(enclosing_class, file_path, None),
+                        target=qualified,
+                        file_path=file_path,
+                        line=child.start_point[0] + 1,
+                    ))
+                    # Recurse into class body
+                    self._extract_from_tree(
+                        child, source, language, file_path, nodes, edges,
+                        enclosing_class=name, enclosing_func=None, _depth=_depth + 1
+                    )
+                continue
+
+            # Extract Functions
+            if node_type in func_types:
+                name = self._get_name(child, language)
+                if name:
+                    qualified = self._qualify(name, file_path, enclosing_class)
+                    nodes.append(NodeInfo(
+                        kind="Function",
+                        name=name,
+                        file_path=file_path,
+                        line_start=child.start_point[0] + 1,
+                        line_end=child.end_point[0] + 1,
+                        language=language,
+                        parent_name=enclosing_class,
+                    ))
+                    container = self._qualify(enclosing_class, file_path, None) if enclosing_class else file_path
+                    edges.append(EdgeInfo(
+                        kind="CONTAINS",
+                        source=container,
+                        target=qualified,
+                        file_path=file_path,
+                        line=child.start_point[0] + 1,
+                    ))
+                    # Recurse into function body
+                    self._extract_from_tree(
+                        child, source, language, file_path, nodes, edges,
+                        enclosing_class=enclosing_class, enclosing_func=name, _depth=_depth + 1
+                    )
+                continue
+
+            # Extract Calls
+            if node_type in call_types:
+                call_name = self._get_call_name(child, language)
+                if call_name:
+                    caller = self._qualify(enclosing_func, file_path, enclosing_class) if enclosing_func else file_path
+                    edges.append(EdgeInfo(
+                        kind="CALLS",
+                        source=caller,
+                        target=call_name, # Bare target; resolution to qualified names happens later
+                        file_path=file_path,
+                        line=child.start_point[0] + 1,
+                    ))
+
+            # Extract Imports
+            if node_type in import_types:
+                edges.append(EdgeInfo(
+                    kind="IMPORTS_FROM",
+                    source=file_path,
+                    target=child.text.decode("utf-8", errors="replace"), 
+                    file_path=file_path,
+                    line=child.start_point[0] + 1,
+                ))
+
+            # Standard Recursion
+            self._extract_from_tree(
+                child, source, language, file_path, nodes, edges,
+                enclosing_class=enclosing_class, enclosing_func=enclosing_func, _depth=_depth + 1
+            )
+
+    def _qualify(self, name: str, file_path: str, enclosing_class: Optional[str]) -> str:
+        """Generates a globally unique identifier for a node."""
+        if enclosing_class:
+            return f"{file_path}::{enclosing_class}.{name}"
+        return f"{file_path}::{name}"
+
+    def _get_name(self, node, language: str) -> Optional[str]:
+        """Extracts the identifier name from a definition node."""
+        for child in node.children:
+            if child.type in ("identifier", "name", "type_identifier", "property_identifier", "field_identifier"):
+                return child.text.decode("utf-8", errors="replace")
+        return None
+
+    def _get_call_name(self, node, language: str) -> Optional[str]:
+        """Extracts the target identifier from a call expression."""
+        if not node.children:
+            return None
+        first = node.children[0]
+        
+        if first.type in ("identifier", "simple_identifier"):
+            return first.text.decode("utf-8", errors="replace")
+            
+        if first.type in ("attribute", "member_expression"):
+            for child in reversed(first.children):
+                if child.type in ("identifier", "property_identifier"):
+                    return child.text.decode("utf-8", errors="replace")
+        return None
