@@ -6,7 +6,7 @@ Extracts structural nodes (classes, functions) and edges (calls,contains, inheri
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, List, Dict, Set
+from typing import Optional, List, Dict
 
 import tree_sitter_language_pack as tslp
 
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class NodeInfo:
-    kind: str  # 'File', 'Class', 'Function', 'Type'
+    kind: str
     name: str
     file_path: str
     line_start: int
@@ -32,7 +32,7 @@ class NodeInfo:
 
 @dataclass
 class EdgeInfo:
-    kind: str  # 'CALLS', 'IMPORTS_FROM', 'INHERITS', 'CONTAINS'
+    kind: str
     source: str
     target: str
     file_path: str
@@ -48,6 +48,7 @@ EXTENSION_TO_LANGUAGE: Dict[str, str] = {
     ".js": "javascript",
     ".ts": "typescript",
     ".tsx": "tsx",
+    ".go": "go",
     ".java": "java",
 }
 
@@ -80,6 +81,151 @@ _IMPORT_TYPES: Dict[str, List[str]] = {
 }
 
 # ---------------------------------------------------------------------------
+# Tree-sitter Version-Proof Helpers
+#
+# tree_sitter_language_pack (tslp) ships its own native Rust-backed Node class
+# with different attribute names than the standard tree_sitter Python bindings:
+#
+#   Standard tree_sitter  │  tslp (Rust-native, all callable)
+#   ──────────────────────┼──────────────────────────────────
+#   node.type  (property) │  node.kind()
+#   node.children (list)  │  node.child_count() + node.child(i)
+#   node.start_point      │  node.start_position() → Point(.row, .column)
+#   node.end_point        │  node.end_position()   → Point(.row, .column)
+#   node.text  (bytes)    │  (absent; use start_byte()/end_byte() instead)
+#
+# Every helper below tries the standard name first, then the tslp name.
+# ---------------------------------------------------------------------------
+
+def _get_children(node):
+    """Return all children of *node*, compatible with both tree-sitter APIs."""
+    if not node:
+        return []
+
+    # Standard tree-sitter: node.children is a list (not callable).
+    if hasattr(node, "children"):
+        c = getattr(node, "children")
+        if callable(c):
+            c = c()
+        if c is not None:
+            return c
+
+    # tslp / legacy tree-sitter: child_count + child(i).
+    if hasattr(node, "child_count"):
+        count = getattr(node, "child_count")
+        if callable(count):
+            count = count()
+        if isinstance(count, int):
+            children = []
+            get_child = getattr(node, "child")
+            for i in range(count):
+                child = get_child(i)
+                if callable(child):
+                    child = child()
+                if child is not None:
+                    children.append(child)
+            return children
+
+    return []
+
+
+def _get_type(node) -> str:
+    """Return the grammar type string for *node*.
+
+    Standard tree_sitter exposes this as ``node.type`` (a property).
+    tslp exposes it as ``node.kind()`` (a callable).
+    """
+    if not node:
+        return ""
+    for attr in ("type", "kind"):
+        t = getattr(node, attr, None)
+        if t is None:
+            continue
+        if callable(t):
+            t = t()
+        if t is not None:
+            return str(t)
+    return ""
+
+
+def _get_start_line(node) -> int:
+    """Return the 1-based start line for *node*.
+
+    Standard tree_sitter: ``node.start_point`` → ``(row, col)`` tuple.
+    tslp: ``node.start_position()`` → ``Point`` object with ``.row``.
+    """
+    if not node:
+        return 1
+    for attr in ("start_point", "start_position"):
+        pt = getattr(node, attr, None)
+        if pt is None:
+            continue
+        if callable(pt):
+            pt = pt()
+        if pt is None:
+            continue
+        if isinstance(pt, tuple):
+            return pt[0] + 1
+        row = getattr(pt, "row", None)
+        if row is not None:
+            return int(row) + 1
+    return 1
+
+
+def _get_end_line(node) -> int:
+    """Return the 1-based end line for *node*.
+
+    Standard tree_sitter: ``node.end_point`` → ``(row, col)`` tuple.
+    tslp: ``node.end_position()`` → ``Point`` object with ``.row``.
+    """
+    if not node:
+        return 1
+    for attr in ("end_point", "end_position"):
+        pt = getattr(node, attr, None)
+        if pt is None:
+            continue
+        if callable(pt):
+            pt = pt()
+        if pt is None:
+            continue
+        if isinstance(pt, tuple):
+            return pt[0] + 1
+        row = getattr(pt, "row", None)
+        if row is not None:
+            return int(row) + 1
+    return 1
+
+
+def _safe_text(node, source: bytes) -> str:
+    """Extract text for *node*, compatible with both tree-sitter APIs.
+
+    Standard tree_sitter exposes ``node.text`` (bytes property).
+    tslp omits it; we fall back to slicing *source* with ``start_byte``/``end_byte``.
+    """
+    if not node:
+        return ""
+    # Standard tree_sitter: node.text is a bytes property.
+    if hasattr(node, "text"):
+        t = getattr(node, "text")
+        if callable(t):
+            t = t()
+        if isinstance(t, bytes):
+            return t.decode("utf-8", errors="replace")
+        if isinstance(t, str):
+            return t
+    # tslp / fallback: reconstruct from byte offsets.
+    if hasattr(node, "start_byte") and hasattr(node, "end_byte"):
+        start = getattr(node, "start_byte")
+        if callable(start):
+            start = start()
+        end = getattr(node, "end_byte")
+        if callable(end):
+            end = end()
+        if isinstance(start, int) and isinstance(end, int):
+            return source[start:end].decode("utf-8", errors="replace")
+    return ""
+
+# ---------------------------------------------------------------------------
 # Parser Engine
 # ---------------------------------------------------------------------------
 
@@ -93,7 +239,7 @@ class CodeParser:
         if language not in self._parsers:
             try:
                 self._parsers[language] = tslp.get_parser(language)
-            except (LookupError, ValueError, ImportError) as exc:
+            except Exception as exc:
                 logger.debug("Tree-sitter parser unavailable for %s: %s", language, exc)
                 return None
         return self._parsers[language]
@@ -115,12 +261,15 @@ class CodeParser:
         if not parser:
             return [], []
 
-        tree = parser.parse(source)
+        try:
+            tree = parser.parse(source)
+        except TypeError:
+            tree = parser.parse(source.decode("utf-8", errors="replace"))
+
         nodes: List[NodeInfo] = []
         edges: List[EdgeInfo] = []
         file_path_str = str(path)
 
-        # Base File Node
         nodes.append(NodeInfo(
             kind="File",
             name=file_path_str,
@@ -130,25 +279,17 @@ class CodeParser:
             language=language,
         ))
 
-        self._extract_from_tree(
-            tree.root_node, source, language, file_path_str, nodes, edges
-        )
+        root = getattr(tree, "root_node", None)
+        if callable(root):
+            root = root()
+
+        if root:
+            self._extract_from_tree(root, source, language, file_path_str, nodes, edges)
 
         return nodes, edges
 
-    def _extract_from_tree(
-        self,
-        root,
-        source: bytes,
-        language: str,
-        file_path: str,
-        nodes: List[NodeInfo],
-        edges: List[EdgeInfo],
-        enclosing_class: Optional[str] = None,
-        enclosing_func: Optional[str] = None,
-        _depth: int = 0,
-    ) -> None:
-        if _depth > 180:  # Prevent recursion crashes on generated/minified code
+    def _extract_from_tree(self, root, source, language, file_path, nodes, edges, enclosing_class=None, enclosing_func=None, _depth=0):
+        if _depth > 180 or not root:
             return
 
         class_types = set(_CLASS_TYPES.get(language, []))
@@ -156,119 +297,84 @@ class CodeParser:
         call_types = set(_CALL_TYPES.get(language, []))
         import_types = set(_IMPORT_TYPES.get(language, []))
 
-        for child in root.children:
-            node_type = child.type
+        for child in _get_children(root):
+            node_type = _get_type(child)
 
-            # Extract Classes
             if node_type in class_types:
-                name = self._get_name(child, language)
+                name = self._get_name(child, source)
                 if name:
                     qualified = self._qualify(name, file_path, enclosing_class)
-                    nodes.append(NodeInfo(
-                        kind="Class",
-                        name=name,
-                        file_path=file_path,
-                        line_start=child.start_point[0] + 1,
-                        line_end=child.end_point[0] + 1,
-                        language=language,
-                        parent_name=enclosing_class,
-                    ))
-                    edges.append(EdgeInfo(
-                        kind="CONTAINS",
-                        source=file_path if not enclosing_class else self._qualify(enclosing_class, file_path, None),
-                        target=qualified,
-                        file_path=file_path,
-                        line=child.start_point[0] + 1,
-                    ))
-                    # Recurse into class body
-                    self._extract_from_tree(
-                        child, source, language, file_path, nodes, edges,
-                        enclosing_class=name, enclosing_func=None, _depth=_depth + 1
-                    )
+                    nodes.append(NodeInfo("Class", name, file_path, _get_start_line(child), _get_end_line(child), language, enclosing_class))
+                    edges.append(EdgeInfo("CONTAINS", file_path if not enclosing_class else self._qualify(enclosing_class, file_path, None), qualified, file_path, _get_start_line(child)))
+                    self._extract_from_tree(child, source, language, file_path, nodes, edges, name, None, _depth + 1)
                 continue
 
-            # Extract Functions
             if node_type in func_types:
-                name = self._get_name(child, language)
+                name = self._get_name(child, source)
                 if name:
                     qualified = self._qualify(name, file_path, enclosing_class)
-                    nodes.append(NodeInfo(
-                        kind="Function",
-                        name=name,
-                        file_path=file_path,
-                        line_start=child.start_point[0] + 1,
-                        line_end=child.end_point[0] + 1,
-                        language=language,
-                        parent_name=enclosing_class,
-                    ))
+                    nodes.append(NodeInfo("Function", name, file_path, _get_start_line(child), _get_end_line(child), language, enclosing_class))
                     container = self._qualify(enclosing_class, file_path, None) if enclosing_class else file_path
-                    edges.append(EdgeInfo(
-                        kind="CONTAINS",
-                        source=container,
-                        target=qualified,
-                        file_path=file_path,
-                        line=child.start_point[0] + 1,
-                    ))
-                    # Recurse into function body
-                    self._extract_from_tree(
-                        child, source, language, file_path, nodes, edges,
-                        enclosing_class=enclosing_class, enclosing_func=name, _depth=_depth + 1
-                    )
+                    edges.append(EdgeInfo("CONTAINS", container, qualified, file_path, _get_start_line(child)))
+                    self._extract_from_tree(child, source, language, file_path, nodes, edges, enclosing_class, name, _depth + 1)
                 continue
 
-            # Extract Calls
             if node_type in call_types:
-                call_name = self._get_call_name(child, language)
+                call_name = self._get_call_name(child, source)
                 if call_name:
                     caller = self._qualify(enclosing_func, file_path, enclosing_class) if enclosing_func else file_path
-                    edges.append(EdgeInfo(
-                        kind="CALLS",
-                        source=caller,
-                        target=call_name, # Bare target; resolution to qualified names happens later
-                        file_path=file_path,
-                        line=child.start_point[0] + 1,
-                    ))
+                    edges.append(EdgeInfo("CALLS", caller, call_name, file_path, _get_start_line(child)))
+                self._extract_from_tree(child, source, language, file_path, nodes, edges, enclosing_class, enclosing_func, _depth + 1)
+                continue
 
-            # Extract Imports
             if node_type in import_types:
-                edges.append(EdgeInfo(
-                    kind="IMPORTS_FROM",
-                    source=file_path,
-                    target=child.text.decode("utf-8", errors="replace"), 
-                    file_path=file_path,
-                    line=child.start_point[0] + 1,
-                ))
+                self._extract_imports(child, language, source, file_path, edges)
+                continue
 
-            # Standard Recursion
-            self._extract_from_tree(
-                child, source, language, file_path, nodes, edges,
-                enclosing_class=enclosing_class, enclosing_func=enclosing_func, _depth=_depth + 1
-            )
+            self._extract_from_tree(child, source, language, file_path, nodes, edges, enclosing_class, enclosing_func, _depth + 1)
 
     def _qualify(self, name: str, file_path: str, enclosing_class: Optional[str]) -> str:
-        """Generates a globally unique identifier for a node."""
         if enclosing_class:
             return f"{file_path}::{enclosing_class}.{name}"
         return f"{file_path}::{name}"
 
-    def _get_name(self, node, language: str) -> Optional[str]:
-        """Extracts the identifier name from a definition node."""
-        for child in node.children:
-            if child.type in ("identifier", "name", "type_identifier", "property_identifier", "field_identifier"):
-                return child.text.decode("utf-8", errors="replace")
+    def _get_name(self, node, source: bytes) -> Optional[str]:
+        for child in _get_children(node):
+            t = _get_type(child)
+            if t in ("identifier", "name", "type_identifier", "property_identifier", "field_identifier"):
+                return _safe_text(child, source)
         return None
 
-    def _get_call_name(self, node, language: str) -> Optional[str]:
-        """Extracts the target identifier from a call expression."""
-        if not node.children:
+    def _get_call_name(self, node, source: bytes) -> Optional[str]:
+        children = _get_children(node)
+        if not children:
             return None
-        first = node.children[0]
-        
-        if first.type in ("identifier", "simple_identifier"):
-            return first.text.decode("utf-8", errors="replace")
-            
-        if first.type in ("attribute", "member_expression"):
-            for child in reversed(first.children):
-                if child.type in ("identifier", "property_identifier"):
-                    return child.text.decode("utf-8", errors="replace")
+        first = children[0]
+        t = _get_type(first)
+        if t in ("identifier", "simple_identifier"):
+            return _safe_text(first, source)
+        if t in ("attribute", "member_expression"):
+            for child in reversed(_get_children(first)):
+                if _get_type(child) in ("identifier", "property_identifier"):
+                    return _safe_text(child, source)
         return None
+
+    def _extract_imports(self, node, language: str, source: bytes, file_path: str, edges: List[EdgeInfo]) -> None:
+        if language == "python":
+            node_type = _get_type(node)
+            if node_type == "import_from_statement":
+                for child in _get_children(node):
+                    if _get_type(child) == "dotted_name":
+                        target = _safe_text(child, source)
+                        edges.append(EdgeInfo("IMPORTS_FROM", file_path, target, file_path, _get_start_line(node)))
+                        break
+            else:
+                for child in _get_children(node):
+                    if _get_type(child) == "dotted_name":
+                        target = _safe_text(child, source)
+                        edges.append(EdgeInfo("IMPORTS_FROM", file_path, target, file_path, _get_start_line(node)))
+        elif language in ("javascript", "typescript", "tsx"):
+            for child in _get_children(node):
+                if _get_type(child) == "string":
+                    val = _safe_text(child, source).strip("'\"")
+                    edges.append(EdgeInfo("IMPORTS_FROM", file_path, val, file_path, _get_start_line(node)))
