@@ -1,0 +1,22 @@
+[project]
+name = "acte"
+version = "0.1.0"
+description = "ACTE is an AI agent architecture using MCP that translates complex Python repositories into deterministic RDF Knowledge Graphs."
+authors = [
+    {name = "Dhruvesh Malhotra",email = "dhruveshmalhotra186@gmail.com"}
+]
+requires-python = ">=3.11"
+dependencies = [
+    "tree-sitter-language-pack (>=1.8.1,<2.0.0)",
+    "pytest (>=9.0.3,<10.0.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+packages = [
+    { include = "acte", from = "src" }
+]
