@@ -1,8 +1,7 @@
 # ACTE
 
 Parses codebases with tree-sitter into an RDF knowledge graph (`rdflib`), queried by SPARQL,
-to answer dependency and blast-radius questions deterministically for an LLM. The goal is
-that the LLM never guesses about structure; it queries proven relationships.
+to answer dependency and blast-radius questions deterministically for an LLM.
 
 ## Orientation
 
@@ -13,6 +12,8 @@ that the LLM never guesses about structure; it queries proven relationships.
 | `src/acte/sparql_engine.py` | Layer 3: named, hardcoded SPARQL queries |
 | *(not built)* | Layer 4: MCP server |
 | `tests/` | pytest, one file per module |
+| `docs/architecture.md` | ontology, identifier scheme, design rationale |
+| `docs/roadmap.md` | planned work |
 
 Python 3.11 + Poetry, src-layout.
 
@@ -26,43 +27,37 @@ poetry run python -c "..."    # anything importing acte
 **Always `poetry run`.** The bare interpreter cannot import `acte`. `python -c "import acte"`
 fails with ModuleNotFoundError. This bites constantly.
 
-## Where the detail lives
-
-Read these when the task calls for them. Do not preload.
-
-- **`initial_arch_n_details.md`**: original vision and four-layer architecture. Read for
-  intent and scope questions. Note: it describes the target, not the current build.
-- **`.claude/agents/acte-builder.md`**: the executor subagent's contract and hard rules.
-- **`docs/plan/`**: design specs, once written. A spec here is the source of truth for
-  what to build; the code is not.
-- **`notes/`**: gitignored working material, including the verified state of the build and
-  its known defects. Read it when present.
-
 ## Invariants
 
-- **Node URIs and edge endpoints must be the same identifier.** The project's worst bug came
-  from `CALLS` edges pointing at bare short names while function nodes used qualified IDs
-  (`file.py::Class.method`), so `code:calls+` could never chain. Any change touching
-  identifier construction must be verified against real parser output, not a fixture.
+- **Node URIs and edge endpoints must be the same identifier.** An edge targeting a bare
+  short name does not connect to the node that defines it, and multi-hop traversal stops
+  there silently. This is currently violated for `CALLS` edges and is the next thing being
+  fixed. Any change touching identifier construction must be verified against real parser
+  output.
 - **Test fixtures must reflect what the pipeline actually emits.** A hand-written graph edge
-  in a shape the parser cannot produce is how the above bug stayed hidden through a green
-  suite. Build test graphs by running the real pipeline.
+  in a shape the parser cannot produce will pass a test while the feature is broken in
+  practice. Build test graphs by running the real pipeline over real files.
 - **The parser's tree-sitter helpers are deliberately API-tolerant.** Each tries the standard
   `tree_sitter` attribute, then the `tree_sitter_language_pack` variant. This is load-bearing
   version-drift defence, not redundancy. Do not "simplify" it.
 - **Named SPARQL queries are hardcoded on purpose.** The LLM chooses which query and supplies
   arguments; it never authors SPARQL. `execute_raw_sparql` is an escape hatch for exploration,
   not a production path.
+- **Resolution must not guess.** An ambiguous call target is recorded with its candidates,
+  never resolved to a plausible-looking choice.
 
 ## Working agreement
 
-Plan first, then build. Design questions get settled in a spec before code. This project
-already shipped a broken headline feature because "how do we identify a call target?" was
-answered implicitly at coding time and papered over in a test.
+Plan before building. Settle design questions in writing first, particularly anything
+touching how identifiers are constructed or how call targets are resolved. Those decided
+implicitly at coding time are how the current defect arose.
 
 Claude orchestrates and designs; the `acte-builder` subagent executes specified tasks.
 
-## Current phase
+Small commits, one concern each, test suite green at every step.
 
-Planning. No implementation until a spec is approved. The first spec covers cross-file call
-resolution, which fixes the broken blast radius and blocks everything else.
+## Local notes
+
+A gitignored `notes/` directory may hold working material: defect analysis, detailed
+specifications, comparisons with similar tools. Read it when present; it is not part of the
+repository and other contributors will not have it.
