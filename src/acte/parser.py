@@ -48,10 +48,20 @@ class CallSite:
     line: int
 
 @dataclass
+class ImportBinding:
+    local_name: str
+    imported_name: str
+    module: str
+    is_module_alias: bool
+    file_path: str
+    line: int
+
+@dataclass
 class ParseResult:
     nodes: List[NodeInfo] = field(default_factory=list)
     edges: List[EdgeInfo] = field(default_factory=list)
     call_sites: List[CallSite] = field(default_factory=list)
+    import_bindings: List[ImportBinding] = field(default_factory=list)
 
 # ---------------------------------------------------------------------------
 # Language Syntax Mappings
@@ -283,6 +293,7 @@ class CodeParser:
         nodes: List[NodeInfo] = []
         edges: List[EdgeInfo] = []
         call_sites: List[CallSite] = []
+        import_bindings: List[ImportBinding] = []
         file_path_str = str(path)
 
         nodes.append(NodeInfo(
@@ -299,11 +310,11 @@ class CodeParser:
             root = root()
 
         if root:
-            self._extract_from_tree(root, source, language, file_path_str, nodes, edges, call_sites)
+            self._extract_from_tree(root, source, language, file_path_str, nodes, edges, call_sites, import_bindings)
 
-        return ParseResult(nodes=nodes, edges=edges, call_sites=call_sites)
+        return ParseResult(nodes=nodes, edges=edges, call_sites=call_sites, import_bindings=import_bindings)
 
-    def _extract_from_tree(self, root, source, language, file_path, nodes, edges, call_sites, enclosing_class=None, enclosing_func=None, _depth=0):
+    def _extract_from_tree(self, root, source, language, file_path, nodes, edges, call_sites, import_bindings, enclosing_class=None, enclosing_func=None, _depth=0):
         if _depth > 180 or not root:
             return
 
@@ -321,7 +332,7 @@ class CodeParser:
                     qualified = self._qualify(name, file_path, enclosing_class)
                     nodes.append(NodeInfo("Class", name, file_path, _get_start_line(child), _get_end_line(child), language, enclosing_class))
                     edges.append(EdgeInfo("CONTAINS", file_path if not enclosing_class else self._qualify(enclosing_class, file_path, None), qualified, file_path, _get_start_line(child)))
-                    self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, name, None, _depth + 1)
+                    self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, import_bindings, name, None, _depth + 1)
                 continue
 
             if node_type in func_types:
@@ -331,7 +342,7 @@ class CodeParser:
                     nodes.append(NodeInfo("Function", name, file_path, _get_start_line(child), _get_end_line(child), language, enclosing_class))
                     container = self._qualify(enclosing_class, file_path, None) if enclosing_class else file_path
                     edges.append(EdgeInfo("CONTAINS", container, qualified, file_path, _get_start_line(child)))
-                    self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, enclosing_class, name, _depth + 1)
+                    self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, import_bindings, enclosing_class, name, _depth + 1)
                 continue
 
             if node_type in call_types:
@@ -341,14 +352,14 @@ class CodeParser:
                     edges.append(EdgeInfo("CALLS", caller, call_name, file_path, _get_start_line(child)))
                     receiver = self._get_call_receiver(child, source)
                     call_sites.append(CallSite(caller, call_name, receiver, file_path, _get_start_line(child)))
-                self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, enclosing_class, enclosing_func, _depth + 1)
+                self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, import_bindings, enclosing_class, enclosing_func, _depth + 1)
                 continue
 
             if node_type in import_types:
-                self._extract_imports(child, language, source, file_path, edges)
+                self._extract_imports(child, language, source, file_path, edges, import_bindings)
                 continue
 
-            self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, enclosing_class, enclosing_func, _depth + 1)
+            self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, import_bindings, enclosing_class, enclosing_func, _depth + 1)
 
     def _qualify(self, name: str, file_path: str, enclosing_class: Optional[str]) -> str:
         if enclosing_class:
@@ -395,22 +406,75 @@ class CodeParser:
                     return full_text[: -len(suffix)]
         return None
 
-    def _extract_imports(self, node, language: str, source: bytes, file_path: str, edges: List[EdgeInfo]) -> None:
+    def _extract_imports(self, node, language: str, source: bytes, file_path: str, edges: List[EdgeInfo], import_bindings: List[ImportBinding]) -> None:
         if language == "python":
             node_type = _get_type(node)
+            line = _get_start_line(node)
             if node_type == "import_from_statement":
                 for child in _get_children(node):
                     if _get_type(child) == "dotted_name":
                         target = _safe_text(child, source)
-                        edges.append(EdgeInfo("IMPORTS_FROM", file_path, target, file_path, _get_start_line(node)))
+                        edges.append(EdgeInfo("IMPORTS_FROM", file_path, target, file_path, line))
                         break
+                self._extract_import_from_bindings(node, source, file_path, line, import_bindings)
             else:
                 for child in _get_children(node):
                     if _get_type(child) == "dotted_name":
                         target = _safe_text(child, source)
-                        edges.append(EdgeInfo("IMPORTS_FROM", file_path, target, file_path, _get_start_line(node)))
+                        edges.append(EdgeInfo("IMPORTS_FROM", file_path, target, file_path, line))
+                self._extract_import_bindings(node, source, file_path, line, import_bindings)
         elif language in ("javascript", "typescript", "tsx"):
             for child in _get_children(node):
                 if _get_type(child) == "string":
                     val = _safe_text(child, source).strip("'\"")
                     edges.append(EdgeInfo("IMPORTS_FROM", file_path, val, file_path, _get_start_line(node)))
+
+    def _extract_import_bindings(self, node, source: bytes, file_path: str, line: int, import_bindings: List[ImportBinding]) -> None:
+        """Bindings for a plain ``import_statement`` (``import calc``, ``import calc as c``)."""
+        for child in _get_children(node):
+            t = _get_type(child)
+            if t == "dotted_name":
+                name = _safe_text(child, source)
+                import_bindings.append(ImportBinding(name, name, name, True, file_path, line))
+            elif t == "aliased_import":
+                module_name = None
+                alias = None
+                for sub in _get_children(child):
+                    st = _get_type(sub)
+                    if st == "dotted_name":
+                        module_name = _safe_text(sub, source)
+                    elif st == "identifier":
+                        alias = _safe_text(sub, source)
+                if module_name and alias:
+                    import_bindings.append(ImportBinding(alias, module_name, module_name, True, file_path, line))
+
+    def _extract_import_from_bindings(self, node, source: bytes, file_path: str, line: int, import_bindings: List[ImportBinding]) -> None:
+        """Bindings for an ``import_from_statement`` (``from calc import add``, ``... as plus``, ``*``)."""
+        module_text: Optional[str] = None
+        seen_import_kw = False
+        for child in _get_children(node):
+            t = _get_type(child)
+            if t == "import":
+                seen_import_kw = True
+                continue
+            if not seen_import_kw:
+                if t in ("dotted_name", "relative_import"):
+                    module_text = _safe_text(child, source)
+                continue
+            if module_text is None:
+                continue
+            if t == "dotted_name":
+                name = _safe_text(child, source)
+                import_bindings.append(ImportBinding(name, name, module_text, False, file_path, line))
+            elif t == "aliased_import":
+                imported_name = None
+                alias = None
+                for sub in _get_children(child):
+                    st = _get_type(sub)
+                    if st == "dotted_name":
+                        imported_name = _safe_text(sub, source)
+                    elif st == "identifier":
+                        alias = _safe_text(sub, source)
+                if imported_name and alias:
+                    import_bindings.append(ImportBinding(alias, imported_name, module_text, False, file_path, line))
+            # "wildcard_import" (`from calc import *`) yields no binding.

@@ -1,6 +1,6 @@
 import pytest
 from pathlib import Path
-from acte.parser import CodeParser, NodeInfo, EdgeInfo, CallSite
+from acte.parser import CodeParser, NodeInfo, EdgeInfo, CallSite, ImportBinding
 
 @pytest.fixture
 def parser():
@@ -101,3 +101,78 @@ def test_call_site_caller_id_matches_qualified_method_id(parser, tmp_path):
     qualified_login_id = next(e.target for e in result.edges if e.kind == "CONTAINS" and e.target.endswith("AuthManager.login"))
     call_site = next(cs for cs in result.call_sites if cs.target_name == "helper")
     assert call_site.caller_id == qualified_login_id, "CallSite.caller_id must equal the qualified id the parser gives the enclosing method."
+
+def test_import_binding_plain(parser, tmp_path):
+    code = b"import calc\n"
+    p = tmp_path / "test.py"
+    p.write_bytes(code)
+    result = parser.parse_file(p)
+
+    assert len(result.import_bindings) == 1
+    b = result.import_bindings[0]
+    assert b.local_name == "calc"
+    assert b.imported_name == "calc"
+    assert b.module == "calc"
+    assert b.is_module_alias is True
+    assert b.file_path == str(p)
+    assert b.line == 1
+
+def test_import_binding_aliased(parser, tmp_path):
+    code = b"import calc as c\n"
+    p = tmp_path / "test.py"
+    p.write_bytes(code)
+    result = parser.parse_file(p)
+
+    assert len(result.import_bindings) == 1
+    b = result.import_bindings[0]
+    assert b.local_name == "c"
+    assert b.imported_name == "calc"
+    assert b.module == "calc"
+    assert b.is_module_alias is True
+    assert b.file_path == str(p)
+    assert b.line == 1
+
+def test_import_binding_from_import(parser, tmp_path):
+    code = b"from calc import add\n"
+    p = tmp_path / "test.py"
+    p.write_bytes(code)
+    result = parser.parse_file(p)
+
+    assert len(result.import_bindings) == 1
+    b = result.import_bindings[0]
+    assert b.local_name == "add"
+    assert b.imported_name == "add"
+    assert b.module == "calc"
+    assert b.is_module_alias is False
+    assert b.file_path == str(p)
+    assert b.line == 1
+
+def test_import_binding_from_import_aliased(parser, tmp_path):
+    code = b"from calc import add as plus\n"
+    p = tmp_path / "test.py"
+    p.write_bytes(code)
+    result = parser.parse_file(p)
+
+    assert len(result.import_bindings) == 1
+    b = result.import_bindings[0]
+    assert b.local_name == "plus"
+    assert b.imported_name == "add"
+    assert b.module == "calc"
+    assert b.is_module_alias is False
+    assert b.file_path == str(p)
+    assert b.line == 1
+
+def test_import_binding_dotted_module(parser, tmp_path):
+    code = b"import pkg.calc\n"
+    p = tmp_path / "test.py"
+    p.write_bytes(code)
+    result = parser.parse_file(p)
+
+    assert len(result.import_bindings) == 1
+    b = result.import_bindings[0]
+    assert b.local_name == "pkg.calc"
+    assert b.imported_name == "pkg.calc"
+    assert b.module == "pkg.calc"
+    assert b.is_module_alias is True
+    assert b.file_path == str(p)
+    assert b.line == 1
