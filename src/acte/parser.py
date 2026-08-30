@@ -39,6 +39,11 @@ class EdgeInfo:
     line: int = 0
     extra: dict = field(default_factory=dict)
 
+@dataclass
+class ParseResult:
+    nodes: List[NodeInfo] = field(default_factory=list)
+    edges: List[EdgeInfo] = field(default_factory=list)
+
 # ---------------------------------------------------------------------------
 # Language Syntax Mappings
 # ---------------------------------------------------------------------------
@@ -247,19 +252,19 @@ class CodeParser:
     def detect_language(self, path: Path) -> Optional[str]:
         return EXTENSION_TO_LANGUAGE.get(path.suffix.lower())
 
-    def parse_file(self, path: Path) -> tuple[List[NodeInfo], List[EdgeInfo]]:
+    def parse_file(self, path: Path) -> ParseResult:
         try:
             source = path.read_bytes()
         except (OSError, PermissionError):
-            return [], []
+            return ParseResult()
 
         language = self.detect_language(path)
         if not language:
-            return [], []
+            return ParseResult()
 
         parser = self._get_parser(language)
         if not parser:
-            return [], []
+            return ParseResult()
 
         try:
             tree = parser.parse(source)
@@ -286,7 +291,7 @@ class CodeParser:
         if root:
             self._extract_from_tree(root, source, language, file_path_str, nodes, edges)
 
-        return nodes, edges
+        return ParseResult(nodes=nodes, edges=edges)
 
     def _extract_from_tree(self, root, source, language, file_path, nodes, edges, enclosing_class=None, enclosing_func=None, _depth=0):
         if _depth > 180 or not root:

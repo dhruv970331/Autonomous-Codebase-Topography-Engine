@@ -57,8 +57,8 @@ parser  = CodeParser()
 builder = KnowledgeGraphBuilder()
 
 for path in Path("src").rglob("*.py"):
-    nodes, edges = parser.parse_file(path)
-    builder.build(nodes, edges)
+    result = parser.parse_file(path)
+    builder.build(result.nodes, result.edges)
 
 builder.serialize("graph.ttl")
 

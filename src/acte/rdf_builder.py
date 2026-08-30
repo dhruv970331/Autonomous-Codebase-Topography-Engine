@@ -28,8 +28,8 @@ class KnowledgeGraphBuilder:
     Usage pattern — whole repository (many files):
         builder = KnowledgeGraphBuilder()
         for path in repo_files:
-            nodes, edges = parser.parse_file(path)
-            builder.build(nodes, edges)   # accumulates across calls
+            result = parser.parse_file(path)
+            builder.build(result.nodes, result.edges)   # accumulates across calls
         builder.serialize("graph.ttl")
 
     Call reset() between runs if you need a clean graph without creating a new
