@@ -40,9 +40,18 @@ class EdgeInfo:
     extra: dict = field(default_factory=dict)
 
 @dataclass
+class CallSite:
+    caller_id: str
+    target_name: str
+    receiver: Optional[str]
+    file_path: str
+    line: int
+
+@dataclass
 class ParseResult:
     nodes: List[NodeInfo] = field(default_factory=list)
     edges: List[EdgeInfo] = field(default_factory=list)
+    call_sites: List[CallSite] = field(default_factory=list)
 
 # ---------------------------------------------------------------------------
 # Language Syntax Mappings
@@ -273,6 +282,7 @@ class CodeParser:
 
         nodes: List[NodeInfo] = []
         edges: List[EdgeInfo] = []
+        call_sites: List[CallSite] = []
         file_path_str = str(path)
 
         nodes.append(NodeInfo(
@@ -289,11 +299,11 @@ class CodeParser:
             root = root()
 
         if root:
-            self._extract_from_tree(root, source, language, file_path_str, nodes, edges)
+            self._extract_from_tree(root, source, language, file_path_str, nodes, edges, call_sites)
 
-        return ParseResult(nodes=nodes, edges=edges)
+        return ParseResult(nodes=nodes, edges=edges, call_sites=call_sites)
 
-    def _extract_from_tree(self, root, source, language, file_path, nodes, edges, enclosing_class=None, enclosing_func=None, _depth=0):
+    def _extract_from_tree(self, root, source, language, file_path, nodes, edges, call_sites, enclosing_class=None, enclosing_func=None, _depth=0):
         if _depth > 180 or not root:
             return
 
@@ -311,7 +321,7 @@ class CodeParser:
                     qualified = self._qualify(name, file_path, enclosing_class)
                     nodes.append(NodeInfo("Class", name, file_path, _get_start_line(child), _get_end_line(child), language, enclosing_class))
                     edges.append(EdgeInfo("CONTAINS", file_path if not enclosing_class else self._qualify(enclosing_class, file_path, None), qualified, file_path, _get_start_line(child)))
-                    self._extract_from_tree(child, source, language, file_path, nodes, edges, name, None, _depth + 1)
+                    self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, name, None, _depth + 1)
                 continue
 
             if node_type in func_types:
@@ -321,7 +331,7 @@ class CodeParser:
                     nodes.append(NodeInfo("Function", name, file_path, _get_start_line(child), _get_end_line(child), language, enclosing_class))
                     container = self._qualify(enclosing_class, file_path, None) if enclosing_class else file_path
                     edges.append(EdgeInfo("CONTAINS", container, qualified, file_path, _get_start_line(child)))
-                    self._extract_from_tree(child, source, language, file_path, nodes, edges, enclosing_class, name, _depth + 1)
+                    self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, enclosing_class, name, _depth + 1)
                 continue
 
             if node_type in call_types:
@@ -329,14 +339,16 @@ class CodeParser:
                 if call_name:
                     caller = self._qualify(enclosing_func, file_path, enclosing_class) if enclosing_func else file_path
                     edges.append(EdgeInfo("CALLS", caller, call_name, file_path, _get_start_line(child)))
-                self._extract_from_tree(child, source, language, file_path, nodes, edges, enclosing_class, enclosing_func, _depth + 1)
+                    receiver = self._get_call_receiver(child, source)
+                    call_sites.append(CallSite(caller, call_name, receiver, file_path, _get_start_line(child)))
+                self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, enclosing_class, enclosing_func, _depth + 1)
                 continue
 
             if node_type in import_types:
                 self._extract_imports(child, language, source, file_path, edges)
                 continue
 
-            self._extract_from_tree(child, source, language, file_path, nodes, edges, enclosing_class, enclosing_func, _depth + 1)
+            self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, enclosing_class, enclosing_func, _depth + 1)
 
     def _qualify(self, name: str, file_path: str, enclosing_class: Optional[str]) -> str:
         if enclosing_class:
@@ -362,6 +374,25 @@ class CodeParser:
             for child in reversed(_get_children(first)):
                 if _get_type(child) in ("identifier", "property_identifier"):
                     return _safe_text(child, source)
+        return None
+
+    def _get_call_receiver(self, node, source: bytes) -> Optional[str]:
+        children = _get_children(node)
+        if not children:
+            return None
+        first = children[0]
+        t = _get_type(first)
+        if t in ("identifier", "simple_identifier"):
+            return None
+        if t in ("attribute", "member_expression"):
+            full_text = _safe_text(first, source)
+            if "." not in full_text:
+                return None
+            method_name = self._get_call_name(node, source)
+            if method_name:
+                suffix = "." + method_name
+                if full_text.endswith(suffix):
+                    return full_text[: -len(suffix)]
         return None
 
     def _extract_imports(self, node, language: str, source: bytes, file_path: str, edges: List[EdgeInfo]) -> None:

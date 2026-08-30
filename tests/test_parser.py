@@ -1,6 +1,6 @@
 import pytest
 from pathlib import Path
-from acte.parser import CodeParser, NodeInfo, EdgeInfo
+from acte.parser import CodeParser, NodeInfo, EdgeInfo, CallSite
 
 @pytest.fixture
 def parser():
@@ -67,3 +67,37 @@ def test_empty_file(parser, tmp_path):
     assert len(result.nodes) == 1, "Empty file must still generate a base File node."
     assert result.nodes[0].kind == "File"
     assert len(result.edges) == 0, "Empty file must generate zero edges."
+
+def test_call_site_bare_call_has_no_receiver(parser, tmp_path):
+    code = b"def router():\n    foo()\n"
+    p = tmp_path / "test.py"
+    p.write_bytes(code)
+    result = parser.parse_file(p)
+
+    assert any(cs.target_name == "foo" and cs.receiver is None for cs in result.call_sites), "Bare call should have receiver=None."
+
+def test_call_site_method_call_records_receiver(parser, tmp_path):
+    code = b"class AuthManager:\n    def login(self):\n        self.helper()\n"
+    p = tmp_path / "test.py"
+    p.write_bytes(code)
+    result = parser.parse_file(p)
+
+    assert any(cs.receiver == "self" and cs.target_name == "helper" for cs in result.call_sites), "self.helper() should record receiver='self' and target_name='helper'."
+
+def test_call_site_module_call_records_receiver(parser, tmp_path):
+    code = b"def connect_all():\n    db.connect()\n"
+    p = tmp_path / "test.py"
+    p.write_bytes(code)
+    result = parser.parse_file(p)
+
+    assert any(cs.receiver == "db" and cs.target_name == "connect" for cs in result.call_sites), "db.connect() should record receiver='db'."
+
+def test_call_site_caller_id_matches_qualified_method_id(parser, tmp_path):
+    code = b"class AuthManager:\n    def login(self):\n        self.helper()\n"
+    p = tmp_path / "test.py"
+    p.write_bytes(code)
+    result = parser.parse_file(p)
+
+    qualified_login_id = next(e.target for e in result.edges if e.kind == "CONTAINS" and e.target.endswith("AuthManager.login"))
+    call_site = next(cs for cs in result.call_sites if cs.target_name == "helper")
+    assert call_site.caller_id == qualified_login_id, "CallSite.caller_id must equal the qualified id the parser gives the enclosing method."
