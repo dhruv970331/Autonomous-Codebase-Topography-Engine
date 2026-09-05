@@ -176,3 +176,16 @@ def test_import_binding_dotted_module(parser, tmp_path):
     assert b.is_module_alias is True
     assert b.file_path == str(p)
     assert b.line == 1
+def test_relative_import_edge_targets_the_module(parser, tmp_path):
+    code = b"from . import sibling\nfrom .mod import thing\nfrom ..pkg.deep import other\n"
+    p = tmp_path / "test.py"
+    p.write_bytes(code)
+    result = parser.parse_file(p)
+
+    targets = {e.target for e in result.edges if e.kind == "IMPORTS_FROM"}
+    assert targets == {".", ".mod", "..pkg.deep"}, f"Relative import edges point at the wrong node: {targets}"
+    assert "sibling" not in targets, "Edge points at the imported name instead of the module."
+
+    # The edge and the binding must agree on what the module is.
+    for binding in result.import_bindings:
+        assert binding.module in targets, f"Binding module {binding.module!r} has no matching edge."

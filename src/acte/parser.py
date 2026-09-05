@@ -412,7 +412,9 @@ class CodeParser:
             line = _get_start_line(node)
             if node_type == "import_from_statement":
                 for child in _get_children(node):
-                    if _get_type(child) == "dotted_name":
+                    # A relative module is a `relative_import`, not a `dotted_name`. Without
+                    # it the loop skips past the module and matches an imported name instead.
+                    if _get_type(child) in ("dotted_name", "relative_import"):
                         target = _safe_text(child, source)
                         edges.append(EdgeInfo("IMPORTS_FROM", file_path, target, file_path, line))
                         break
