@@ -1,7 +1,9 @@
 import pytest
-from acte.parser import NodeInfo, EdgeInfo
+
+from acte.parser import EdgeInfo, NodeInfo
 from acte.rdf_builder import KnowledgeGraphBuilder
 from acte.sparql_engine import SPARQLEngine
+
 
 @pytest.fixture
 def mock_engine():

@@ -6,12 +6,11 @@ graph for SPARQL querying.
 
 import urllib.parse
 from pathlib import Path
-from typing import List
 
 from rdflib import Graph, Literal, Namespace, URIRef
 from rdflib.namespace import RDF, XSD
 
-from acte.parser import NodeInfo, EdgeInfo
+from acte.parser import EdgeInfo, NodeInfo
 
 # Formal namespace for the codebase topography ontology
 CODE = Namespace("http://acte.local/code#")
@@ -44,7 +43,7 @@ class KnowledgeGraphBuilder:
     # Public API
     # ------------------------------------------------------------------
 
-    def build(self, nodes: List[NodeInfo], edges: List[EdgeInfo]) -> Graph:
+    def build(self, nodes: list[NodeInfo], edges: list[EdgeInfo]) -> Graph:
         """Translate NodeInfo / EdgeInfo objects into RDF triples.
 
         Triples are *accumulated* into self.graph across repeated calls so that

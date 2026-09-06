@@ -1,7 +1,9 @@
 import pytest
-from acte.parser import NodeInfo, EdgeInfo
-from acte.rdf_builder import KnowledgeGraphBuilder, CODE
 from rdflib.namespace import RDF
+
+from acte.parser import EdgeInfo, NodeInfo
+from acte.rdf_builder import CODE, KnowledgeGraphBuilder
+
 
 @pytest.fixture
 def builder():

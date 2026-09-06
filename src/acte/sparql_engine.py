@@ -21,7 +21,7 @@ mints those URIs. Cross-file resolution is a V2 concern.
 import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from rdflib import Graph
 
@@ -67,7 +67,7 @@ class SPARQLEngine:
         engine = SPARQLEngine(graph=builder.graph)
     """
 
-    def __init__(self, graph: Optional[Graph] = None) -> None:
+    def __init__(self, graph: Graph | None = None) -> None:
         self.graph: Graph = graph if graph is not None else Graph()
 
     @classmethod
@@ -81,7 +81,7 @@ class SPARQLEngine:
     # Named queries
     # ------------------------------------------------------------------
 
-    def callers_of(self, function_name: str) -> List[FunctionResult]:
+    def callers_of(self, function_name: str) -> list[FunctionResult]:
         """Return all functions that directly call *function_name*."""
         target = self._uri(function_name)
         q = _PREFIXES + f"""
@@ -100,7 +100,7 @@ ORDER BY ?file ?start
             for r in self.graph.query(q)
         ]
 
-    def blast_radius(self, function_name: str) -> List[FunctionResult]:
+    def blast_radius(self, function_name: str) -> list[FunctionResult]:
         """Return every function that transitively calls *function_name*.
 
         Uses SPARQL 1.1 property path ``code:calls+`` for multi-hop traversal.
@@ -123,7 +123,7 @@ ORDER BY ?file ?start
             for r in self.graph.query(q)
         ]
 
-    def callees_of(self, function_name: str, file_path: str) -> List[str]:
+    def callees_of(self, function_name: str, file_path: str) -> list[str]:
         """Return the names of every function directly called by *function_name*.
 
         *file_path* is required to resolve the correct qualified URI when the
@@ -142,7 +142,7 @@ ORDER BY ?callee_name
             for r in self.graph.query(q)
         ]
 
-    def functions_in_file(self, file_path: str) -> List[FunctionResult]:
+    def functions_in_file(self, file_path: str) -> list[FunctionResult]:
         """Return all functions defined in *file_path*, ordered by line number."""
         q = _PREFIXES + f"""
 SELECT ?name ?start ?end WHERE {{
@@ -159,7 +159,7 @@ ORDER BY ?start
             for r in self.graph.query(q)
         ]
 
-    def classes_in_file(self, file_path: str) -> List[ClassResult]:
+    def classes_in_file(self, file_path: str) -> list[ClassResult]:
         """Return all classes defined in *file_path*, ordered by line number."""
         q = _PREFIXES + f"""
 SELECT ?name ?start ?end WHERE {{
@@ -176,7 +176,7 @@ ORDER BY ?start
             for r in self.graph.query(q)
         ]
 
-    def dependencies_of(self, file_path: str) -> List[str]:
+    def dependencies_of(self, file_path: str) -> list[str]:
         """Return the import targets of *file_path* (module names or paths)."""
         file_uri = self._uri(file_path)
         q = _PREFIXES + f"""
@@ -191,7 +191,7 @@ ORDER BY ?dep
             for r in self.graph.query(q)
         ]
 
-    def orphan_functions(self) -> List[FunctionResult]:
+    def orphan_functions(self) -> list[FunctionResult]:
         """Return functions that are never called by anything in the graph.
 
         Useful for dead-code detection. A function is an orphan when no
@@ -214,7 +214,7 @@ ORDER BY ?file ?start
             for r in self.graph.query(q)
         ]
 
-    def execute_raw_sparql(self, query: str) -> List[Dict[str, Any]]:
+    def execute_raw_sparql(self, query: str) -> list[dict[str, Any]]:
         """Escape hatch for dynamic graph exploration.
 
         Intended for the MCP server's fallback tool and Colab experimentation —

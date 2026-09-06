@@ -1,6 +1,8 @@
+
 import pytest
-from pathlib import Path
-from acte.parser import CodeParser, NodeInfo, EdgeInfo, CallSite, ImportBinding
+
+from acte.parser import CodeParser
+
 
 @pytest.fixture
 def parser():

@@ -6,7 +6,6 @@ Extracts structural nodes (classes, functions) and edges (calls,contains, inheri
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, List, Dict
 
 import tree_sitter_language_pack as tslp
 
@@ -24,9 +23,9 @@ class NodeInfo:
     line_start: int
     line_end: int
     language: str = ""
-    parent_name: Optional[str] = None
-    params: Optional[str] = None
-    return_type: Optional[str] = None
+    parent_name: str | None = None
+    params: str | None = None
+    return_type: str | None = None
     is_test: bool = False
     extra: dict = field(default_factory=dict)
 
@@ -43,7 +42,7 @@ class EdgeInfo:
 class CallSite:
     caller_id: str
     target_name: str
-    receiver: Optional[str]
+    receiver: str | None
     file_path: str
     line: int
 
@@ -58,16 +57,16 @@ class ImportBinding:
 
 @dataclass
 class ParseResult:
-    nodes: List[NodeInfo] = field(default_factory=list)
-    edges: List[EdgeInfo] = field(default_factory=list)
-    call_sites: List[CallSite] = field(default_factory=list)
-    import_bindings: List[ImportBinding] = field(default_factory=list)
+    nodes: list[NodeInfo] = field(default_factory=list)
+    edges: list[EdgeInfo] = field(default_factory=list)
+    call_sites: list[CallSite] = field(default_factory=list)
+    import_bindings: list[ImportBinding] = field(default_factory=list)
 
 # ---------------------------------------------------------------------------
 # Language Syntax Mappings
 # ---------------------------------------------------------------------------
 
-EXTENSION_TO_LANGUAGE: Dict[str, str] = {
+EXTENSION_TO_LANGUAGE: dict[str, str] = {
     ".py": "python",
     ".js": "javascript",
     ".ts": "typescript",
@@ -76,28 +75,28 @@ EXTENSION_TO_LANGUAGE: Dict[str, str] = {
     ".java": "java",
 }
 
-_CLASS_TYPES: Dict[str, List[str]] = {
+_CLASS_TYPES: dict[str, list[str]] = {
     "python": ["class_definition"],
     "javascript": ["class_declaration", "class"],
     "typescript": ["class_declaration", "class"],
     "java": ["class_declaration", "interface_declaration", "enum_declaration"],
 }
 
-_FUNCTION_TYPES: Dict[str, List[str]] = {
+_FUNCTION_TYPES: dict[str, list[str]] = {
     "python": ["function_definition"],
     "javascript": ["function_declaration", "method_definition", "arrow_function"],
     "typescript": ["function_declaration", "method_definition", "arrow_function"],
     "java": ["method_declaration", "constructor_declaration"],
 }
 
-_CALL_TYPES: Dict[str, List[str]] = {
+_CALL_TYPES: dict[str, list[str]] = {
     "python": ["call"],
     "javascript": ["call_expression", "new_expression"],
     "typescript": ["call_expression", "new_expression"],
     "java": ["method_invocation", "object_creation_expression"],
 }
 
-_IMPORT_TYPES: Dict[str, List[str]] = {
+_IMPORT_TYPES: dict[str, list[str]] = {
     "python": ["import_statement", "import_from_statement"],
     "javascript": ["import_statement"],
     "typescript": ["import_statement"],
@@ -257,7 +256,7 @@ class CodeParser:
     """Parses source files using Tree-sitter and extracts structural topography."""
 
     def __init__(self) -> None:
-        self._parsers: Dict[str, object] = {}
+        self._parsers: dict[str, object] = {}
 
     def _get_parser(self, language: str):
         if language not in self._parsers:
@@ -268,7 +267,7 @@ class CodeParser:
                 return None
         return self._parsers[language]
 
-    def detect_language(self, path: Path) -> Optional[str]:
+    def detect_language(self, path: Path) -> str | None:
         return EXTENSION_TO_LANGUAGE.get(path.suffix.lower())
 
     def parse_file(self, path: Path) -> ParseResult:
@@ -290,10 +289,10 @@ class CodeParser:
         except TypeError:
             tree = parser.parse(source.decode("utf-8", errors="replace"))
 
-        nodes: List[NodeInfo] = []
-        edges: List[EdgeInfo] = []
-        call_sites: List[CallSite] = []
-        import_bindings: List[ImportBinding] = []
+        nodes: list[NodeInfo] = []
+        edges: list[EdgeInfo] = []
+        call_sites: list[CallSite] = []
+        import_bindings: list[ImportBinding] = []
         file_path_str = str(path)
 
         nodes.append(NodeInfo(
@@ -361,19 +360,19 @@ class CodeParser:
 
             self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, import_bindings, enclosing_class, enclosing_func, _depth + 1)
 
-    def _qualify(self, name: str, file_path: str, enclosing_class: Optional[str]) -> str:
+    def _qualify(self, name: str, file_path: str, enclosing_class: str | None) -> str:
         if enclosing_class:
             return f"{file_path}::{enclosing_class}.{name}"
         return f"{file_path}::{name}"
 
-    def _get_name(self, node, source: bytes) -> Optional[str]:
+    def _get_name(self, node, source: bytes) -> str | None:
         for child in _get_children(node):
             t = _get_type(child)
             if t in ("identifier", "name", "type_identifier", "property_identifier", "field_identifier"):
                 return _safe_text(child, source)
         return None
 
-    def _get_call_name(self, node, source: bytes) -> Optional[str]:
+    def _get_call_name(self, node, source: bytes) -> str | None:
         children = _get_children(node)
         if not children:
             return None
@@ -387,7 +386,7 @@ class CodeParser:
                     return _safe_text(child, source)
         return None
 
-    def _get_call_receiver(self, node, source: bytes) -> Optional[str]:
+    def _get_call_receiver(self, node, source: bytes) -> str | None:
         children = _get_children(node)
         if not children:
             return None
@@ -406,7 +405,7 @@ class CodeParser:
                     return full_text[: -len(suffix)]
         return None
 
-    def _extract_imports(self, node, language: str, source: bytes, file_path: str, edges: List[EdgeInfo], import_bindings: List[ImportBinding]) -> None:
+    def _extract_imports(self, node, language: str, source: bytes, file_path: str, edges: list[EdgeInfo], import_bindings: list[ImportBinding]) -> None:
         if language == "python":
             node_type = _get_type(node)
             line = _get_start_line(node)
@@ -431,7 +430,7 @@ class CodeParser:
                     val = _safe_text(child, source).strip("'\"")
                     edges.append(EdgeInfo("IMPORTS_FROM", file_path, val, file_path, _get_start_line(node)))
 
-    def _extract_import_bindings(self, node, source: bytes, file_path: str, line: int, import_bindings: List[ImportBinding]) -> None:
+    def _extract_import_bindings(self, node, source: bytes, file_path: str, line: int, import_bindings: list[ImportBinding]) -> None:
         """Bindings for a plain ``import_statement`` (``import calc``, ``import calc as c``)."""
         for child in _get_children(node):
             t = _get_type(child)
@@ -450,9 +449,9 @@ class CodeParser:
                 if module_name and alias:
                     import_bindings.append(ImportBinding(alias, module_name, module_name, True, file_path, line))
 
-    def _extract_import_from_bindings(self, node, source: bytes, file_path: str, line: int, import_bindings: List[ImportBinding]) -> None:
+    def _extract_import_from_bindings(self, node, source: bytes, file_path: str, line: int, import_bindings: list[ImportBinding]) -> None:
         """Bindings for an ``import_from_statement`` (``from calc import add``, ``... as plus``, ``*``)."""
-        module_text: Optional[str] = None
+        module_text: str | None = None
         seen_import_kw = False
         for child in _get_children(node):
             t = _get_type(child)
