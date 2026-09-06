@@ -228,7 +228,7 @@ ORDER BY ?file ?start
                 {str(var): str(val) for var, val in row.asdict().items()}
                 for row in self.graph.query(full_query)
             ]
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - bad user SPARQL is reported, not raised
             return [{"error": str(e)}]
 
     # ------------------------------------------------------------------

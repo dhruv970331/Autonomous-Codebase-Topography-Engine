@@ -25,3 +25,7 @@ dev = [
     "pytest (>=9.0.3,<10.0.0)",
     "ruff (>=0.17.1,<0.18.0)"
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# getattr fallbacks are the deliberate tree-sitter API-drift defence (see CLAUDE.md)
+"src/acte/parser.py" = ["B009"]

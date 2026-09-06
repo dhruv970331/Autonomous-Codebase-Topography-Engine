@@ -263,7 +263,7 @@ class CodeParser:
         if language not in self._parsers:
             try:
                 self._parsers[language] = tslp.get_parser(language)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - unsupported grammar must not abort a run
                 logger.debug("Tree-sitter parser unavailable for %s: %s", language, exc)
                 return None
         return self._parsers[language]
