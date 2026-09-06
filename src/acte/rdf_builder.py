@@ -88,7 +88,8 @@ class KnowledgeGraphBuilder:
 
     def _make_uri(self, identifier: str) -> URIRef:
         """Encode an arbitrary code identifier into a valid RDF URI."""
-        safe = urllib.parse.quote(identifier, safe="/:.#")
+        # "#" is encoded: the namespace's "#" must stay the only one in the IRI.
+        safe = urllib.parse.quote(identifier, safe="/:.")
         return URIRef(CODE[safe])
 
     def _add_node(self, node: NodeInfo) -> None:

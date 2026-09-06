@@ -1,8 +1,10 @@
 import pytest
+from rdflib import URIRef
 from rdflib.namespace import RDF
 
-from acte.parser import EdgeInfo, NodeInfo
+from acte.parser import CodeParser, EdgeInfo, NodeInfo
 from acte.rdf_builder import CODE, KnowledgeGraphBuilder
+from acte.sparql_engine import SPARQLEngine
 
 
 @pytest.fixture
@@ -100,3 +102,20 @@ def test_edge_predicates(builder, sample_data):
     class_uri = builder._make_uri("main.py::AuthManager")
 
     assert (file_uri, CODE.contains, class_uri) in graph
+def test_hash_in_path_is_encoded(tmp_path):
+    """A '#' in a real path is percent-encoded, and lookups still match."""
+    src = tmp_path / "dir#1" / "mod.py"
+    src.parent.mkdir()
+    src.write_text("def helper():\n    pass\n\ndef run():\n    helper()\n")
+    result = CodeParser().parse_file(src)
+    builder = KnowledgeGraphBuilder()
+    graph = builder.build(result.nodes, result.edges)
+
+    uris = {str(t) for triple in graph for t in triple if isinstance(t, URIRef)}
+    code_uris = {u for u in uris if u.startswith(str(CODE))}
+    assert code_uris
+    assert all(u.count("#") == 1 for u in code_uris)
+
+    engine = SPARQLEngine(graph=graph)
+    assert {f.name for f in engine.functions_in_file(str(src))} == {"helper", "run"}
+    assert engine.callees_of("run", str(src)) == ["helper"]
