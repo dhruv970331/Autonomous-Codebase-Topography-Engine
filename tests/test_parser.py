@@ -137,6 +137,22 @@ def test_call_site_two_calls_on_one_line(parser, tmp_path):
     assert cols["foo"] == (2, 4)
     assert cols["bar"] == (2, 11)
 
+def test_call_site_multiline_receiver_has_no_whitespace(parser, tmp_path):
+    p = tmp_path / "test.py"
+    p.write_bytes(b"def f():\n    return (x\n        .m())\n")
+    result = parser.parse_file(p)
+
+    cs = next(cs for cs in result.call_sites if cs.target_name == "m")
+    assert cs.receiver == "x"
+
+def test_call_site_multiline_chained_receiver_is_compacted(parser, tmp_path):
+    p = tmp_path / "test.py"
+    p.write_bytes(b"def f():\n    return (a\n    .b\n    .m())\n")
+    result = parser.parse_file(p)
+
+    cs = next(cs for cs in result.call_sites if cs.target_name == "m")
+    assert cs.receiver == "a.b"
+
 def test_import_binding_plain(parser, tmp_path):
     code = b"import calc\n"
     p = tmp_path / "test.py"

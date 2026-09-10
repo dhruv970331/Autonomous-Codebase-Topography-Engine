@@ -104,6 +104,11 @@ _IMPORT_TYPES: dict[str, list[str]] = {
     "java": ["import_declaration"],
 }
 
+# Kept whole by _compact_text: whitespace inside a literal is part of its value.
+_ATOMIC_TYPES = {"string", "template_string"}
+# Dropped by _compact_text: they carry no code.
+_SKIP_TYPES = {"comment", "line_continuation"}
+
 # ---------------------------------------------------------------------------
 # Tree-sitter Version-Proof Helpers
 #
@@ -273,6 +278,36 @@ def _safe_text(node, source: bytes) -> str:
             return source[start:end].decode("utf-8", errors="replace")
     return ""
 
+def _compact_text(node, source: bytes) -> str:
+    """Return the code of *node* with the whitespace between tokens removed.
+
+    Rebuilt from leaf tokens, so string literals stay intact and comments and
+    line continuations disappear. A single space is kept between two word tokens
+    (``not x``) so they never merge into one name.
+    """
+    out: list[str] = []
+    stack = [node]  # iterative: long builder chains nest deeper than the recursion limit
+    while stack:
+        n = stack.pop()
+        t = _get_type(n)
+        if t in _SKIP_TYPES:
+            continue
+        children = _get_children(n)
+        if children and t not in _ATOMIC_TYPES:
+            stack.extend(reversed(children))
+            continue
+        token = _safe_text(n, source)
+        if not token:
+            continue
+        if out and _is_word_char(out[-1][-1]) and _is_word_char(token[0]):
+            out.append(" ")
+        out.append(token)
+    return "".join(out)
+
+
+def _is_word_char(c: str) -> bool:
+    return c.isalnum() or c == "_"
+
 # ---------------------------------------------------------------------------
 # Parser Engine
 # ---------------------------------------------------------------------------
@@ -425,7 +460,7 @@ class CodeParser:
         if t in ("identifier", "simple_identifier"):
             return None
         if t in ("attribute", "member_expression"):
-            full_text = _safe_text(first, source)
+            full_text = _compact_text(first, source)
             if "." not in full_text:
                 return None
             method_name = self._get_call_name(node, source)
