@@ -45,6 +45,7 @@ class CallSite:
     receiver: str | None
     file_path: str
     line: int
+    col: int
 
 @dataclass
 class ImportBinding:
@@ -219,6 +220,30 @@ def _get_end_line(node) -> int:
     return 1
 
 
+def _get_start_col(node) -> int:
+    """Return the 0-based start column for *node*.
+
+    Standard tree_sitter: ``node.start_point`` → ``(row, col)`` tuple.
+    tslp: ``node.start_position()`` → ``Point`` object with ``.column``.
+    """
+    if not node:
+        return 0
+    for attr in ("start_point", "start_position"):
+        pt = getattr(node, attr, None)
+        if pt is None:
+            continue
+        if callable(pt):
+            pt = pt()
+        if pt is None:
+            continue
+        if isinstance(pt, tuple):
+            return pt[1]
+        col = getattr(pt, "column", None)
+        if col is not None:
+            return int(col)
+    return 0
+
+
 def _safe_text(node, source: bytes) -> str:
     """Extract text for *node*, compatible with both tree-sitter APIs.
 
@@ -345,12 +370,13 @@ class CodeParser:
                 continue
 
             if node_type in call_types:
-                call_name = self._get_call_name(child, source)
+                name_node = self._get_call_name_node(child)
+                call_name = _safe_text(name_node, source) if name_node else None
                 if call_name:
                     caller = self._qualify(enclosing_func, file_path, enclosing_class) if enclosing_func else file_path
                     edges.append(EdgeInfo("CALLS", caller, call_name, file_path, _get_start_line(child)))
                     receiver = self._get_call_receiver(child, source)
-                    call_sites.append(CallSite(caller, call_name, receiver, file_path, _get_start_line(child)))
+                    call_sites.append(CallSite(caller, call_name, receiver, file_path, _get_start_line(name_node), _get_start_col(name_node)))
                 self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, import_bindings, enclosing_class, enclosing_func, _depth + 1)
                 continue
 
@@ -373,17 +399,21 @@ class CodeParser:
         return None
 
     def _get_call_name(self, node, source: bytes) -> str | None:
+        name_node = self._get_call_name_node(node)
+        return _safe_text(name_node, source) if name_node else None
+
+    def _get_call_name_node(self, node):
         children = _get_children(node)
         if not children:
             return None
         first = children[0]
         t = _get_type(first)
         if t in ("identifier", "simple_identifier"):
-            return _safe_text(first, source)
+            return first
         if t in ("attribute", "member_expression"):
             for child in reversed(_get_children(first)):
                 if _get_type(child) in ("identifier", "property_identifier"):
-                    return _safe_text(child, source)
+                    return child
         return None
 
     def _get_call_receiver(self, node, source: bytes) -> str | None:

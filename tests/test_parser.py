@@ -104,6 +104,39 @@ def test_call_site_caller_id_matches_qualified_method_id(parser, tmp_path):
     call_site = next(cs for cs in result.call_sites if cs.target_name == "helper")
     assert call_site.caller_id == qualified_login_id, "CallSite.caller_id must equal the qualified id the parser gives the enclosing method."
 
+def test_call_site_col_bare_call(parser, tmp_path):
+    p = tmp_path / "test.py"
+    p.write_bytes(b"def router():\n    foo()\n")
+    result = parser.parse_file(p)
+
+    cs = next(cs for cs in result.call_sites if cs.target_name == "foo")
+    assert (cs.line, cs.col) == (2, 4)
+
+def test_call_site_col_is_the_method_name(parser, tmp_path):
+    p = tmp_path / "test.py"
+    p.write_bytes(b"def f():\n    a.b.m()\n")
+    result = parser.parse_file(p)
+
+    cs = next(cs for cs in result.call_sites if cs.target_name == "m")
+    assert (cs.line, cs.col) == (2, 8), "col must point at 'm', not at the start of 'a.b.m()'."
+
+def test_call_site_multiline_chain_uses_name_position(parser, tmp_path):
+    p = tmp_path / "test.py"
+    p.write_bytes(b"def f():\n    return (x\n        .m())\n")
+    result = parser.parse_file(p)
+
+    cs = next(cs for cs in result.call_sites if cs.target_name == "m")
+    assert (cs.line, cs.col) == (3, 9), "line and col must come from 'm', not from where the call starts."
+
+def test_call_site_two_calls_on_one_line(parser, tmp_path):
+    p = tmp_path / "test.py"
+    p.write_bytes(b"def f():\n    foo(); bar()\n")
+    result = parser.parse_file(p)
+
+    cols = {cs.target_name: (cs.line, cs.col) for cs in result.call_sites}
+    assert cols["foo"] == (2, 4)
+    assert cols["bar"] == (2, 11)
+
 def test_import_binding_plain(parser, tmp_path):
     code = b"import calc\n"
     p = tmp_path / "test.py"
