@@ -1,6 +1,6 @@
 import pytest
-from rdflib import URIRef
-from rdflib.namespace import RDF
+from rdflib import Literal, URIRef
+from rdflib.namespace import RDF, XSD
 
 from acte.parser import CodeParser, EdgeInfo, NodeInfo
 from acte.rdf_builder import CODE, KnowledgeGraphBuilder
@@ -119,3 +119,13 @@ def test_hash_in_path_is_encoded(tmp_path):
     engine = SPARQLEngine(graph=graph)
     assert {f.name for f in engine.functions_in_file(str(src))} == {"helper", "run"}
     assert engine.callees_of("run", str(src)) == ["helper"]
+
+def test_nested_and_top_level_helper_are_distinct_nodes(tmp_path):
+    src = tmp_path / "a.py"
+    src.write_text("def outer():\n    def helper():\n        pass\n\ndef helper():\n    pass\n")
+    result = CodeParser().parse_file(src)
+    graph = KnowledgeGraphBuilder().build(result.nodes, result.edges)
+
+    helpers = set(graph.subjects(CODE.name, Literal("helper", datatype=XSD.string)))
+    assert len(helpers) == 2
+    assert sorted(len(list(graph.objects(h, CODE.lineStart))) for h in helpers) == [1, 1]

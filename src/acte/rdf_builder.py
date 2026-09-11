@@ -72,13 +72,13 @@ class KnowledgeGraphBuilder:
     def _node_id(self, node: NodeInfo) -> str:
         """Return the canonical string identifier for a node.
 
-        This mirrors the parser's _qualify() logic so that node URIs align with
+        This mirrors the parser's qualname logic so that node URIs align with
         the source / target strings already embedded in EdgeInfo objects:
 
-          File     →  "<file_path>"                   (name IS the file path)
-          Class    →  "<file_path>::<name>"
-          Function →  "<file_path>::<parent>.<name>"  (if inside a class)
-                   →  "<file_path>::<name>"            (module-level)
+          File            →  "<file_path>"                   (name IS the file path)
+          Class/Function  →  "<file_path>::<parent>.<name>"  (if nested; parent is
+                                                              e.g. "C" or "outer.<locals>")
+                          →  "<file_path>::<name>"            (module-level)
         """
         if node.kind == "File":
             return node.name  # NodeInfo.name == file_path_str for File nodes

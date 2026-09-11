@@ -373,7 +373,14 @@ class CodeParser:
 
         return ParseResult(nodes=nodes, edges=edges, call_sites=call_sites, import_bindings=import_bindings)
 
-    def _extract_from_tree(self, root, source, language, file_path, nodes, edges, call_sites, import_bindings, enclosing_class=None, enclosing_func=None, _depth=0):
+    def _extract_from_tree(self, root, source, language, file_path, nodes, edges, call_sites, import_bindings, scope=None, in_func=False, func=None, _depth=0):
+        """Walk *root*, giving definitions ids shaped like Python's ``__qualname__``.
+
+        *scope* is the qualname of the innermost enclosing class or function (None at
+        module level). *in_func* means that scope is a function, so names defined
+        inside it get ``<locals>``: ``outer.<locals>.helper``, but ``A.B`` for a class in a class.
+        *func* is the qualname of the innermost enclosing function, the caller of any call.
+        """
         if _depth > 180 or not root:
             return
 
@@ -385,46 +392,35 @@ class CodeParser:
         for child in _get_children(root):
             node_type = _get_type(child)
 
-            if node_type in class_types:
+            if node_type in class_types or node_type in func_types:
                 name = self._get_name(child, source)
                 if name:
-                    qualified = self._qualify(name, file_path, enclosing_class)
-                    nodes.append(NodeInfo("Class", name, file_path, _get_start_line(child), _get_end_line(child), language, enclosing_class))
-                    edges.append(EdgeInfo("CONTAINS", file_path if not enclosing_class else self._qualify(enclosing_class, file_path, None), qualified, file_path, _get_start_line(child)))
-                    self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, import_bindings, name, None, _depth + 1)
-                continue
-
-            if node_type in func_types:
-                name = self._get_name(child, source)
-                if name:
-                    qualified = self._qualify(name, file_path, enclosing_class)
-                    nodes.append(NodeInfo("Function", name, file_path, _get_start_line(child), _get_end_line(child), language, enclosing_class))
-                    container = self._qualify(enclosing_class, file_path, None) if enclosing_class else file_path
-                    edges.append(EdgeInfo("CONTAINS", container, qualified, file_path, _get_start_line(child)))
-                    self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, import_bindings, enclosing_class, name, _depth + 1)
+                    is_func = node_type in func_types
+                    parent = f"{scope}.<locals>" if in_func else scope
+                    qualname = f"{parent}.{name}" if parent else name
+                    container = f"{file_path}::{scope}" if scope else file_path
+                    nodes.append(NodeInfo("Function" if is_func else "Class", name, file_path, _get_start_line(child), _get_end_line(child), language, parent))
+                    edges.append(EdgeInfo("CONTAINS", container, f"{file_path}::{qualname}", file_path, _get_start_line(child)))
+                    self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, import_bindings, qualname, is_func, qualname if is_func else func, _depth + 1)
                 continue
 
             if node_type in call_types:
                 name_node = self._get_call_name_node(child)
                 call_name = _safe_text(name_node, source) if name_node else None
                 if call_name:
-                    caller = self._qualify(enclosing_func, file_path, enclosing_class) if enclosing_func else file_path
+                    # A call in a class body runs in the enclosing function, or the module.
+                    caller = f"{file_path}::{func}" if func else file_path
                     edges.append(EdgeInfo("CALLS", caller, call_name, file_path, _get_start_line(child)))
                     receiver = self._get_call_receiver(child, source)
                     call_sites.append(CallSite(caller, call_name, receiver, file_path, _get_start_line(name_node), _get_start_col(name_node)))
-                self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, import_bindings, enclosing_class, enclosing_func, _depth + 1)
+                self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, import_bindings, scope, in_func, func, _depth + 1)
                 continue
 
             if node_type in import_types:
                 self._extract_imports(child, language, source, file_path, edges, import_bindings)
                 continue
 
-            self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, import_bindings, enclosing_class, enclosing_func, _depth + 1)
-
-    def _qualify(self, name: str, file_path: str, enclosing_class: str | None) -> str:
-        if enclosing_class:
-            return f"{file_path}::{enclosing_class}.{name}"
-        return f"{file_path}::{name}"
+            self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, import_bindings, scope, in_func, func, _depth + 1)
 
     def _get_name(self, node, source: bytes) -> str | None:
         for child in _get_children(node):

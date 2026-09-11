@@ -2,6 +2,7 @@
 import pytest
 
 from acte.parser import CodeParser
+from acte.rdf_builder import KnowledgeGraphBuilder
 
 
 @pytest.fixture
@@ -240,3 +241,68 @@ def test_relative_import_edge_targets_the_module(parser, tmp_path):
     # The edge and the binding must agree on what the module is.
     for binding in result.import_bindings:
         assert binding.module in targets, f"Binding module {binding.module!r} has no matching edge."
+
+_NESTED_SHAPES = b"""\
+def f():
+    class Inner:
+        y = inner_setup()
+        def m(self):
+            pass
+
+class C:
+    x = setup()
+    def m(self):
+        def helper():
+            pass
+
+def outer():
+    def helper():
+        g()
+
+def helper():
+    pass
+
+class A:
+    class B:
+        pass
+"""
+
+def test_nested_definitions_get_qualname_ids(parser, tmp_path):
+    p = tmp_path / "a.py"
+    p.write_bytes(_NESTED_SHAPES)
+    result = parser.parse_file(p)
+
+    expected = {
+        "f", "f.<locals>.Inner", "f.<locals>.Inner.m",
+        "C", "C.m", "C.m.<locals>.helper",
+        "outer", "outer.<locals>.helper",
+        "helper",
+        "A", "A.B",
+    }
+    contained = {e.target for e in result.edges if e.kind == "CONTAINS"}
+    assert contained == {f"{p}::{q}" for q in expected}
+    # The builder derives node ids from NodeInfo; they must be the same strings.
+    builder = KnowledgeGraphBuilder()
+    assert {builder._node_id(n) for n in result.nodes if n.kind != "File"} == contained
+    # A nested definition is contained by its immediate enclosing definition.
+    contains = {(e.source, e.target) for e in result.edges if e.kind == "CONTAINS"}
+    assert (f"{p}::outer", f"{p}::outer.<locals>.helper") in contains
+    assert (f"{p}::f.<locals>.Inner", f"{p}::f.<locals>.Inner.m") in contains
+
+def test_call_in_nested_function_has_nested_caller_id(parser, tmp_path):
+    p = tmp_path / "a.py"
+    p.write_bytes(_NESTED_SHAPES)
+    result = parser.parse_file(p)
+
+    cs = next(cs for cs in result.call_sites if cs.target_name == "g")
+    assert cs.caller_id == f"{p}::outer.<locals>.helper"
+    assert any(e.kind == "CALLS" and e.source == cs.caller_id and e.target == "g" for e in result.edges)
+
+def test_call_in_class_body_is_attributed_to_enclosing_function_or_file(parser, tmp_path):
+    p = tmp_path / "a.py"
+    p.write_bytes(_NESTED_SHAPES)
+    result = parser.parse_file(p)
+
+    callers = {cs.target_name: cs.caller_id for cs in result.call_sites}
+    assert callers["inner_setup"] == f"{p}::f"
+    assert callers["setup"] == str(p)
