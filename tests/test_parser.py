@@ -333,3 +333,121 @@ def test_import_binding_in_class_body_is_scoped_to_the_class(parser, tmp_path):
 
     scopes = {b.local_name: b.scope_id for b in result.import_bindings}
     assert scopes == {"os": f"{p}::C", "add": f"{p}::f.<locals>.Inner"}
+
+def _bindings(parser, tmp_path, code, kind, name="a.py"):
+    p = tmp_path / name
+    p.write_text(code)
+    result = parser.parse_file(p)
+    return [(b.scope_id.replace(str(p), "a.py"), b.name, b.type_name, b.line) for b in result.local_bindings if b.kind == kind]
+
+def test_local_binding_param(parser, tmp_path):
+    code = (
+        "class C:\n"
+        "    def m(self, a, b: Database, c=1, d: db.Pool = None, *args: int, e, f: Optional[X] = None, **kw):\n"
+        "        pass\n"
+    )
+    assert _bindings(parser, tmp_path, code, "param") == [
+        ("a.py::C.m", "self", None, 2),
+        ("a.py::C.m", "a", None, 2),
+        ("a.py::C.m", "b", "Database", 2),
+        ("a.py::C.m", "c", None, 2),
+        ("a.py::C.m", "d", "db.Pool", 2),
+        ("a.py::C.m", "args", None, 2),
+        ("a.py::C.m", "e", None, 2),
+        ("a.py::C.m", "f", None, 2),
+        ("a.py::C.m", "kw", None, 2),
+    ]
+
+def test_local_binding_assign(parser, tmp_path):
+    code = (
+        "x = Database()\n"
+        "y = db.Database()\n"
+        "z = get_db()\n"
+        "a, b = A(), B()\n"
+        "c, d = pair()\n"
+        "e = f = C()\n"
+        "g += 1\n"
+        "h, *rest = A(), B()\n"
+        "obj.attr = C()\n"
+        "items[0] = C()\n"
+        "u = make().build()\n"
+    )
+    assert _bindings(parser, tmp_path, code, "assign") == [
+        ("a.py", "x", "Database", 1),
+        ("a.py", "y", "db.Database", 2),
+        ("a.py", "z", "get_db", 3),
+        ("a.py", "a", "A", 4),
+        ("a.py", "b", "B", 4),
+        ("a.py", "c", None, 5),
+        ("a.py", "d", None, 5),
+        ("a.py", "e", "C", 6),
+        ("a.py", "f", "C", 6),
+        ("a.py", "g", None, 7),
+        ("a.py", "h", None, 8),
+        ("a.py", "rest", None, 8),
+        ("a.py", "u", None, 11),
+    ]
+
+def test_local_binding_scopes(parser, tmp_path):
+    code = "x = A()\nclass C:\n    y = B()\n    def m(self):\n        z = D()\n"
+    assert _bindings(parser, tmp_path, code, "assign") == [
+        ("a.py", "x", "A", 1),
+        ("a.py::C", "y", "B", 3),
+        ("a.py::C.m", "z", "D", 5),
+    ]
+
+def test_local_binding_annotation(parser, tmp_path):
+    code = (
+        "def load():\n"
+        "    a: Database = connect()\n"
+        "    b: Optional[Database] = None\n"
+        "    c: Database | None = None\n"
+        "    d: m.Pool\n"
+    )
+    assert _bindings(parser, tmp_path, code, "annotation") == [
+        ("a.py::load", "a", "Database", 2),
+        ("a.py::load", "b", None, 3),
+        ("a.py::load", "c", None, 4),
+        ("a.py::load", "d", "m.Pool", 5),
+    ]
+
+def test_local_binding_with(parser, tmp_path):
+    code = "def run():\n    with Database() as db, open(p) as (x, y):\n        pass\n"
+    assert _bindings(parser, tmp_path, code, "with") == [
+        ("a.py::run", "db", "Database", 2),
+        ("a.py::run", "x", None, 2),
+        ("a.py::run", "y", None, 2),
+    ]
+
+def test_local_binding_for(parser, tmp_path):
+    code = "for i in range(3):\n    pass\nfor k, (v, w) in items:\n    pass\n"
+    assert _bindings(parser, tmp_path, code, "for") == [
+        ("a.py", "i", None, 1),
+        ("a.py", "k", None, 3),
+        ("a.py", "v", None, 3),
+        ("a.py", "w", None, 3),
+    ]
+
+def test_local_binding_self_attr_belongs_to_the_class(parser, tmp_path):
+    code = (
+        "class C:\n"
+        "    def __init__(self):\n"
+        "        self.repo = Repo()\n"
+        "        self.pool: db.Pool = make()\n"
+        "        self.count += 1\n"
+        "        other.x = Repo()\n"
+        "        def helper():\n"
+        "            self.y = Y()\n"
+        "def f(self):\n"
+        "    self.z = Z()\n"
+    )
+    assert _bindings(parser, tmp_path, code, "attr") == [
+        ("a.py::C", "self.repo", "Repo", 3),
+        ("a.py::C", "self.pool", "db.Pool", 4),
+        ("a.py::C", "self.count", None, 5),
+    ]
+
+def test_local_bindings_python_only(parser, tmp_path):
+    p = tmp_path / "a.js"
+    p.write_text("function f(a) { let x = new A(); for (const i of xs) {} }\n")
+    assert parser.parse_file(p).local_bindings == []

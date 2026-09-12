@@ -58,11 +58,21 @@ class ImportBinding:
     scope_id: str
 
 @dataclass
+class LocalBinding:
+    scope_id: str
+    name: str
+    kind: str
+    type_name: str | None
+    file_path: str
+    line: int
+
+@dataclass
 class ParseResult:
     nodes: list[NodeInfo] = field(default_factory=list)
     edges: list[EdgeInfo] = field(default_factory=list)
     call_sites: list[CallSite] = field(default_factory=list)
     import_bindings: list[ImportBinding] = field(default_factory=list)
+    local_bindings: list[LocalBinding] = field(default_factory=list)
 
 # ---------------------------------------------------------------------------
 # Language Syntax Mappings
@@ -104,6 +114,13 @@ _IMPORT_TYPES: dict[str, list[str]] = {
     "typescript": ["import_statement"],
     "java": ["import_declaration"],
 }
+
+# Python nodes that bind local names (_extract_bindings).
+_BINDING_TYPES = {"parameters", "assignment", "augmented_assignment", "with_item", "for_statement"}
+# Targets that unpack into several names, and values that can pair with them element-wise.
+_TARGET_SEQUENCES = {"pattern_list", "tuple_pattern", "list_pattern", "tuple", "list"}
+_VALUE_SEQUENCES = {"expression_list", "tuple", "list"}
+_PUNCTUATION = {"(", ")", "[", "]", ","}
 
 # Kept whole by _compact_text: whitespace inside a literal is part of its value.
 _ATOMIC_TYPES = {"string", "template_string"}
@@ -354,6 +371,7 @@ class CodeParser:
         edges: list[EdgeInfo] = []
         call_sites: list[CallSite] = []
         import_bindings: list[ImportBinding] = []
+        local_bindings: list[LocalBinding] = []
         file_path_str = str(path)
 
         nodes.append(NodeInfo(
@@ -370,17 +388,18 @@ class CodeParser:
             root = root()
 
         if root:
-            self._extract_from_tree(root, source, language, file_path_str, nodes, edges, call_sites, import_bindings)
+            self._extract_from_tree(root, source, language, file_path_str, nodes, edges, call_sites, import_bindings, local_bindings)
 
-        return ParseResult(nodes=nodes, edges=edges, call_sites=call_sites, import_bindings=import_bindings)
+        return ParseResult(nodes=nodes, edges=edges, call_sites=call_sites, import_bindings=import_bindings, local_bindings=local_bindings)
 
-    def _extract_from_tree(self, root, source, language, file_path, nodes, edges, call_sites, import_bindings, scope=None, in_func=False, func=None, _depth=0):
+    def _extract_from_tree(self, root, source, language, file_path, nodes, edges, call_sites, import_bindings, local_bindings, scope=None, in_func=False, func=None, method_of=None, _depth=0):
         """Walk *root*, giving definitions ids shaped like Python's ``__qualname__``.
 
         *scope* is the qualname of the innermost enclosing class or function (None at
         module level). *in_func* means that scope is a function, so names defined
         inside it get ``<locals>``: ``outer.<locals>.helper``, but ``A.B`` for a class in a class.
         *func* is the qualname of the innermost enclosing function, the caller of any call.
+        *method_of* is the class qualname when that scope is a method, the owner of ``self.X``.
         """
         if _depth > 180 or not root:
             return
@@ -402,7 +421,7 @@ class CodeParser:
                     container = f"{file_path}::{scope}" if scope else file_path
                     nodes.append(NodeInfo("Function" if is_func else "Class", name, file_path, _get_start_line(child), _get_end_line(child), language, parent))
                     edges.append(EdgeInfo("CONTAINS", container, f"{file_path}::{qualname}", file_path, _get_start_line(child)))
-                    self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, import_bindings, qualname, is_func, qualname if is_func else func, _depth + 1)
+                    self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, import_bindings, local_bindings, qualname, is_func, qualname if is_func else func, scope if is_func and scope and not in_func else None, _depth + 1)
                 continue
 
             if node_type in call_types:
@@ -414,7 +433,7 @@ class CodeParser:
                     edges.append(EdgeInfo("CALLS", caller, call_name, file_path, _get_start_line(child)))
                     receiver = self._get_call_receiver(child, source)
                     call_sites.append(CallSite(caller, call_name, receiver, file_path, _get_start_line(name_node), _get_start_col(name_node)))
-                self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, import_bindings, scope, in_func, func, _depth + 1)
+                self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, import_bindings, local_bindings, scope, in_func, func, method_of, _depth + 1)
                 continue
 
             if node_type in import_types:
@@ -423,7 +442,13 @@ class CodeParser:
                 self._extract_imports(child, language, source, file_path, edges, import_bindings, scope_id)
                 continue
 
-            self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, import_bindings, scope, in_func, func, _depth + 1)
+            if language == "python" and node_type in _BINDING_TYPES:
+                scope_id = f"{file_path}::{scope}" if scope else file_path
+                method_id = f"{file_path}::{method_of}" if method_of else None
+                self._extract_bindings(child, source, file_path, scope_id, method_id, local_bindings)
+                # no continue: values and default arguments still hold calls
+
+            self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, import_bindings, local_bindings, scope, in_func, func, method_of, _depth + 1)
 
     def _get_name(self, node, source: bytes) -> str | None:
         for child in _get_children(node):
@@ -468,6 +493,99 @@ class CodeParser:
                 if full_text.endswith(suffix):
                     return full_text[: -len(suffix)]
         return None
+
+    def _extract_bindings(self, node, source: bytes, file_path: str, scope_id: str, method_id: str | None, local_bindings: list[LocalBinding]) -> None:
+        """LocalBinding records for one binding node (Python). *method_id* owns ``self.X`` targets."""
+        t = _get_type(node)
+        children = _get_children(node)
+
+        def bind(target, value, kind, type_name=None):
+            tt = _get_type(target)
+            if tt == "identifier":
+                type_name = type_name or self._callee_type(value, source)
+                local_bindings.append(LocalBinding(scope_id, _safe_text(target, source), kind, type_name, file_path, _get_start_line(target)))
+            elif tt == "attribute" and method_id:
+                parts = _get_children(target)
+                if len(parts) == 3 and _get_type(parts[0]) == "identifier" and _safe_text(parts[0], source) == "self":
+                    type_name = type_name or self._callee_type(value, source)
+                    local_bindings.append(LocalBinding(method_id, "self." + _safe_text(parts[2], source), "attr", type_name, file_path, _get_start_line(target)))
+            elif tt == "list_splat_pattern":  # *rest is a list: never the paired value's type
+                for c in _get_children(target):
+                    bind(c, None, kind)
+            elif tt in _TARGET_SEQUENCES:
+                targets = [c for c in _get_children(target) if _get_type(c) not in _PUNCTUATION]
+                values = [c for c in _get_children(value) if _get_type(c) not in _PUNCTUATION] if _get_type(value) in _VALUE_SEQUENCES else []
+                # R24c: pair element-wise only when both sides are plain sequences of equal length
+                paired = len(values) == len(targets) and not any("splat" in _get_type(c) for c in targets + values)
+                for i, c in enumerate(targets):
+                    bind(c, values[i] if paired else None, kind)
+
+        if t == "parameters":
+            for p in children:
+                pt = _get_type(p)
+                if pt in _PUNCTUATION or pt in ("keyword_separator", "positional_separator"):
+                    continue
+                name_node = p if pt == "identifier" else None
+                type_node = None
+                splat = pt in ("list_splat_pattern", "dictionary_splat_pattern")
+                for c in [p] if splat else _get_children(p):
+                    ct = _get_type(c)
+                    if name_node is None and ct == "identifier":
+                        name_node = c
+                    elif name_node is None and ct in ("list_splat_pattern", "dictionary_splat_pattern"):
+                        splat = True
+                        name_node = next((g for g in _get_children(c) if _get_type(g) == "identifier"), None)
+                    elif ct == "type":
+                        type_node = c
+                if name_node is not None:
+                    # *args: X annotates the elements; args itself is a tuple (a dict for **kw)
+                    bind(name_node, None, "param", None if splat else self._annotation_type(type_node, source))
+        elif t == "assignment" and children:
+            types = [_get_type(c) for c in children]
+            if ":" in types:
+                type_node = children[types.index(":") + 1]
+                bind(children[0], None, "annotation", self._annotation_type(type_node, source))
+            elif "=" in types:
+                value = children[types.index("=") + 1]
+                while _get_type(value) == "assignment":  # a = b = C(): every target gets C
+                    value = _get_children(value)[-1]
+                bind(children[0], value, "assign")
+        elif t == "augmented_assignment" and children:
+            bind(children[0], None, "assign")
+        elif t == "with_item":
+            for c in children:
+                if _get_type(c) == "as_pattern":
+                    parts = _get_children(c)
+                    target = next((g for g in parts if _get_type(g) == "as_pattern_target"), None)
+                    for g in _get_children(target):
+                        bind(g, parts[0], "with")
+        elif t == "for_statement":
+            types = [_get_type(c) for c in children]
+            if "for" in types:
+                bind(children[types.index("for") + 1], None, "for")
+
+    def _callee_type(self, value, source: bytes) -> str | None:
+        """The callee of *value* as written, when *value* is a call on a plain or dotted name."""
+        if _get_type(value) != "call":
+            return None
+        callee = _get_children(value)[0]
+        return _compact_text(callee, source) if self._is_dotted(callee) else None
+
+    def _annotation_type(self, type_node, source: bytes) -> str | None:
+        """The annotation as written, when it is a plain or dotted name (not Optional[X], X | None, ...)."""
+        parts = _get_children(type_node)
+        if len(parts) == 1 and self._is_dotted(parts[0]):
+            return _compact_text(parts[0], source)
+        return None
+
+    def _is_dotted(self, node) -> bool:
+        t = _get_type(node)
+        if t == "identifier":
+            return True
+        if t == "attribute":
+            parts = _get_children(node)
+            return len(parts) == 3 and self._is_dotted(parts[0]) and _get_type(parts[2]) == "identifier"
+        return False
 
     def _extract_imports(self, node, language: str, source: bytes, file_path: str, edges: list[EdgeInfo], import_bindings: list[ImportBinding], scope_id: str) -> None:
         if language == "python":
