@@ -306,3 +306,30 @@ def test_call_in_class_body_is_attributed_to_enclosing_function_or_file(parser, 
     callers = {cs.target_name: cs.caller_id for cs in result.call_sites}
     assert callers["inner_setup"] == f"{p}::f"
     assert callers["setup"] == str(p)
+
+def test_import_binding_scope_ids(parser, tmp_path):
+    p = tmp_path / "a.py"
+    p.write_bytes(
+        b"import os\n"
+        b"def load():\n    import json\n"
+        b"def outer():\n    def helper():\n        from calc import add\n"
+    )
+    result = parser.parse_file(p)
+
+    scopes = {b.local_name: b.scope_id for b in result.import_bindings}
+    assert scopes == {
+        "os": str(p),
+        "json": f"{p}::load",
+        "add": f"{p}::outer.<locals>.helper",
+    }
+
+def test_import_binding_in_class_body_is_scoped_to_the_class(parser, tmp_path):
+    p = tmp_path / "a.py"
+    p.write_bytes(
+        b"class C:\n    import os\n"
+        b"def f():\n    class Inner:\n        from calc import add\n"
+    )
+    result = parser.parse_file(p)
+
+    scopes = {b.local_name: b.scope_id for b in result.import_bindings}
+    assert scopes == {"os": f"{p}::C", "add": f"{p}::f.<locals>.Inner"}
