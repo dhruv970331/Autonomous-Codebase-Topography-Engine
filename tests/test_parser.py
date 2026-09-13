@@ -451,3 +451,92 @@ def test_local_bindings_python_only(parser, tmp_path):
     p = tmp_path / "a.js"
     p.write_text("function f(a) { let x = new A(); for (const i of xs) {} }\n")
     assert parser.parse_file(p).local_bindings == []
+
+def test_local_binding_except(parser, tmp_path):
+    code = (
+        "try:\n    pass\n"
+        "except E as e:\n    pass\n"
+        "except m.E as d:\n    pass\n"
+        "except (A, B) as t:\n    pass\n"
+        "except ValueError:\n    pass\n"
+    )
+    assert _bindings(parser, tmp_path, code, "except") == [
+        ("a.py", "e", "E", 3),
+        ("a.py", "d", "m.E", 5),
+        ("a.py", "t", None, 7),
+    ]
+
+def test_local_binding_except_group_is_not_typed(parser, tmp_path):
+    code = "try:\n    pass\nexcept* E as eg:\n    pass\n"
+    assert _bindings(parser, tmp_path, code, "except") == [("a.py", "eg", None, 3)]
+
+def test_local_binding_walrus(parser, tmp_path):
+    code = "def f():\n    if (db := Database()):\n        pass\n    if (n := len(xs)) > 1:\n        pass\n    if (y := x):\n        pass\n"
+    assert _bindings(parser, tmp_path, code, "walrus") == [
+        ("a.py::f", "db", "Database", 2),
+        ("a.py::f", "n", "len", 4),
+        ("a.py::f", "y", None, 6),
+    ]
+
+def test_local_binding_match(parser, tmp_path):
+    code = (
+        "match v:\n"
+        "    case Point(x=a, y=0):\n        pass\n"
+        "    case [b, *rest]:\n        pass\n"
+        '    case {"k": kv, **others}:\n        pass\n'
+        "    case m.C() as c:\n        pass\n"
+        "    case [1, 2] as s:\n        pass\n"
+        "    case Color.RED:\n        pass\n"
+        "    case [_, *_]:\n        pass\n"
+        "    case _:\n        pass\n"
+        "    case bare:\n        pass\n"
+    )
+    assert _bindings(parser, tmp_path, code, "match") == [
+        ("a.py", "a", None, 2),
+        ("a.py", "b", None, 4),
+        ("a.py", "rest", None, 4),
+        ("a.py", "kv", None, 6),
+        ("a.py", "others", None, 6),
+        ("a.py", "c", "m.C", 8),
+        ("a.py", "s", None, 10),
+        ("a.py", "bare", None, 18),
+    ]
+
+def test_local_binding_comprehension(parser, tmp_path):
+    code = "def f():\n    [x for x in xs]\n    {k: v for k, v in d}\n    (g for g in gs)\n    {s for s in ss}\n"
+    assert _bindings(parser, tmp_path, code, "comprehension") == [
+        ("a.py::f", "x", None, 2),
+        ("a.py::f", "k", None, 3),
+        ("a.py::f", "v", None, 3),
+        ("a.py::f", "g", None, 4),
+        ("a.py::f", "s", None, 5),
+    ]
+
+def test_local_binding_lambda(parser, tmp_path):
+    code = "def f():\n    return lambda a, b=1, *c, d, **e: a\n"
+    assert _bindings(parser, tmp_path, code, "lambda") == [
+        ("a.py::f", "a", None, 2),
+        ("a.py::f", "b", None, 2),
+        ("a.py::f", "c", None, 2),
+        ("a.py::f", "d", None, 2),
+        ("a.py::f", "e", None, 2),
+    ]
+
+def test_local_binding_global_and_nonlocal(parser, tmp_path):
+    code = "def outer():\n    global g1, g2\n    def inner():\n        nonlocal n\n"
+    assert _bindings(parser, tmp_path, code, "global") == [
+        ("a.py::outer", "g1", None, 2),
+        ("a.py::outer", "g2", None, 2),
+    ]
+    assert _bindings(parser, tmp_path, code, "nonlocal") == [("a.py::outer.<locals>.inner", "n", None, 4)]
+
+def test_local_binding_string_annotations(parser, tmp_path):
+    code = 'def f(p: "m.Database", q: "Optional[X]"):\n    a: "Database" = connect()\n    b: "None"\n'
+    assert _bindings(parser, tmp_path, code, "param") == [
+        ("a.py::f", "p", "m.Database", 1),
+        ("a.py::f", "q", None, 1),
+    ]
+    assert _bindings(parser, tmp_path, code, "annotation") == [
+        ("a.py::f", "a", "Database", 2),
+        ("a.py::f", "b", None, 3),
+    ]

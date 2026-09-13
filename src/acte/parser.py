@@ -3,6 +3,7 @@ Multi-language codebase parser using Tree-sitter.
 Extracts structural nodes (classes, functions) and edges (calls,contains, inheritance).
 """
 
+import keyword
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -116,7 +117,11 @@ _IMPORT_TYPES: dict[str, list[str]] = {
 }
 
 # Python nodes that bind local names (_extract_bindings).
-_BINDING_TYPES = {"parameters", "assignment", "augmented_assignment", "with_item", "for_statement"}
+_BINDING_TYPES = {
+    "parameters", "assignment", "augmented_assignment", "with_item", "for_statement",
+    "except_clause", "named_expression", "case_clause", "for_in_clause", "lambda_parameters",
+    "global_statement", "nonlocal_statement",
+}
 # Targets that unpack into several names, and values that can pair with them element-wise.
 _TARGET_SEQUENCES = {"pattern_list", "tuple_pattern", "list_pattern", "tuple", "list"}
 _VALUE_SEQUENCES = {"expression_list", "tuple", "list"}
@@ -520,7 +525,10 @@ class CodeParser:
                 for i, c in enumerate(targets):
                     bind(c, values[i] if paired else None, kind)
 
-        if t == "parameters":
+        if t in ("parameters", "lambda_parameters"):
+            # A lambda is not a scope in our ids, so its parameters land in the enclosing scope:
+            # over-shadowing there can only lose links, never make wrong ones.
+            kind = "param" if t == "parameters" else "lambda"
             for p in children:
                 pt = _get_type(p)
                 if pt in _PUNCTUATION or pt in ("keyword_separator", "positional_separator"):
@@ -539,7 +547,7 @@ class CodeParser:
                         type_node = c
                 if name_node is not None:
                     # *args: X annotates the elements; args itself is a tuple (a dict for **kw)
-                    bind(name_node, None, "param", None if splat else self._annotation_type(type_node, source))
+                    bind(name_node, None, kind, None if splat else self._annotation_type(type_node, source))
         elif t == "assignment" and children:
             types = [_get_type(c) for c in children]
             if ":" in types:
@@ -563,6 +571,52 @@ class CodeParser:
             types = [_get_type(c) for c in children]
             if "for" in types:
                 bind(children[types.index("for") + 1], None, "for")
+        elif t == "for_in_clause":
+            # Comprehensions are not scopes in our ids, so targets land in the enclosing scope:
+            # over-shadowing there can only lose links, never make wrong ones.
+            types = [_get_type(c) for c in children]
+            if "for" in types:
+                bind(children[types.index("for") + 1], None, "comprehension")
+        elif t == "named_expression" and children:
+            bind(children[0], children[-1], "walrus")
+        elif t == "except_clause":
+            group = "*" in [_get_type(c) for c in children]  # except* binds an ExceptionGroup, not E
+            for c in children:
+                if _get_type(c) == "as_pattern":
+                    parts = _get_children(c)
+                    exc_type = None if group or not self._is_dotted(parts[0]) else _compact_text(parts[0], source)
+                    for g in _get_children(parts[-1]):
+                        bind(g, None, "except", exc_type)
+        elif t in ("global_statement", "nonlocal_statement"):
+            for c in children:
+                if _get_type(c) == "identifier":
+                    bind(c, None, t.split("_")[0])
+        elif t == "case_clause":
+            for c in children:
+                if _get_type(c) == "case_pattern":
+                    self._match_captures(c, source, lambda n, type_name: bind(n, None, "match", type_name))
+
+    def _match_captures(self, node, source: bytes, emit) -> None:
+        """Call *emit(identifier, type_name)* for every name a match pattern captures."""
+        t = _get_type(node)
+        children = _get_children(node)
+        if t == "dotted_name":
+            # a bare name captures; a dotted one (Color.RED) is a value pattern
+            if len(children) == 1 and _safe_text(children[0], source) != "_":
+                emit(children[0], None)
+        elif t == "splat_pattern":
+            for c in children:
+                if _get_type(c) == "identifier" and _safe_text(c, source) != "_":
+                    emit(c, None)
+        elif t == "as_pattern" and children:
+            self._match_captures(children[0], source, emit)
+            inner = _get_children(children[0])
+            cls = inner[0] if len(inner) == 1 and _get_type(inner[0]) == "class_pattern" else None
+            emit(children[-1], _compact_text(_get_children(cls)[0], source) if cls else None)
+        else:
+            # skip the class name of a class pattern and the keyword of a keyword pattern
+            for c in children[1:] if t in ("class_pattern", "keyword_pattern") else children:
+                self._match_captures(c, source, emit)
 
     def _callee_type(self, value, source: bytes) -> str | None:
         """The callee of *value* as written, when *value* is a call on a plain or dotted name."""
@@ -576,6 +630,12 @@ class CodeParser:
         parts = _get_children(type_node)
         if len(parts) == 1 and self._is_dotted(parts[0]):
             return _compact_text(parts[0], source)
+        if len(parts) == 1 and _get_type(parts[0]) == "string":  # x: "Database"
+            inner = _get_children(parts[0])
+            if len(inner) == 3 and _get_type(inner[1]) == "string_content":
+                text = _safe_text(inner[1], source)
+                if all(p.isidentifier() and not keyword.iskeyword(p) for p in text.split(".")):
+                    return text
         return None
 
     def _is_dotted(self, node) -> bool:
