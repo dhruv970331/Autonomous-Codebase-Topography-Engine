@@ -540,3 +540,39 @@ def test_local_binding_string_annotations(parser, tmp_path):
         ("a.py::f", "a", "Database", 2),
         ("a.py::f", "b", None, 3),
     ]
+
+def test_local_binding_def_and_class(parser, tmp_path):
+    code = (
+        "def outer():\n"
+        "    def helper():\n        pass\n"
+        "    class Inner:\n        pass\n"
+        "class C:\n"
+        "    def m(self):\n        pass\n"
+    )
+    p = tmp_path / "a.py"
+    p.write_text(code)
+    result = parser.parse_file(p)
+    records = [(b.scope_id.replace(str(p), "a.py"), b.name, b.kind, b.type_name, b.line) for b in result.local_bindings if b.kind in ("def", "class")]
+    assert records == [
+        ("a.py", "outer", "def", None, 1),
+        ("a.py::outer", "helper", "def", None, 2),
+        ("a.py::outer", "Inner", "class", None, 4),
+        ("a.py", "C", "class", None, 6),
+        ("a.py::C", "m", "def", None, 7),
+    ]
+
+def test_local_binding_del(parser, tmp_path):
+    code = (
+        "class C:\n"
+        "    def m(self):\n"
+        "        del x\n"
+        "        del a, (b, [c])\n"
+        "        del self.attr, items[0]\n"
+    )
+    assert _bindings(parser, tmp_path, code, "del") == [
+        ("a.py::C.m", "x", None, 3),
+        ("a.py::C.m", "a", None, 4),
+        ("a.py::C.m", "b", None, 4),
+        ("a.py::C.m", "c", None, 4),
+    ]
+    assert _bindings(parser, tmp_path, code, "attr") == []

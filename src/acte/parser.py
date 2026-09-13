@@ -120,7 +120,7 @@ _IMPORT_TYPES: dict[str, list[str]] = {
 _BINDING_TYPES = {
     "parameters", "assignment", "augmented_assignment", "with_item", "for_statement",
     "except_clause", "named_expression", "case_clause", "for_in_clause", "lambda_parameters",
-    "global_statement", "nonlocal_statement",
+    "global_statement", "nonlocal_statement", "delete_statement",
 }
 # Targets that unpack into several names, and values that can pair with them element-wise.
 _TARGET_SEQUENCES = {"pattern_list", "tuple_pattern", "list_pattern", "tuple", "list"}
@@ -418,7 +418,8 @@ class CodeParser:
             node_type = _get_type(child)
 
             if node_type in class_types or node_type in func_types:
-                name = self._get_name(child, source)
+                name_node = self._get_name_node(child)
+                name = _safe_text(name_node, source) if name_node else None
                 if name:
                     is_func = node_type in func_types
                     parent = f"{scope}.<locals>" if in_func else scope
@@ -426,6 +427,8 @@ class CodeParser:
                     container = f"{file_path}::{scope}" if scope else file_path
                     nodes.append(NodeInfo("Function" if is_func else "Class", name, file_path, _get_start_line(child), _get_end_line(child), language, parent))
                     edges.append(EdgeInfo("CONTAINS", container, f"{file_path}::{qualname}", file_path, _get_start_line(child)))
+                    if language == "python":  # R17: the name is bound in the enclosing scope
+                        local_bindings.append(LocalBinding(container, name, "def" if is_func else "class", None, file_path, _get_start_line(name_node)))
                     self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, import_bindings, local_bindings, qualname, is_func, qualname if is_func else func, scope if is_func and scope and not in_func else None, _depth + 1)
                 continue
 
@@ -455,11 +458,11 @@ class CodeParser:
 
             self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, import_bindings, local_bindings, scope, in_func, func, method_of, _depth + 1)
 
-    def _get_name(self, node, source: bytes) -> str | None:
+    def _get_name_node(self, node):
         for child in _get_children(node):
             t = _get_type(child)
             if t in ("identifier", "name", "type_identifier", "property_identifier", "field_identifier"):
-                return _safe_text(child, source)
+                return child
         return None
 
     def _get_call_name(self, node, source: bytes) -> str | None:
@@ -591,6 +594,15 @@ class CodeParser:
             for c in children:
                 if _get_type(c) == "identifier":
                     bind(c, None, t.split("_")[0])
+        elif t == "delete_statement":
+            def unbind(n):  # only plain names: `del obj.x` and `del a[i]` bind nothing
+                if _get_type(n) == "identifier":
+                    bind(n, None, "del")
+                elif _get_type(n) in ("expression_list", "tuple", "list", "parenthesized_expression"):
+                    for c in _get_children(n):
+                        unbind(c)
+            for c in children[1:]:
+                unbind(c)
         elif t == "case_clause":
             for c in children:
                 if _get_type(c) == "case_pattern":
