@@ -30,6 +30,21 @@ class NodeInfo:
     is_test: bool = False
     extra: dict = field(default_factory=dict)
 
+    @property
+    def qualified_id(self) -> str:
+        """The node's identifier, matching the source / target strings in EdgeInfo:
+
+          File            →  "<file_path>"                   (name IS the file path)
+          Class/Function  →  "<file_path>::<parent>.<name>"  (if nested; parent is
+                                                              e.g. "C" or "outer.<locals>")
+                          →  "<file_path>::<name>"            (module-level)
+        """
+        if self.kind == "File":
+            return self.name  # name == file_path for File nodes
+        if self.parent_name:
+            return f"{self.file_path}::{self.parent_name}.{self.name}"
+        return f"{self.file_path}::{self.name}"
+
 @dataclass
 class EdgeInfo:
     kind: str

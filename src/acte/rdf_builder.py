@@ -70,21 +70,8 @@ class KnowledgeGraphBuilder:
     # ------------------------------------------------------------------
 
     def _node_id(self, node: NodeInfo) -> str:
-        """Return the canonical string identifier for a node.
-
-        This mirrors the parser's qualname logic so that node URIs align with
-        the source / target strings already embedded in EdgeInfo objects:
-
-          File            →  "<file_path>"                   (name IS the file path)
-          Class/Function  →  "<file_path>::<parent>.<name>"  (if nested; parent is
-                                                              e.g. "C" or "outer.<locals>")
-                          →  "<file_path>::<name>"            (module-level)
-        """
-        if node.kind == "File":
-            return node.name  # NodeInfo.name == file_path_str for File nodes
-        if node.parent_name:
-            return f"{node.file_path}::{node.parent_name}.{node.name}"
-        return f"{node.file_path}::{node.name}"
+        """Return the canonical string identifier for a node (see NodeInfo.qualified_id)."""
+        return node.qualified_id
 
     def _make_uri(self, identifier: str) -> URIRef:
         """Encode an arbitrary code identifier into a valid RDF URI."""
