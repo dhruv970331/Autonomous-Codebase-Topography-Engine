@@ -23,7 +23,8 @@ packages = [
 [dependency-groups]
 dev = [
     "pytest (>=9.0.3,<10.0.0)",
-    "ruff (>=0.17.1,<0.18.0)"
+    "ruff (>=0.17.1,<0.18.0)",
+    "griffe (>=2.3.2,<3.0.0)"
 ]
 
 [tool.ruff]

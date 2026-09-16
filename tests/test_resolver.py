@@ -143,3 +143,91 @@ def test_imports_by_scope(project):
         f"{root}/pkg/__init__.py": {"Database": [("pkg.db", "Database", False, 1)]},
         f"{root}/pkg/db.py": {"os": [("os", "os", True, 1)]},
     }
+
+
+def _index(root: Path, files: dict[str, str]) -> SymbolIndex:
+    for rel, code in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(code)
+    parser = CodeParser()
+    return SymbolIndex([parser.parse_file(root / rel) for rel in sorted(files)], root)
+
+
+def test_exports_follow_re_exports(tmp_path):
+    index = _index(tmp_path, {
+        "pkg/__init__.py": "import os\nfrom os import path\nfrom .db import Database\nfrom .db import connect as open_db\nfrom .sub import Impl\nfrom . import sub\n",
+        "pkg/db.py": "class Database:\n    def connect(self):\n        pass\n\n\ndef connect():\n    pass\n",
+        "pkg/sub/__init__.py": "from .impl import Impl\n",
+        "pkg/sub/impl.py": "class Impl:\n    pass\n",
+        "app.py": "from pkg import Database, open_db\nfrom pkg.sub import Impl as I\n",
+    })
+    r = tmp_path
+    assert index.exports[f"{r}/pkg/__init__.py"] == {
+        "Database": f"{r}/pkg/db.py::Database",
+        "open_db": f"{r}/pkg/db.py::connect",
+        "Impl": f"{r}/pkg/sub/impl.py::Impl",  # two levels: pkg -> pkg.sub -> pkg.sub.impl
+    }  # `os`, `path` are external; `sub` is a module, not a definition
+    assert index.exports[f"{r}/pkg/sub/__init__.py"] == {"Impl": f"{r}/pkg/sub/impl.py::Impl"}
+    assert index.exports[f"{r}/pkg/db.py"] == index.by_file[f"{r}/pkg/db.py"]
+    assert index.exports[f"{r}/app.py"] == {
+        "Database": f"{r}/pkg/db.py::Database",
+        "open_db": f"{r}/pkg/db.py::connect",
+        "I": f"{r}/pkg/sub/impl.py::Impl",
+    }
+
+
+def test_exports_skip_ambiguous_modules_and_conflicts(tmp_path):
+    index = _index(tmp_path, {
+        "x/util.py": "def h():\n    pass\n",
+        "y/util.py": "def h():\n    pass\n",
+        "a.py": "from util import h\n",  # util matches two files: not exported
+        "b.py": "from x.util import h\n\n\ndef h():\n    pass\n",  # import and def disagree
+    })
+    assert index.module_files("util", f"{tmp_path}/a.py") == [f"{tmp_path}/x/util.py", f"{tmp_path}/y/util.py"]
+    assert index.exports[f"{tmp_path}/a.py"] == {}
+    assert index.exports[f"{tmp_path}/b.py"] == {}
+
+
+def test_exports_cycle_terminates(tmp_path):
+    index = _index(tmp_path, {
+        "a.py": "from b import g, x\n\n\ndef f():\n    pass\n",
+        "b.py": "from a import f, x\n\n\ndef g():\n    pass\n",
+    })
+    assert index.exports[f"{tmp_path}/a.py"] == {"f": f"{tmp_path}/a.py::f", "g": f"{tmp_path}/b.py::g"}
+    assert index.exports[f"{tmp_path}/b.py"] == {"g": f"{tmp_path}/b.py::g", "f": f"{tmp_path}/a.py::f"}
+
+
+def test_module_files_relative(tmp_path):
+    index = _index(tmp_path, {
+        "src/pkg/__init__.py": "",
+        "src/pkg/a.py": "",
+        "src/pkg/sub/__init__.py": "",
+        "src/pkg/sub/b.py": "",
+    })
+    b, sub = f"{tmp_path}/src/pkg/sub/b.py", f"{tmp_path}/src/pkg/sub/__init__.py"
+    assert index.module_files(".", b) == [sub]
+    assert index.module_files(".", sub) == [sub]  # an __init__'s package is itself
+    assert index.module_files("..a", b) == [f"{tmp_path}/src/pkg/a.py"]
+    assert index.module_files("...", b) == []  # `src` is a directory, not a module
+    assert index.module_files(".....x", b) == []  # above the root
+    assert index.module_files("pkg.sub", b) == [sub]  # src-layout suffix match
+
+
+def test_exports_follow_star_imports(tmp_path):
+    index = _index(tmp_path, {
+        "pkg/__init__.py": "from .api import *\n",
+        "pkg/api.py": "from .db import *\nfrom .db import _hidden\n\n\ndef run():\n    pass\n",
+        "pkg/db.py": "class Database:\n    pass\n\n\ndef _hidden():\n    pass\n",
+    })
+    r = tmp_path
+    assert {s: [(b.module, b.line) for b in v] for s, v in index.star_imports.items()} == {
+        f"{r}/pkg/__init__.py": [(".api", 1)],
+        f"{r}/pkg/api.py": [(".db", 1)],
+    }
+    assert index.exports[f"{r}/pkg/api.py"] == {
+        "Database": f"{r}/pkg/db.py::Database",
+        "_hidden": f"{r}/pkg/db.py::_hidden",  # named import: private names re-export too
+        "run": f"{r}/pkg/api.py::run",
+    }
+    # two levels of `*`; `*` skips names starting with "_"
+    assert index.exports[f"{r}/pkg/__init__.py"] == {"Database": f"{r}/pkg/db.py::Database", "run": f"{r}/pkg/api.py::run"}
