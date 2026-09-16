@@ -89,6 +89,7 @@ class ParseResult:
     call_sites: list[CallSite] = field(default_factory=list)
     import_bindings: list[ImportBinding] = field(default_factory=list)
     local_bindings: list[LocalBinding] = field(default_factory=list)
+    star_imports: list[ImportBinding] = field(default_factory=list)  # `from M import *`: local and imported name "*"
 
 # ---------------------------------------------------------------------------
 # Language Syntax Mappings
@@ -410,7 +411,10 @@ class CodeParser:
         if root:
             self._extract_from_tree(root, source, language, file_path_str, nodes, edges, call_sites, import_bindings, local_bindings)
 
-        return ParseResult(nodes=nodes, edges=edges, call_sites=call_sites, import_bindings=import_bindings, local_bindings=local_bindings)
+        # `*` binds no name of its own, so star imports travel separately from the name bindings
+        star_imports = [b for b in import_bindings if b.local_name == "*"]
+        import_bindings = [b for b in import_bindings if b.local_name != "*"]
+        return ParseResult(nodes=nodes, edges=edges, call_sites=call_sites, import_bindings=import_bindings, local_bindings=local_bindings, star_imports=star_imports)
 
     def _extract_from_tree(self, root, source, language, file_path, nodes, edges, call_sites, import_bindings, local_bindings, scope=None, in_func=False, func=None, method_of=None, _depth=0):
         """Walk *root*, giving definitions ids shaped like Python's ``__qualname__``.
@@ -747,4 +751,5 @@ class CodeParser:
                         alias = _safe_text(sub, source)
                 if imported_name and alias:
                     import_bindings.append(ImportBinding(alias, imported_name, module_text, False, file_path, line, scope_id))
-            # "wildcard_import" (`from calc import *`) yields no binding.
+            elif t == "wildcard_import":  # split out into ParseResult.star_imports by parse_file
+                import_bindings.append(ImportBinding("*", "*", module_text, False, file_path, line, scope_id))

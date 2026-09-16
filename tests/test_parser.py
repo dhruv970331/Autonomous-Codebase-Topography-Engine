@@ -334,6 +334,18 @@ def test_import_binding_in_class_body_is_scoped_to_the_class(parser, tmp_path):
     scopes = {b.local_name: b.scope_id for b in result.import_bindings}
     assert scopes == {"os": f"{p}::C", "add": f"{p}::f.<locals>.Inner"}
 
+def test_star_imports(parser, tmp_path):
+    p = tmp_path / "a.py"
+    p.write_bytes(b"from .db import *\nfrom pkg.sub import *\nfrom calc import add\nclass C:\n    from m import *\n")
+    result = parser.parse_file(p)
+
+    assert [(b.local_name, b.imported_name, b.module, b.is_module_alias, b.line, b.scope_id) for b in result.star_imports] == [
+        ("*", "*", ".db", False, 1, str(p)),
+        ("*", "*", "pkg.sub", False, 2, str(p)),
+        ("*", "*", "m", False, 5, f"{p}::C"),
+    ]
+    assert [b.local_name for b in result.import_bindings] == ["add"]
+
 def _bindings(parser, tmp_path, code, kind, name="a.py"):
     p = tmp_path / name
     p.write_text(code)
