@@ -1,11 +1,19 @@
 """
-Call resolution (spec-001). Step C2a1: the symbol index only, not yet wired in.
+Call resolution (spec-001): every CallSite gets exactly one status, and a target only
+when nothing else is possible. Not yet wired into the graph.
 """
 
+import builtins
+import sys
 from collections import defaultdict
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from acte.parser import ImportBinding, LocalBinding, NodeInfo, ParseResult
+from acte.parser import CallSite, ImportBinding, LocalBinding, NodeInfo, ParseResult
+
+CANDIDATE_CEILING = 100
+_BUILTINS = set(dir(builtins))
+_NOT_BINDING_KINDS = {"global", "nonlocal", "attr"}
 
 
 class SymbolIndex:
@@ -106,3 +114,123 @@ def _module_name(file_path: str, root: Path) -> str:
     """``pkg/sub/mod.py`` -> ``pkg.sub.mod``; a package's ``__init__.py`` is the package itself."""
     module = ".".join(Path(file_path).relative_to(root).with_suffix("").parts)
     return module.removesuffix(".__init__")
+
+
+@dataclass
+class CallResolution:
+    call: CallSite
+    status: str  # "resolved" | "ambiguous" | "unresolved" | "external"
+    tier: str | None = None  # "T2", "T3", "T3*", ...; None unless resolved
+    target: str | None = None  # qualified id, only when resolved
+    edge: str | None = None  # "calls" | "instantiates" (target is a Class, D9) | None
+    recursive: bool = False  # target == caller: keep the record, emit no arrow (R11)
+    candidates: list[str] = field(default_factory=list)  # sorted, ambiguous only; empty over the ceiling
+    candidate_count: int = 0
+    reason: str | None = None  # "local", "no-match", "ceiling", "builtin", "stdlib", "third-party", "unknown-receiver"
+
+
+@dataclass
+class Resolution:
+    calls: list[CallResolution]  # sorted by (file, line, col, caller)
+    index: SymbolIndex
+
+
+def resolve(results: list[ParseResult], root: Path) -> Resolution:
+    index = SymbolIndex(results, root)
+    calls = sorted((c for r in results for c in r.call_sites), key=lambda c: (c.file_path, c.line, c.col, c.caller_id))
+    return Resolution([_resolve_call(index, c) for c in calls], index)
+
+
+def _resolve_call(index: SymbolIndex, call: CallSite) -> CallResolution:
+    if call.receiver is not None:
+        return CallResolution(call, "unresolved", reason="unknown-receiver")
+    if not call.file_path.endswith(".py"):  # other languages have no resolver yet (spec §6)
+        return CallResolution(call, "unresolved", reason="no-match")
+    name, file = call.target_name, call.file_path
+    scope = _binding_scope(index, name, call.caller_id, file)
+    if scope is not None:
+        return _decide(index, call, scope)
+    ids, ambiguous = set(), False
+    for b in index.star_imports.get(file, []):
+        files = index.module_files(b.module, file)
+        ids |= {index.exports[f][name] for f in files if name in index.exports[f] and not name.startswith("_")}
+        ambiguous |= len(files) > 1
+    if ids:  # a star-imported project name shadows a builtin, as in Python
+        return _pick(index, call, ids, ambiguous, "T3*")
+    if name in _BUILTINS:
+        return CallResolution(call, "external", reason="builtin")
+    return CallResolution(call, "unresolved", reason="no-match")
+
+
+def _scope_chain(index: SymbolIndex, caller: str, file: str) -> list[str]:
+    """The caller's scope, its enclosing function scopes innermost first, then the module (LEGB; classes skipped)."""
+    chain = [caller]
+    qual = caller.split("::", 1)[1] if caller != file else ""
+    while "." in qual:
+        qual = qual.rsplit(".", 1)[0].removesuffix(".<locals>")
+        node = index.by_id.get(f"{file}::{qual}")
+        if node is not None and node.kind == "Function":
+            chain.append(f"{file}::{qual}")
+    return chain + [file] if caller != file else chain
+
+
+def _binding_scope(index: SymbolIndex, name: str, caller: str, file: str) -> str | None:
+    """The nearest scope that binds *name*, honouring ``global`` (go to the module) and ``nonlocal`` (skip)."""
+    for scope in _scope_chain(index, caller, file):
+        kinds = {b.kind for b in index.locals.get(scope, {}).get(name, [])}
+        if "global" in kinds:
+            return file if _bindings(index, scope=file, name=name) != ([], []) else None
+        if "nonlocal" in kinds:
+            continue
+        if _bindings(index, scope, name) != ([], []):
+            return scope
+    return None
+
+
+def _bindings(index: SymbolIndex, scope: str, name: str) -> tuple[list[LocalBinding], list[ImportBinding]]:
+    local = [b for b in index.locals.get(scope, {}).get(name, []) if b.kind not in _NOT_BINDING_KINDS]
+    # `import a.b` is recorded as local name "a.b" but binds `a`
+    imports = [b for k, v in sorted(index.imports.get(scope, {}).items()) if k.split(".")[0] == name for b in v]
+    return local, imports
+
+
+def _decide(index: SymbolIndex, call: CallSite, scope: str) -> CallResolution:
+    """Resolve a bare call from the bindings of the scope that binds its name (brief: Name lookup, 3)."""
+    name, file = call.target_name, call.file_path
+    local, imports = _bindings(index, scope, name)
+    if any(b.kind not in ("def", "class") for b in local):
+        return CallResolution(call, "unresolved", reason="local")  # a variable: values are not followed
+    ids = {f"{file}::{name}" if scope == file else f"{scope}.<locals>.{name}" for b in local}
+    external, unmatched, ambiguous = set(), False, False
+    for b in imports:
+        files = index.module_files(b.module, file)
+        if not files:
+            if b.module.startswith("."):  # a relative import is never external
+                unmatched = True
+            else:
+                external.add("stdlib" if b.module.split(".")[0] in sys.stdlib_module_names else "third-party")
+            continue
+        hits = set() if b.is_module_alias else {index.exports[f][b.imported_name] for f in files if b.imported_name in index.exports[f]}
+        unmatched |= not hits  # a module, or a name that is not a project definition
+        ids |= hits
+        ambiguous |= len(files) > 1
+    ids = {i for i in ids if i in index.by_id}  # the validation rule
+    if not ids:
+        if external and not unmatched:
+            return CallResolution(call, "external", reason="stdlib" if external == {"stdlib"} else "third-party")
+        return CallResolution(call, "unresolved", reason="no-match")
+    return _pick(index, call, ids, ambiguous or bool(external) or unmatched, "T2" if local else "T3")
+
+
+def _pick(index: SymbolIndex, call: CallSite, ids: set[str], ambiguous: bool, tier: str) -> CallResolution:
+    """One validated target resolves; several (or a forced ambiguity) are recorded, never chosen (D1)."""
+    ids = sorted(i for i in ids if i in index.by_id)
+    if len(ids) == 1 and not ambiguous:
+        target = ids[0]
+        edge = "instantiates" if index.by_id[target].kind == "Class" else "calls"
+        return CallResolution(call, "resolved", tier, target, edge, target == call.caller_id)
+    if not ids:
+        return CallResolution(call, "unresolved", reason="no-match")
+    if len(ids) > CANDIDATE_CEILING:
+        return CallResolution(call, "ambiguous", candidate_count=len(ids), reason="ceiling")
+    return CallResolution(call, "ambiguous", candidates=ids, candidate_count=len(ids))
