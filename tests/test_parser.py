@@ -588,3 +588,18 @@ def test_local_binding_del(parser, tmp_path):
         ("a.py::C.m", "c", None, 4),
     ]
     assert _bindings(parser, tmp_path, code, "attr") == []
+
+def test_function_return_type(parser, tmp_path):
+    code = (
+        "def a() -> Database:\n    pass\n"
+        "def b() -> \"m.Database\":\n    pass\n"
+        "def c() -> Optional[X]:\n    pass\n"
+        "def d():\n    pass\n"
+        "class K:\n    async def e(self) -> m.Repo:\n        pass\n"
+    )
+    p = tmp_path / "a.py"
+    p.write_text(code)
+    result = parser.parse_file(p)
+    assert [(n.name, n.return_type) for n in result.nodes if n.kind != "File"] == [
+        ("a", "Database"), ("b", "m.Database"), ("c", None), ("d", None), ("K", None), ("e", "m.Repo"),
+    ]

@@ -444,7 +444,11 @@ class CodeParser:
                     parent = f"{scope}.<locals>" if in_func else scope
                     qualname = f"{parent}.{name}" if parent else name
                     container = f"{file_path}::{scope}" if scope else file_path
-                    nodes.append(NodeInfo("Function" if is_func else "Class", name, file_path, _get_start_line(child), _get_end_line(child), language, parent))
+                    parts = _get_children(child)
+                    types = [_get_type(c) for c in parts]
+                    # R24b: `-> Database`, as written; the resolver decides what it names
+                    returns = self._annotation_type(parts[types.index("->") + 1], source) if language == "python" and is_func and "->" in types else None
+                    nodes.append(NodeInfo("Function" if is_func else "Class", name, file_path, _get_start_line(child), _get_end_line(child), language, parent, return_type=returns))
                     edges.append(EdgeInfo("CONTAINS", container, f"{file_path}::{qualname}", file_path, _get_start_line(child)))
                     if language == "python":  # R17: the name is bound in the enclosing scope
                         local_bindings.append(LocalBinding(container, name, "def" if is_func else "class", None, file_path, _get_start_line(name_node)))
