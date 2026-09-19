@@ -5,7 +5,7 @@ when nothing else is possible. Not yet wired into the graph.
 
 import builtins
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -133,6 +133,21 @@ class CallResolution:
 class Resolution:
     calls: list[CallResolution]  # sorted by (file, line, col, caller)
     index: SymbolIndex
+
+    def report(self) -> dict:
+        """Counts per status, tier (resolved only), reason and edge kind, plus rate = resolved / (total - external)."""
+        def count(values):
+            return dict(sorted(Counter(v for v in values if v is not None).items()))
+        status = count(c.status for c in self.calls)
+        measured = len(self.calls) - status.get("external", 0)
+        return {
+            "edge": count(c.edge for c in self.calls),
+            "rate": status.get("resolved", 0) / measured if measured else None,
+            "reason": count(c.reason for c in self.calls),
+            "status": status,
+            "tier": count(c.tier for c in self.calls),
+            "total": len(self.calls),
+        }
 
 
 def resolve(results: list[ParseResult], root: Path) -> Resolution:

@@ -392,3 +392,27 @@ def test_calls_sorted(tmp_path):
     calls = resolve([parser.parse_file(p) for p in paths], tmp_path).calls
     keys = [(c.call.file_path, c.call.line, c.call.col, c.call.caller_id) for c in calls]
     assert keys == sorted(keys) and len(keys) == 4
+
+
+def test_report(tmp_path):
+    files = {
+        "lib.py": "class Database:\n    pass\n\n\ndef run():\n    pass\n",
+        "m2.py": "def other():\n    pass\n",
+        "a.py": (
+            "import os\nfrom lib import Database, run\nfrom m2 import *\n\n\n"
+            "def f(cb):\n    Database()\n    run()\n    other()\n    f(cb)\n    cb()\n    len([])\n    os.getcwd()\n    missing()\n"
+        ),
+    }
+    for rel, code in files.items():
+        _write(tmp_path / rel, code)
+    parser = CodeParser()
+    report = resolve([parser.parse_file(tmp_path / rel) for rel in sorted(files)], tmp_path).report()
+    assert report == {
+        "edge": {"calls": 3, "instantiates": 1},
+        "rate": 4 / 7,
+        "reason": {"builtin": 1, "local": 1, "no-match": 1, "unknown-receiver": 1},
+        "status": {"external": 1, "resolved": 4, "unresolved": 3},
+        "tier": {"T2": 1, "T3": 2, "T3*": 1},
+        "total": 8,
+    }
+    assert list(report) == sorted(report)
