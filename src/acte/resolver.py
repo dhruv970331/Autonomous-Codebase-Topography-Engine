@@ -165,16 +165,23 @@ def _resolve_call(index: SymbolIndex, call: CallSite) -> CallResolution:
     scope = _binding_scope(index, name, call.caller_id, file)
     if scope is not None:
         return _decide(index, call, scope)
-    ids, ambiguous = set(), False
-    for b in index.star_imports.get(file, []):
-        files = index.module_files(b.module, file)
-        ids |= {index.exports[f][name] for f in files if name in index.exports[f] and not name.startswith("_")}
-        ambiguous |= len(files) > 1
+    ids, ambiguous = _star_exports(index, name, file)
     if ids:  # a star-imported project name shadows a builtin, as in Python
         return _pick(index, call, ids, ambiguous, "T3*")
     if name in _BUILTINS:
         return CallResolution(call, "external", reason="builtin")
     return CallResolution(call, "unresolved", reason="no-match")
+
+
+def _star_exports(index: SymbolIndex, name: str, file: str) -> tuple[set[str], bool]:
+    """Ids the module's ``*`` imports bind *name* to, and whether a star module matched several files."""
+    ids, ambiguous = set(), False
+    # shortcut: only project modules count; an external `from os import *` can't be enumerated, enumerate stdlib if it matters
+    for b in index.star_imports.get(file, []):
+        files = index.module_files(b.module, file)
+        ids |= {index.exports[f][name] for f in files if name in index.exports[f] and not name.startswith("_")}
+        ambiguous |= len(files) > 1
+    return ids, ambiguous
 
 
 def _scope_chain(index: SymbolIndex, caller: str, file: str) -> list[str]:
@@ -229,6 +236,10 @@ def _decide(index: SymbolIndex, call: CallSite, scope: str) -> CallResolution:
         unmatched |= not hits  # a module, or a name that is not a project definition
         ids |= hits
         ambiguous |= len(files) > 1
+    if scope == file:  # a later `*` import may rebind the name: its project exports are candidates too
+        star_ids, star_ambiguous = _star_exports(index, name, file)
+        ids |= star_ids
+        ambiguous |= star_ambiguous
     ids = {i for i in ids if i in index.by_id}  # the validation rule
     if not ids:
         if external and not unmatched:

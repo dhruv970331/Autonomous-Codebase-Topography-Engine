@@ -345,11 +345,20 @@ def test_imports_resolve_through_exports(tmp_path):
         "m2.py": "def run():\n    pass\n",
         "both.py": "from m1 import *\nfrom m2 import *\n\nrun()\n",
         "fallback.py": "try:\n    from m1 import run\nexcept ImportError:\n    def run():\n        pass\n\nrun()\n",
+        "lib.py": "def run():\n    pass\n",
+        "other.py": "def go():\n    pass\n",
+        "star_after.py": "from lib import run\nfrom m2 import *\n\nrun()\n",  # Python calls m2.run
+        "star_other.py": "from lib import run\nfrom other import *\n\nrun()\n",
     })
     assert calls[("app.py::f", "connect")] == ("resolved", "T3", "pkg/db.py::connect", None)
     assert calls[("star.py::g", "connect")] == ("resolved", "T3*", "pkg/db.py::connect", None)
     assert calls[("both.py", "run")] == ("ambiguous", None, None, None)
     assert calls[("fallback.py", "run")] == ("ambiguous", None, None, None)  # def and import disagree
+    assert calls[("star_after.py", "run")] == ("ambiguous", None, None, None)  # import and `*` disagree
+    assert calls[("star_other.py", "run")] == ("resolved", "T3", "lib.py::run", None)
+    resolution = resolve([CodeParser().parse_file(f) for f in sorted(tmp_path.glob("*.py"))], tmp_path)
+    star_after = next(r for r in resolution.calls if r.call.file_path.endswith("star_after.py"))
+    assert star_after.candidates == [f"{tmp_path}/lib.py::run", f"{tmp_path}/m2.py::run"]
 
 
 def test_ambiguous_candidates_and_ceiling(tmp_path):
