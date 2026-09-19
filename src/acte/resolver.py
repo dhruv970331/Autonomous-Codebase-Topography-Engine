@@ -26,6 +26,7 @@ class SymbolIndex:
         self.by_class: dict[str, dict[str, str]] = {}
         self.modules: dict[str, str] = {}
         self.by_loc: dict[tuple[str, int], str] = {}
+        self.first_param: dict[str, str] = {}  # function scope -> its first parameter's name (T1: is it self/cls?)
         locals_: dict[str, dict[str, list[LocalBinding]]] = defaultdict(lambda: defaultdict(list))
         imports: dict[str, dict[str, list[ImportBinding]]] = defaultdict(lambda: defaultdict(list))
         stars: dict[str, list[ImportBinding]] = defaultdict(list)
@@ -53,6 +54,8 @@ class SymbolIndex:
         for r in results:
             for b in r.local_bindings:
                 locals_[b.scope_id][b.name].append(b)
+                if b.kind == "param":  # the parser emits parameters in source order
+                    self.first_param.setdefault(b.scope_id, b.name)
             for b in r.import_bindings:
                 imports[b.scope_id][b.local_name].append(b)
             for b in r.star_imports:
@@ -157,10 +160,10 @@ def resolve(results: list[ParseResult], root: Path) -> Resolution:
 
 
 def _resolve_call(index: SymbolIndex, call: CallSite) -> CallResolution:
-    if call.receiver is not None:
-        return CallResolution(call, "unresolved", reason="unknown-receiver")
     if not call.file_path.endswith(".py"):  # other languages have no resolver yet (spec §6)
-        return CallResolution(call, "unresolved", reason="no-match")
+        return CallResolution(call, "unresolved", reason="no-match" if call.receiver is None else "unknown-receiver")
+    if call.receiver is not None:
+        return _resolve_receiver(index, call)
     name, file = call.target_name, call.file_path
     scope = _binding_scope(index, name, call.caller_id, file)
     if scope is not None:
@@ -171,6 +174,90 @@ def _resolve_call(index: SymbolIndex, call: CallSite) -> CallResolution:
     if name in _BUILTINS:
         return CallResolution(call, "external", reason="builtin")
     return CallResolution(call, "unresolved", reason="no-match")
+
+
+def _resolve_receiver(index: SymbolIndex, call: CallSite) -> CallResolution:
+    """A call on a dotted-name receiver (brief: Receiver calls): T1 self/cls, T4 a class name, T5 a module path."""
+    parts, name, file = call.receiver.split("."), call.target_name, call.file_path
+    unknown = CallResolution(call, "unresolved", reason="unknown-receiver")
+    if not all(p.isidentifier() for p in parts):  # a literal, call or subscript: values are not followed (N2, N3)
+        return unknown
+    head, rest = parts[0], parts[1:]
+    scope = _binding_scope(index, head, call.caller_id, file)
+    cls = _self_class(index, scope, head) if scope else None
+    if cls:  # `self.attr` waits for T4b
+        return _pick(index, call, {index.by_class[cls].get(name)} - {None}, False, "T1") if not rest else unknown
+    local, imports = _bindings(index, scope, head) if scope else ([], [])
+    if any(b.kind not in ("def", "class") for b in local):
+        return unknown  # a variable: T4b
+    defs = {f"{file}::{head}" if scope == file else f"{scope}.<locals>.{head}" for b in local}
+    modules, external, misses, ambiguous = set(), set(), set(), False  # misses: why a binding gave no target
+    for b in imports:
+        files = index.module_files(b.module, file)
+        if not b.is_module_alias:
+            hits = {index.exports[f][b.imported_name] for f in files if b.imported_name in index.exports[f]}
+            submodule = b.module + ("" if b.module.endswith(".") else ".") + b.imported_name
+            if hits:
+                defs |= hits
+                ambiguous |= len(files) > 1
+            elif index.module_files(submodule, file):  # `from pkg import sub`
+                modules.add(submodule)
+            elif files or b.module.startswith("."):  # a project name that is not a definition (a variable)
+                misses.add("unknown-receiver")
+            else:
+                external.add("stdlib" if b.module.split(".")[0] in sys.stdlib_module_names else "third-party")
+        elif files:  # `import a.b` binds module `a`; `import a.b as m` binds `a.b`
+            modules.add(head if "." in b.local_name else b.module)
+        else:
+            external.add("stdlib" if b.module.split(".")[0] in sys.stdlib_module_names else "third-party")
+    if scope in (None, file):  # a module-level `*` import may bind it too
+        star_ids, star_ambiguous = _star_exports(index, head, file)
+        defs |= star_ids
+        ambiguous |= star_ambiguous
+    if scope is None and not defs:
+        return CallResolution(call, "external", reason="builtin") if head in _BUILTINS else unknown
+
+    targets = {}  # id -> tier
+
+    def method(cls_id: str | None, tier: str) -> None:
+        if cls_id not in index.by_class:
+            misses.add("unknown-receiver")  # not a class: a function, or a path we don't follow
+        elif name not in index.by_class[cls_id]:
+            misses.add("no-match")
+        else:
+            targets[index.by_class[cls_id][name]] = tier
+
+    for d in sorted(defs):
+        method(None if rest else d, "T4")
+    for base in sorted(modules):
+        for k in range(len(rest), -1, -1):  # the longest prefix of the receiver that names a module
+            files = index.module_files(".".join([base, *rest[:k]]), file)
+            if files:
+                break
+        ambiguous |= len(files) > 1
+        for f in files:
+            if k < len(rest):  # `mod.C.m()`: what is left must be one class
+                method(index.exports[f].get(rest[k]) if k == len(rest) - 1 else None, "T5")
+            elif name in index.exports[f]:
+                targets[index.exports[f][name]] = "T5"
+            else:
+                misses.add("no-match")
+        if not files:  # `import a.b` where `a` is a namespace package and the path names no module
+            misses.add("unknown-receiver")
+    if targets:
+        return _pick(index, call, set(targets), ambiguous or bool(misses or external), min(targets.values()))
+    if external and not misses:
+        return CallResolution(call, "external", reason="stdlib" if external == {"stdlib"} else "third-party")
+    return CallResolution(call, "unresolved", reason="no-match" if misses == {"no-match"} else "unknown-receiver")
+
+
+def _self_class(index: SymbolIndex, scope: str, name: str) -> str | None:
+    """The class whose method takes *name* (``self``/``cls``) as its first parameter and never rebinds it (T1)."""
+    node = index.by_id.get(scope)
+    if name not in ("self", "cls") or node is None or node.kind != "Function" or index.first_param.get(scope) != name:
+        return None
+    owner = f"{node.file_path}::{node.parent_name}"
+    return owner if owner in index.by_class and len(index.locals[scope][name]) == 1 else None
 
 
 def _star_exports(index: SymbolIndex, name: str, file: str) -> tuple[set[str], bool]:

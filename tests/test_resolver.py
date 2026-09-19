@@ -418,10 +418,123 @@ def test_report(tmp_path):
     report = resolve([parser.parse_file(tmp_path / rel) for rel in sorted(files)], tmp_path).report()
     assert report == {
         "edge": {"calls": 3, "instantiates": 1},
-        "rate": 4 / 7,
-        "reason": {"builtin": 1, "local": 1, "no-match": 1, "unknown-receiver": 1},
-        "status": {"external": 1, "resolved": 4, "unresolved": 3},
+        "rate": 4 / 6,
+        "reason": {"builtin": 1, "local": 1, "no-match": 1, "stdlib": 1},
+        "status": {"external": 2, "resolved": 4, "unresolved": 2},
         "tier": {"T2": 1, "T3": 2, "T3*": 1},
         "total": 8,
     }
     assert list(report) == sorted(report)
+
+
+def test_self_and_cls_calls(tmp_path):
+    calls = _calls(tmp_path, {
+        "base.py": "class Base:\n    def only_base(self):\n        pass\n",
+        "OrderUtils.py": "def price():\n    pass\n",
+        "order.py": (
+            "from base import Base\n\n\n"
+            "class Order(Base):\n"
+            "    def total(self):\n        return self.price()\n\n"  # N13: no `price` on Order
+            "    def tax(self):\n        return self.rate()\n\n"
+            "    def rate(self):\n        self.only_base()\n        self.repo.load()\n\n"
+            "    @classmethod\n    def make(cls):\n        return cls.build()\n\n"
+            "    @classmethod\n    def build(cls):\n        pass\n\n"
+            "    def swap(self, other):\n        self = other\n        self.tax()\n\n"
+            "    def later(self):\n        def inner():\n            self.tax()\n        return inner\n\n\n"
+            "def free(self):\n    self.tax()\n"
+        ),
+    })
+    assert calls[("order.py::Order.tax", "rate")] == ("resolved", "T1", "order.py::Order.rate", None)
+    assert calls[("order.py::Order.make", "build")] == ("resolved", "T1", "order.py::Order.build", None)
+    assert calls[("order.py::Order.later.<locals>.inner", "tax")] == ("resolved", "T1", "order.py::Order.tax", None)  # closure over self
+    assert calls[("order.py::Order.total", "price")] == ("unresolved", None, None, "no-match")  # N13
+    assert calls[("order.py::Order.rate", "only_base")] == ("unresolved", None, None, "no-match")  # no inheritance yet
+    assert calls[("order.py::Order.rate", "load")] == ("unresolved", None, None, "unknown-receiver")  # self.attr: T4b
+    assert calls[("order.py::Order.swap", "tax")] == ("unresolved", None, None, "unknown-receiver")  # self rebound
+    assert calls[("order.py::free", "tax")] == ("unresolved", None, None, "unknown-receiver")  # not a method
+
+
+def test_class_and_module_receivers(tmp_path):
+    calls = _calls(tmp_path, {
+        "shop/__init__.py": "",
+        "shop/db.py": "class Database:\n    @classmethod\n    def create(cls):\n        pass\n\n\ndef helper():\n    pass\n",
+        "shop/sub.py": "def f():\n    pass\n",
+        "shop/rel.py": "from . import sub\n\n\ndef r():\n    sub.f()\n",
+        "x/util.py": "def h():\n    pass\n",
+        "y/util.py": "def h():\n    pass\n",
+        "t4.py": (
+            "from shop.db import Database\n\n\nclass Local:\n    def m(self):\n        pass\n\n\n"
+            "def a():\n    Database.create()\n    Local.m(None)\n    Local.missing()\n    Database.create.x()\n"
+        ),
+        "star.py": "from shop.db import *\n\n\ndef s():\n    Database.create()\n",
+        "t5.py": (
+            "import shop.db as d\nimport shop.db\nimport util as u\n\n\n"
+            "def b():\n    d.helper()\n    d.Database.create()\n    d.missing()\n    d.helper.x()\n"
+            "    shop.db.Database()\n    u.h()\n"
+        ),
+        "deep.py": "import shop.db as d\n\n\ndef c():\n    d.Database.Inner.m()\n",
+    })
+    assert calls[("t4.py::a", "create")] == ("resolved", "T4", "shop/db.py::Database.create", None)
+    assert calls[("t4.py::a", "m")] == ("resolved", "T4", "t4.py::Local.m", None)
+    assert calls[("t4.py::a", "missing")] == ("unresolved", None, None, "no-match")
+    assert calls[("t4.py::a", "x")] == ("unresolved", None, None, "unknown-receiver")
+    assert calls[("star.py::s", "create")] == ("resolved", "T4", "shop/db.py::Database.create", None)
+    assert calls[("t5.py::b", "helper")] == ("resolved", "T5", "shop/db.py::helper", None)
+    assert calls[("t5.py::b", "create")] == ("resolved", "T5", "shop/db.py::Database.create", None)  # mod.C.m()
+    assert calls[("t5.py::b", "missing")] == ("unresolved", None, None, "no-match")
+    assert calls[("t5.py::b", "x")] == ("unresolved", None, None, "unknown-receiver")
+    assert calls[("t5.py::b", "Database")] == ("resolved", "T5", "shop/db.py::Database", None)  # `import a.b` binds `a`
+    assert calls[("t5.py::b", "h")] == ("ambiguous", None, None, None)  # util matches two files
+    assert calls[("shop/rel.py::r", "f")] == ("resolved", "T5", "shop/sub.py::f", None)  # relative `from . import sub`
+    assert calls[("deep.py::c", "m")] == ("unresolved", None, None, "unknown-receiver")  # more than one class name left
+
+
+def test_src_layout_module_receivers(tmp_path):
+    calls = _calls(tmp_path, {
+        "src/acte/parser.py": "def parse_file(path):\n    pass\n",
+        "alias.py": "import acte.parser as p\n\n\ndef f():\n    p.parse_file(1)\n",
+        "dotted.py": "import acte.parser\n\n\ndef g():\n    acte.parser.parse_file(2)\n",
+    })
+    assert calls[("alias.py::f", "parse_file")] == ("resolved", "T5", "src/acte/parser.py::parse_file", None)
+    assert calls[("dotted.py::g", "parse_file")] == ("resolved", "T5", "src/acte/parser.py::parse_file", None)  # no acte/__init__.py
+
+
+def test_external_receivers(tmp_path):
+    calls = _calls(tmp_path, {
+        "utils.py": "def join(items, sep):\n    pass\n\n\ndef get():\n    pass\n",
+        "report.py": (
+            "import os\nimport requests\nfrom os import path\n\n\n"
+            "def a(b, n):\n    os.path.join(b, n)\n\n\n"  # N2
+            "def c(parts):\n    \", \".join(parts)\n\n\n"  # N2: a literal receiver
+            "def d():\n    requests.get()\n    path.exists()\n    str.join(',', [])\n    dict.fromkeys([])\n"
+        ),
+    })
+    assert calls[("report.py::a", "join")] == ("external", None, None, "stdlib")
+    assert calls[("report.py::c", "join")] == ("unresolved", None, None, "unknown-receiver")
+    assert calls[("report.py::d", "get")] == ("external", None, None, "third-party")
+    assert calls[("report.py::d", "exists")] == ("external", None, None, "stdlib")
+    assert calls[("report.py::d", "join")] == ("external", None, None, "builtin")
+    assert calls[("report.py::d", "fromkeys")] == ("external", None, None, "builtin")
+
+
+def test_codekg_receiver_cases(tmp_path):
+    calls = _calls(tmp_path, {
+        "shop/__init__.py": "",
+        "shop/db.py": "class Database:\n    def connect(self):\n        pass\n\n    def save(self, order):\n        pass\n",
+        "shop/net.py": "def connect(host):\n    pass\n",
+        "shop/checkout.py": (
+            "from shop.db import Database\n\n\n"
+            "def place_order(cart, card):\n    db = Database()\n    db.connect()\n"  # N1, P3
+        ),
+        "store.py": "def save():\n    pass\n",
+        "g.py": "def g(x):\n    x.save()\n",  # 6a: one project-level `save`, unknown x
+        "files.py": "def read_text(path):\n    pass\n",
+        "loader.py": "from pathlib import Path\n\n\ndef load(p):\n    Path(p).read_text()\n",  # N3
+        "views.py": "def page(template, ctx):\n    return template.render(ctx)\n",  # N10
+        "static/app.js": "function render() {}\n",
+    })
+    # N1 / P3: the right answer, Database.connect, needs T4b (next step); never net.connect
+    assert calls[("shop/checkout.py::place_order", "connect")] == ("unresolved", None, None, "unknown-receiver")
+    assert calls[("g.py::g", "save")] == ("unresolved", None, None, "unknown-receiver")  # D6
+    assert calls[("loader.py::load", "read_text")] == ("unresolved", None, None, "unknown-receiver")
+    assert calls[("views.py::page", "render")] == ("unresolved", None, None, "unknown-receiver")
