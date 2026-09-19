@@ -159,11 +159,11 @@ def resolve(results: list[ParseResult], root: Path) -> Resolution:
     return Resolution([_resolve_call(index, c) for c in calls], index)
 
 
-def _resolve_call(index: SymbolIndex, call: CallSite) -> CallResolution:
+def _resolve_call(index: SymbolIndex, call: CallSite, typed: bool = True) -> CallResolution:
     if not call.file_path.endswith(".py"):  # other languages have no resolver yet (spec §6)
         return CallResolution(call, "unresolved", reason="no-match" if call.receiver is None else "unknown-receiver")
     if call.receiver is not None:
-        return _resolve_receiver(index, call)
+        return _resolve_receiver(index, call, typed)
     name, file = call.target_name, call.file_path
     scope = _binding_scope(index, name, call.caller_id, file)
     if scope is not None:
@@ -176,20 +176,32 @@ def _resolve_call(index: SymbolIndex, call: CallSite) -> CallResolution:
     return CallResolution(call, "unresolved", reason="no-match")
 
 
-def _resolve_receiver(index: SymbolIndex, call: CallSite) -> CallResolution:
-    """A call on a dotted-name receiver (brief: Receiver calls): T1 self/cls, T4 a class name, T5 a module path."""
+def _resolve_receiver(index: SymbolIndex, call: CallSite, typed: bool = True) -> CallResolution:
+    """A call on a receiver (brief: Receiver calls): T1 self/cls, T4 a class name, T5 a module path, T4b a typed variable.
+
+    *typed* is False while looking up a type name, so a type is never itself taken from a variable's type.
+    """
     parts, name, file = call.receiver.split("."), call.target_name, call.file_path
     unknown = CallResolution(call, "unresolved", reason="unknown-receiver")
-    if not all(p.isidentifier() for p in parts):  # a literal, call or subscript: values are not followed (N2, N3)
+    if not all(p.isidentifier() for p in parts):  # a literal, call or subscript: values are not followed (N2)
+        callee = call.receiver[:-1].split("(")[0]
+        if typed and call.receiver.endswith(")") and call.receiver.count("(") == 1 and all(p.isidentifier() for p in callee.split(".")):
+            return _typed(index, call, callee, False, call.caller_id)  # R24a: `C(...).m()`
         return unknown
     head, rest = parts[0], parts[1:]
     scope = _binding_scope(index, head, call.caller_id, file)
     cls = _self_class(index, scope, head) if scope else None
-    if cls:  # `self.attr` waits for T4b
-        return _pick(index, call, {index.by_class[cls].get(name)} - {None}, False, "T1") if not rest else unknown
+    if cls and not rest:
+        return _pick(index, call, {index.by_class[cls].get(name)} - {None}, False, "T1")
+    if cls and typed and head == "self" and len(rest) == 1:  # `self.attr`: its types are looked up from C's file
+        return _typed(index, call, *_one_type(index.locals.get(cls, {}).get(f"self.{rest[0]}", [])), cls.split("::")[0])
+    if cls:
+        return unknown
     local, imports = _bindings(index, scope, head) if scope else ([], [])
     if any(b.kind not in ("def", "class") for b in local):
-        return unknown  # a variable: T4b
+        # a variable: T4b when its type is certain; an import or `*` export of the same name makes it uncertain
+        certain = typed and not rest and not imports and not (scope == file and _star_exports(index, head, file)[0])
+        return _typed(index, call, *_one_type(index.locals[scope][head]), scope) if certain else unknown
     defs = {f"{file}::{head}" if scope == file else f"{scope}.<locals>.{head}" for b in local}
     modules, external, misses, ambiguous = set(), set(), set(), False  # misses: why a binding gave no target
     for b in imports:
@@ -249,6 +261,32 @@ def _resolve_receiver(index: SymbolIndex, call: CallSite) -> CallResolution:
     if external and not misses:
         return CallResolution(call, "external", reason="stdlib" if external == {"stdlib"} else "third-party")
     return CallResolution(call, "unresolved", reason="no-match" if misses == {"no-match"} else "unknown-receiver")
+
+
+def _one_type(bindings: list[LocalBinding]) -> tuple[str | None, bool]:
+    """The type every binding of a name agrees on (None when one is untyped or two disagree, R7), and whether an annotation says so."""
+    bindings = [b for b in bindings if b.kind not in ("del", "global", "nonlocal")]
+    types = {b.type_name for b in bindings}
+    return types.pop() if len(types) == 1 else None, any(b.kind in ("param", "annotation") for b in bindings)
+
+
+def _typed(index: SymbolIndex, call: CallSite, type_name: str | None, annotated: bool, scope: str) -> CallResolution:
+    """T4b: look *type_name* up from *scope* as if it were called there; a project class gives its method."""
+    if type_name is None:
+        return CallResolution(call, "unresolved", reason="unknown-receiver")
+    receiver, _, cls_name = type_name.rpartition(".")
+    file = scope.split("::")[0]
+    found = _resolve_call(index, CallSite(scope, cls_name, receiver or None, file, call.line, call.col), typed=False)
+    # a builtin function (max, getattr) may return a project object; so do super() and type(x), though they are classes
+    builtin_class = isinstance(getattr(builtins, cls_name, None), type) and cls_name not in ("super", "type")
+    # an external name that is only called may be a function returning a project object (copy.deepcopy); an annotation names a class
+    if found.status == "external" and (builtin_class if found.reason == "builtin" else annotated):
+        return CallResolution(call, "external", reason=found.reason)
+    classes = [found.target] if found.status == "resolved" else found.candidates
+    # shortcut: a function's return annotation (R24b) is not followed; the parser does not record return_type yet
+    if not classes or any(index.by_id[c].kind != "Class" for c in classes):
+        return CallResolution(call, "unresolved", reason="unknown-receiver")
+    return _pick(index, call, {index.by_class[c][call.target_name] for c in classes if call.target_name in index.by_class[c]}, found.status == "ambiguous", "T4b")
 
 
 def _self_class(index: SymbolIndex, scope: str, name: str) -> str | None:

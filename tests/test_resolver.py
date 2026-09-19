@@ -508,6 +508,12 @@ def test_external_receivers(tmp_path):
             "def c(parts):\n    \", \".join(parts)\n\n\n"  # N2: a literal receiver
             "def d():\n    requests.get()\n    path.exists()\n    str.join(',', [])\n    dict.fromkeys([])\n"
         ),
+        "typed.py": (
+            "import copy\nimport requests\nfrom pathlib import Path\n\n\n"
+            "def ann(p: Path, s: 'requests.Session'):\n    p.read_text()\n    s.get()\n\n\n"
+            "def called(db, n):\n    x = copy.deepcopy(db)\n    x.save()\n    s = requests.Session()\n    s.get()\n"
+            "    with open(n) as f:\n        f.read()\n"
+        ),
     })
     assert calls[("report.py::a", "join")] == ("external", None, None, "stdlib")
     assert calls[("report.py::c", "join")] == ("unresolved", None, None, "unknown-receiver")
@@ -515,6 +521,12 @@ def test_external_receivers(tmp_path):
     assert calls[("report.py::d", "exists")] == ("external", None, None, "stdlib")
     assert calls[("report.py::d", "join")] == ("external", None, None, "builtin")
     assert calls[("report.py::d", "fromkeys")] == ("external", None, None, "builtin")
+    # an external type counts only from an annotation; a call to an external name may be a function returning project objects
+    assert calls[("typed.py::ann", "read_text")] == ("external", None, None, "stdlib")
+    assert calls[("typed.py::ann", "get")] == ("external", None, None, "third-party")  # string annotation
+    assert calls[("typed.py::called", "save")] == ("unresolved", None, None, "unknown-receiver")  # copy.deepcopy
+    assert calls[("typed.py::called", "get")] == ("unresolved", None, None, "unknown-receiver")  # requests.Session()
+    assert calls[("typed.py::called", "read")] == ("unresolved", None, None, "unknown-receiver")  # open is a builtin function
 
 
 def test_codekg_receiver_cases(tmp_path):
@@ -533,8 +545,52 @@ def test_codekg_receiver_cases(tmp_path):
         "views.py": "def page(template, ctx):\n    return template.render(ctx)\n",  # N10
         "static/app.js": "function render() {}\n",
     })
-    # N1 / P3: the right answer, Database.connect, needs T4b (next step); never net.connect
-    assert calls[("shop/checkout.py::place_order", "connect")] == ("unresolved", None, None, "unknown-receiver")
+    # N1 / P3: Database.connect, never net.connect
+    assert calls[("shop/checkout.py::place_order", "connect")] == ("resolved", "T4b", "shop/db.py::Database.connect", None)
     assert calls[("g.py::g", "save")] == ("unresolved", None, None, "unknown-receiver")  # D6
-    assert calls[("loader.py::load", "read_text")] == ("unresolved", None, None, "unknown-receiver")
+    assert calls[("loader.py::load", "read_text")] == ("unresolved", None, None, "unknown-receiver")  # N3: a call can't prove Path is a class
     assert calls[("views.py::page", "render")] == ("unresolved", None, None, "unknown-receiver")
+
+
+def test_typed_receivers(tmp_path):
+    calls = _calls(tmp_path, {
+        "shop/__init__.py": "",
+        "shop/db.py": "class Database:\n    def connect(self):\n        pass\n\n\nclass Cache:\n    def connect(self):\n        pass\n",
+        "shop/repo.py": "class Repo:\n    def load(self):\n        pass\n",
+        "use.py": (
+            "import shop.db as m\nfrom shop.db import Database, Cache\nfrom shop.repo import Repo\n\n\n"
+            "def p(db: Database):\n    db.connect()\n    db.close()\n\n\n"  # 6c: no `close` on Database
+            "def q(db: 'Database'):\n    db.connect()\n\n\n"
+            "def r1():\n    Database().connect()\n\n\n"  # R24a
+            "def r2():\n    Database().close()\n\n\n"
+            "def r3():\n    m.Database(1).connect()\n\n\n"
+            "def s():\n    a, b = Repo(), Database()\n    b.connect()\n    a.close()\n\n\n"  # R24c
+            "def t():\n    db = Database()\n    db = Cache()\n    db.connect()\n\n\n"
+            "def u():\n    db = Database()\n    db = None\n    db.connect()\n\n\n"
+            "def v():\n    db = Database()\n    db = make()\n    db.connect()\n\n\n"
+            "def w():\n    d = dict()\n    d.get(1)\n    n = max([Database()])\n    n.connect()\n\n\n"
+            "class Sub(Database):\n    def connect(self):\n        super().connect()\n        type(self).close()\n\n\n"
+            "class Svc:\n    def __init__(self):\n        self.repo = Repo()\n        self.db = Database()\n        self.db = Cache()\n\n"
+            "    def run(self):\n        self.repo.load()\n        self.db.connect()\n        self.repo.close()\n"
+        ),
+        "mod.py": "from shop.db import Database\n\ndb = Database()\n\n\ndef top():\n    db.connect()\n",
+    })
+    assert calls[("use.py::p", "connect")] == ("resolved", "T4b", "shop/db.py::Database.connect", None)
+    assert calls[("use.py::p", "close")] == ("unresolved", None, None, "no-match")  # 6c
+    assert calls[("use.py::q", "connect")] == ("resolved", "T4b", "shop/db.py::Database.connect", None)  # string annotation
+    assert calls[("use.py::r1", "connect")] == ("resolved", "T4b", "shop/db.py::Database.connect", None)  # R24a
+    assert calls[("use.py::r2", "close")] == ("unresolved", None, None, "no-match")
+    assert calls[("use.py::r3", "connect")] == ("resolved", "T4b", "shop/db.py::Database.connect", None)  # mod.C(...)
+    assert calls[("use.py::s", "connect")] == ("resolved", "T4b", "shop/db.py::Database.connect", None)  # R24c
+    assert calls[("use.py::s", "close")] == ("unresolved", None, None, "no-match")
+    assert calls[("use.py::t", "connect")] == ("unresolved", None, None, "unknown-receiver")  # two classes
+    assert calls[("use.py::u", "connect")] == ("unresolved", None, None, "unknown-receiver")  # later None
+    assert calls[("use.py::v", "connect")] == ("unresolved", None, None, "unknown-receiver")  # later untyped make()
+    assert calls[("use.py::w", "get")] == ("external", None, None, "builtin")  # dict is a builtin class
+    assert calls[("use.py::w", "connect")] == ("unresolved", None, None, "unknown-receiver")  # max is a builtin function
+    assert calls[("use.py::Sub.connect", "connect")] == ("unresolved", None, None, "unknown-receiver")  # super(): a project base
+    assert calls[("use.py::Sub.connect", "close")] == ("unresolved", None, None, "unknown-receiver")  # type(self): a project class
+    assert calls[("use.py::Svc.run", "load")] == ("resolved", "T4b", "shop/repo.py::Repo.load", None)
+    assert calls[("use.py::Svc.run", "close")] == ("unresolved", None, None, "no-match")
+    assert calls[("use.py::Svc.run", "connect")] == ("unresolved", None, None, "unknown-receiver")  # self.db: two classes
+    assert calls[("mod.py::top", "connect")] == ("resolved", "T4b", "shop/db.py::Database.connect", None)  # module-level variable
