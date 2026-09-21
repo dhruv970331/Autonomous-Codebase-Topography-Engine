@@ -270,8 +270,9 @@ def _one_type(bindings: list[LocalBinding]) -> tuple[str | None, bool]:
     return types.pop() if len(types) == 1 else None, any(b.kind in ("param", "annotation") for b in bindings)
 
 
-def _typed(index: SymbolIndex, call: CallSite, type_name: str | None, annotated: bool, scope: str) -> CallResolution:
-    """T4b: look *type_name* up from *scope* as if it were called there; a project class gives its method."""
+def _typed(index: SymbolIndex, call: CallSite, type_name: str | None, annotated: bool, scope: str, hop: bool = True) -> CallResolution:
+    """T4b: look *type_name* up from *scope* as if it were called there; a project class gives its method,
+    a project function its return annotation's class (R24b, one *hop* only)."""
     if type_name is None:
         return CallResolution(call, "unresolved", reason="unknown-receiver")
     receiver, _, cls_name = type_name.rpartition(".")
@@ -282,8 +283,11 @@ def _typed(index: SymbolIndex, call: CallSite, type_name: str | None, annotated:
     # an external name that is only called may be a function returning a project object (copy.deepcopy); an annotation names a class
     if found.status == "external" and (builtin_class if found.reason == "builtin" else annotated):
         return CallResolution(call, "external", reason=found.reason)
+    if hop and found.status == "resolved" and index.by_id[found.target].kind == "Function":
+        fn = index.by_id[found.target]  # its annotation is looked up from its own module
+        result = _typed(index, call, fn.return_type, False, fn.file_path, hop=False)
+        return CallResolution(call, "unresolved", reason="unknown-receiver") if result.status == "external" else result
     classes = [found.target] if found.status == "resolved" else found.candidates
-    # shortcut: a function's return annotation (R24b) is not followed; the parser does not record return_type yet
     if not classes or any(index.by_id[c].kind != "Class" for c in classes):
         return CallResolution(call, "unresolved", reason="unknown-receiver")
     return _pick(index, call, {index.by_class[c][call.target_name] for c in classes if call.target_name in index.by_class[c]}, found.status == "ambiguous", "T4b")

@@ -594,3 +594,32 @@ def test_typed_receivers(tmp_path):
     assert calls[("use.py::Svc.run", "close")] == ("unresolved", None, None, "no-match")
     assert calls[("use.py::Svc.run", "connect")] == ("unresolved", None, None, "unknown-receiver")  # self.db: two classes
     assert calls[("mod.py::top", "connect")] == ("resolved", "T4b", "shop/db.py::Database.connect", None)  # module-level variable
+
+
+def test_return_annotation_receivers(tmp_path):
+    calls = _calls(tmp_path, {
+        "shop/__init__.py": "",
+        "shop/db.py": "class Database:\n    def connect(self):\n        pass\n",
+        "shop/factory.py": (
+            "from shop.db import Database\n\n\n"
+            "def get_db() -> Database:\n    pass\n\n\n"
+            "def get_names() -> list:\n    pass\n\n\n"
+            "def get_any():\n    pass\n\n\n"
+            "def get_factory() -> get_db:\n    pass\n"
+        ),
+        "other.py": "class Database:\n    def connect(self):\n        pass\n",
+        "app.py": (
+            "from other import Database\nfrom shop.factory import get_db, get_names, get_any, get_factory\n\n\n"
+            "def a():\n    db = get_db()\n    db.connect()\n    db.close()\n\n\n"  # Database is shop.db's, not other's
+            "def b():\n    get_db().connect()\n\n\n"
+            "def c():\n    n = get_names()\n    n.append(1)\n\n\n"
+            "def d():\n    x = get_any()\n    x.connect()\n\n\n"
+            "def e():\n    f = get_factory()\n    f.connect()\n"
+        ),
+    })
+    assert calls[("app.py::a", "connect")] == ("resolved", "T4b", "shop/db.py::Database.connect", None)
+    assert calls[("app.py::a", "close")] == ("unresolved", None, None, "no-match")
+    assert calls[("app.py::b", "connect")] == ("resolved", "T4b", "shop/db.py::Database.connect", None)  # R24a + R24b
+    assert calls[("app.py::c", "append")] == ("unresolved", None, None, "unknown-receiver")  # not a project class
+    assert calls[("app.py::d", "connect")] == ("unresolved", None, None, "unknown-receiver")  # no annotation
+    assert calls[("app.py::e", "connect")] == ("unresolved", None, None, "unknown-receiver")  # one hop only
