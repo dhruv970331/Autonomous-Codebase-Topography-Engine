@@ -233,13 +233,15 @@ def test_exports_follow_star_imports(tmp_path):
     assert index.exports[f"{r}/pkg/__init__.py"] == {"Database": f"{r}/pkg/db.py::Database", "run": f"{r}/pkg/api.py::run"}
 
 
-def _calls(root: Path, files: dict[str, str]) -> dict[tuple[str, str], tuple]:
-    """(caller relative to root, called name) -> (status, tier, target relative to root, reason), from the real pipeline."""
+def _calls(root: Path, files: dict[str, str], use_jedi: bool = False) -> dict[tuple[str, str], tuple]:
+    """(caller relative to root, called name) -> (status, tier, target relative to root, reason), from the real pipeline.
+
+    The ladder alone unless *use_jedi*: tier TJ changes many unknown-receiver results."""
     for rel, code in files.items():
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
-        (root / rel).write_text(code)
+        (root / rel).write_text(code, encoding="utf-8")
     parser = CodeParser()
-    resolution = resolve([parser.parse_file(root / rel) for rel in sorted(files)], root)
+    resolution = resolve([parser.parse_file(root / rel) for rel in sorted(files)], root, use_jedi)
     rel = lambda s: s.replace(f"{root}/", "") if s else s
     out = {}
     for r in resolution.calls:
@@ -356,7 +358,7 @@ def test_imports_resolve_through_exports(tmp_path):
     assert calls[("fallback.py", "run")] == ("ambiguous", None, None, None)  # def and import disagree
     assert calls[("star_after.py", "run")] == ("ambiguous", None, None, None)  # import and `*` disagree
     assert calls[("star_other.py", "run")] == ("resolved", "T3", "lib.py::run", None)
-    resolution = resolve([CodeParser().parse_file(f) for f in sorted(tmp_path.glob("*.py"))], tmp_path)
+    resolution = resolve([CodeParser().parse_file(f) for f in sorted(tmp_path.glob("*.py"))], tmp_path, use_jedi=False)
     star_after = next(r for r in resolution.calls if r.call.file_path.endswith("star_after.py"))
     assert star_after.candidates == [f"{tmp_path}/lib.py::run", f"{tmp_path}/m2.py::run"]
 
@@ -415,9 +417,12 @@ def test_report(tmp_path):
     for rel, code in files.items():
         _write(tmp_path / rel, code)
     parser = CodeParser()
-    report = resolve([parser.parse_file(tmp_path / rel) for rel in sorted(files)], tmp_path).report()
+    report = resolve([parser.parse_file(tmp_path / rel) for rel in sorted(files)], tmp_path, use_jedi=False).report()
     assert report == {
         "edge": {"calls": 3, "instantiates": 1},
+        "jedi_errors": 0,
+        "jedi_unmapped": 0,
+        "jedi_version": None,
         "rate": 4 / 6,
         "reason": {"builtin": 1, "local": 1, "no-match": 1, "stdlib": 1},
         "status": {"external": 2, "resolved": 4, "unresolved": 2},
@@ -623,3 +628,74 @@ def test_return_annotation_receivers(tmp_path):
     assert calls[("app.py::c", "append")] == ("unresolved", None, None, "unknown-receiver")  # not a project class
     assert calls[("app.py::d", "connect")] == ("unresolved", None, None, "unknown-receiver")  # no annotation
     assert calls[("app.py::e", "connect")] == ("unresolved", None, None, "unknown-receiver")  # one hop only
+
+
+JEDI_FILES = {
+    "shop/__init__.py": "",
+    "shop/models.py": (
+        "class A:\n    def m(self):\n        pass\n\n\n"
+        "class B:\n    def m(self):\n        pass\n\n\n"
+        "def make():\n    return A()\n"
+    ),
+    "use.py": (
+        "import json\nfrom pathlib import Path\n\nfrom shop.models import A, B, make\n\n\n"
+        "def union(x: A | B):\n    x.m()\n\n\n"
+        "def untyped(x):\n    x.m()\n\n\n"
+        "def stdlib(s):\n    x = json.JSONDecoder()\n    x.decode(s)\n\n\n"
+        "def made():\n    x = make()\n    x.m()\n\n\n"
+        "def wide():\n    x = make()\n    s = \"ééééé✓✓\"; x.m()\n\n\n"  # the called name's byte column is 13 past its character column
+        "def last():\n    y = A()\n    y = B()\n    y.m()\n\n\n"
+        "def maxed():\n    n = max([A()])\n    n.m()\n\n\n"
+        "def literal(parts):\n    \", \".join(parts)\n\n\n"
+        "def opened(n):\n    with open(n) as f:\n        f.read()\n\n\n"
+        "def pathed(p):\n    Path(p).read_text()\n\n\n"
+        "class Sub(A):\n    def m(self):\n        super().m()\n\n\n"
+        "class Svc:\n    def __init__(self):\n        self.db = A()\n        self.db = B()\n\n"
+        "    def run(self):\n        self.db.m()\n"
+    ),
+}
+
+
+def test_jedi_tier(tmp_path):
+    jedi = pytest.importorskip("jedi")
+    calls = _calls(tmp_path, JEDI_FILES, use_jedi=True)
+    assert calls[("use.py::union", "m")] == ("ambiguous", None, None, None)  # 10: A.m and B.m
+    assert calls[("use.py::untyped", "m")] == ("unresolved", None, None, "unknown-receiver")  # 10
+    assert calls[("use.py::stdlib", "decode")] == ("external", None, None, "jedi-external")  # 10
+    assert calls[("use.py::made", "m")] == ("resolved", "TJ", "shop/models.py::A.m", None)  # make() has no annotation
+    assert calls[("use.py::wide", "m")] == ("resolved", "TJ", "shop/models.py::A.m", None)
+    assert calls[("use.py::last", "m")] == ("resolved", "TJ", "shop/models.py::B.m", None)  # the later assignment wins
+    assert calls[("use.py::maxed", "m")] == ("resolved", "TJ", "shop/models.py::A.m", None)
+    assert calls[("use.py::Sub.m", "m")] == ("resolved", "TJ", "shop/models.py::A.m", None)  # super()
+    assert calls[("use.py::Svc.run", "m")] == ("ambiguous", None, None, None)  # self.db: A or B
+    for caller, name in [("literal", "join"), ("opened", "read"), ("pathed", "read_text")]:
+        assert calls[(f"use.py::{caller}", name)] == ("external", None, None, "jedi-external")
+    resolution = resolve([CodeParser().parse_file(tmp_path / rel) for rel in sorted(JEDI_FILES)], tmp_path)
+    two = [f"{tmp_path}/shop/models.py::A.m", f"{tmp_path}/shop/models.py::B.m"]
+    assert [r.candidates for r in resolution.calls if r.status == "ambiguous"] == [two, two]  # union, Svc.run
+    assert resolution.jedi_version == resolution.report()["jedi_version"] == jedi.__version__
+
+
+def test_without_jedi_is_the_plain_ladder(tmp_path):
+    calls = _calls(tmp_path, JEDI_FILES, use_jedi=False)
+    for caller, name in [
+        ("union", "m"), ("untyped", "m"), ("stdlib", "decode"), ("made", "m"), ("wide", "m"), ("last", "m"), ("maxed", "m"),
+        ("literal", "join"), ("opened", "read"), ("pathed", "read_text"), ("Sub.m", "m"), ("Svc.run", "m"),
+    ]:
+        assert calls[(f"use.py::{caller}", name)] == ("unresolved", None, None, "unknown-receiver")
+    resolution = resolve([CodeParser().parse_file(tmp_path / rel) for rel in sorted(JEDI_FILES)], tmp_path, use_jedi=False)
+    assert (resolution.jedi_version, resolution.jedi_unmapped, resolution.jedi_errors) == (None, 0, 0)
+
+
+def test_jedi_errors_are_counted(tmp_path, monkeypatch):
+    jedi = pytest.importorskip("jedi")
+    plain = _calls(tmp_path, JEDI_FILES)
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("jedi failed")
+
+    monkeypatch.setattr(jedi.Script, "goto", fail)
+    resolution = resolve([CodeParser().parse_file(tmp_path / rel) for rel in sorted(JEDI_FILES)], tmp_path)
+    assert _calls(tmp_path, JEDI_FILES, use_jedi=True) == plain  # every call keeps its ladder result
+    asked = sum(r.reason == "unknown-receiver" for r in resolution.calls)
+    assert resolution.report()["jedi_errors"] == asked == 12

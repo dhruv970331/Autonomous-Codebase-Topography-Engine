@@ -12,6 +12,9 @@ dependencies = [
 ]
 
 
+[project.optional-dependencies]
+jedi = ["jedi (>=0.20.1,<0.21.0)"]
+
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
@@ -24,7 +27,8 @@ packages = [
 dev = [
     "pytest (>=9.0.3,<10.0.0)",
     "ruff (>=0.17.1,<0.18.0)",
-    "griffe (>=2.3.2,<3.0.0)"
+    "griffe (>=2.3.2,<3.0.0)",
+    "jedi (>=0.20.1,<0.21.0)"
 ]
 
 [tool.ruff]

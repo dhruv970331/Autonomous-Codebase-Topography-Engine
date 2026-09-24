@@ -11,6 +11,11 @@ from pathlib import Path
 
 from acte.parser import CallSite, ImportBinding, LocalBinding, NodeInfo, ParseResult
 
+try:
+    import jedi
+except ImportError:  # jedi is optional (D7): without it tier TJ is skipped
+    jedi = None
+
 CANDIDATE_CEILING = 100
 _BUILTINS = set(dir(builtins))
 _NOT_BINDING_KINDS = {"global", "nonlocal", "attr"}
@@ -129,13 +134,16 @@ class CallResolution:
     recursive: bool = False  # target == caller: keep the record, emit no arrow (R11)
     candidates: list[str] = field(default_factory=list)  # sorted, ambiguous only; empty over the ceiling
     candidate_count: int = 0
-    reason: str | None = None  # "local", "no-match", "ceiling", "builtin", "stdlib", "third-party", "unknown-receiver"
+    reason: str | None = None  # "local", "no-match", "ceiling", "builtin", "stdlib", "third-party", "unknown-receiver", "jedi-external"
 
 
 @dataclass
 class Resolution:
     calls: list[CallResolution]  # sorted by (file, line, col, caller)
     index: SymbolIndex
+    jedi_version: str | None = None  # the jedi that ran tier TJ; None when it did not run
+    jedi_unmapped: int = 0  # jedi definitions inside the root that are no project node (ignored)
+    jedi_errors: int = 0  # goto calls that raised; those calls stay unknown-receiver
 
     def report(self) -> dict:
         """Counts per status, tier (resolved only), reason and edge kind, plus rate = resolved / (total - external)."""
@@ -145,6 +153,9 @@ class Resolution:
         measured = len(self.calls) - status.get("external", 0)
         return {
             "edge": count(c.edge for c in self.calls),
+            "jedi_errors": self.jedi_errors,
+            "jedi_unmapped": self.jedi_unmapped,
+            "jedi_version": self.jedi_version,
             "rate": status.get("resolved", 0) / measured if measured else None,
             "reason": count(c.reason for c in self.calls),
             "status": status,
@@ -153,10 +164,57 @@ class Resolution:
         }
 
 
-def resolve(results: list[ParseResult], root: Path) -> Resolution:
+def resolve(results: list[ParseResult], root: Path, use_jedi: bool = True) -> Resolution:
     index = SymbolIndex(results, root)
     calls = sorted((c for r in results for c in r.call_sites), key=lambda c: (c.file_path, c.line, c.col, c.caller_id))
-    return Resolution([_resolve_call(index, c) for c in calls], index)
+    resolved = [_resolve_call(index, c) for c in calls]
+    if not (use_jedi and jedi):
+        return Resolution(resolved, index)
+    calls, unmapped, errors = _jedi_tier(index, resolved)
+    return Resolution(calls, index, jedi.__version__, unmapped, errors)
+
+
+def _jedi_tier(index: SymbolIndex, resolved: list[CallResolution]) -> tuple[list[CallResolution], int, int]:
+    """TJ (D7): ask jedi where each receiver call left at unknown-receiver goes. Returns the calls,
+    how many definitions jedi found inside the root that map to no project node, and how many goto calls raised."""
+    root = index.root.resolve()
+    project = jedi.Project(root)
+    files = {Path(f).resolve(): f for f in index.by_file}  # by_loc keys are the parser's path strings
+    scripts, lines, unmapped, errors, out = {}, {}, 0, 0, []
+    for r in resolved:
+        call = r.call
+        if r.reason != "unknown-receiver" or call.receiver is None or not call.file_path.endswith(".py"):
+            out.append(r)
+            continue
+        if call.file_path not in scripts:
+            scripts[call.file_path] = jedi.Script(path=call.file_path, project=project)
+            lines[call.file_path] = Path(call.file_path).read_bytes().split(b"\n")
+        col = len(lines[call.file_path][call.line - 1][: call.col].decode("utf-8"))  # CallSite.col counts UTF-8 bytes, jedi characters
+        ids, external, other = set(), False, False
+        try:
+            found = scripts[call.file_path].goto(call.line, col, follow_imports=True)
+        except Exception:  # noqa: BLE001 -- a jedi failure on one call must not stop the run; it is counted
+            errors += 1
+            out.append(r)
+            continue
+        for d in found:
+            path = d.module_path.resolve() if d.module_path else None
+            if path is None or not path.is_relative_to(root):
+                external = True
+                continue
+            nid = index.by_loc.get((files.get(path), d.line))
+            if nid in index.by_id and d.type in ("function", "class"):  # a parameter shares its function's line
+                ids.add(nid)
+            else:
+                unmapped += 1
+                other = True
+        if ids:  # an external or unmapped answer beside a project one: several answers, so ambiguous
+            out.append(_pick(index, call, ids, external or other, "TJ"))
+        elif external and not other:
+            out.append(CallResolution(call, "external", reason="jedi-external"))
+        else:
+            out.append(r)
+    return out, unmapped, errors
 
 
 def _resolve_call(index: SymbolIndex, call: CallSite, typed: bool = True) -> CallResolution:
