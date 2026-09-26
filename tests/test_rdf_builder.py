@@ -1,9 +1,10 @@
 import pytest
 from rdflib import Literal, URIRef
+from rdflib.compare import isomorphic
 from rdflib.namespace import RDF, XSD
 
 from acte.parser import CodeParser, EdgeInfo, NodeInfo
-from acte.rdf_builder import CODE, KnowledgeGraphBuilder
+from acte.rdf_builder import CODE, KnowledgeGraphBuilder, build_graph
 from acte.sparql_engine import SPARQLEngine
 
 
@@ -129,3 +130,111 @@ def test_nested_and_top_level_helper_are_distinct_nodes(tmp_path):
     helpers = set(graph.subjects(CODE.name, Literal("helper", datatype=XSD.string)))
     assert len(helpers) == 2
     assert sorted(len(list(graph.objects(h, CODE.lineStart))) for h in helpers) == [1, 1]
+
+
+CALL_PROJECT = {
+    "x/util.py": "def build():\n    pass\n",
+    "y/util.py": "def build():\n    pass\n",
+    "app.py": (
+        "import os\n"
+        "from util import build\n"
+        "\n"
+        "\n"
+        "def helper():\n"
+        "    pass\n"
+        "\n"
+        "\n"
+        "class Database:\n"
+        "    def connect(self):\n"
+        "        pass\n"
+        "\n"
+        "\n"
+        "def run(n):\n"
+        "    helper()\n"
+        "    Database()\n"
+        "    build()\n"
+        "    os.getcwd()\n"
+        "    run(n - 1)\n"
+        "    [Database()][0].connect()  # unknown-receiver without jedi, TJ with it\n"
+        "\n"
+        "\n"
+        "helper()\n"
+    ),
+}
+
+
+def _call_graph(root, use_jedi=False):
+    for rel, code in CALL_PROJECT.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(code)
+    return build_graph(sorted(root / rel for rel in CALL_PROJECT), root, use_jedi)
+
+
+def test_call_sites_and_arrows(tmp_path):
+    graph = _call_graph(tmp_path)
+    uri = KnowledgeGraphBuilder()._make_uri
+    app = f"{tmp_path}/app.py"
+    run, helper, db = uri(f"{app}::run"), uri(f"{app}::helper"), uri(f"{app}::Database")
+    s = lambda v: Literal(v, datatype=XSD.string)
+    i = lambda v: Literal(v, datatype=XSD.integer)
+
+    def site(caller, line, col, name, status, extra):
+        return {
+            (RDF.type, CODE.CallSite), (CODE.inFunction, uri(caller)), (CODE.line, i(line)),
+            (CODE.column, i(col)), (CODE.targetName, s(name)), (CODE.status, s(status)), *extra,
+        }
+
+    expected = {
+        f"{app}::run@L15c4": site(f"{app}::run", 15, 4, "helper", "resolved",
+                                  {(CODE.tier, s("T2")), (CODE.resolvedTo, helper)}),
+        f"{app}::run@L16c4": site(f"{app}::run", 16, 4, "Database", "resolved",
+                                  {(CODE.tier, s("T2")), (CODE.resolvedTo, db)}),
+        f"{app}::run@L17c4": site(f"{app}::run", 17, 4, "build", "ambiguous", {
+            (CODE.candidateCount, i(2)),
+            (CODE.candidate, uri(f"{tmp_path}/x/util.py::build")),
+            (CODE.candidate, uri(f"{tmp_path}/y/util.py::build")),
+        }),
+        f"{app}::run@L18c7": site(f"{app}::run", 18, 7, "getcwd", "external",
+                                  {(CODE.receiver, s("os")), (CODE.reason, s("stdlib"))}),
+        f"{app}::run@L19c4": site(f"{app}::run", 19, 4, "run", "resolved", {
+            (CODE.tier, s("T2")), (CODE.resolvedTo, run),
+            (CODE.recursive, Literal(True, datatype=XSD.boolean)),
+        }),
+        f"{app}::run@L20c5": site(f"{app}::run", 20, 5, "Database", "resolved",
+                                  {(CODE.tier, s("T2")), (CODE.resolvedTo, db)}),
+        f"{app}::run@L20c20": site(f"{app}::run", 20, 20, "connect", "unresolved",
+                                   {(CODE.receiver, s("[Database()][0]")), (CODE.reason, s("unknown-receiver"))}),
+        f"{app}@L23c0": site(app, 23, 0, "helper", "resolved",
+                             {(CODE.tier, s("T2")), (CODE.resolvedTo, helper)}),
+    }
+    sites = set(graph.subjects(RDF.type, CODE.CallSite))
+    assert sites == {uri(k) for k in expected}
+    for k, props in expected.items():
+        assert set(graph.predicate_objects(uri(k))) == props, k
+    assert all(str(u).count("#") == 1 for u in sites)
+    assert f"{CODE}{tmp_path}/app.py::run@L19c4" in {str(u) for u in sites}  # "@" stays readable
+
+    assert (run, CODE.calls, helper) in graph
+    assert (uri(app), CODE.calls, helper) in graph
+    assert (run, CODE.instantiates, db) in graph
+    assert (run, CODE.calls, db) not in graph
+    assert (run, CODE.calls, run) not in graph  # R11
+    candidates = {uri(f"{tmp_path}/x/util.py::build"), uri(f"{tmp_path}/y/util.py::build")}
+    assert not candidates & set(graph.objects(run, CODE.calls))  # ambiguous: no arrow
+    assert (run, CODE.calls, uri(f"{app}::Database.connect")) not in graph
+
+
+def test_jedi_resolved_call_site(tmp_path):
+    pytest.importorskip("jedi")
+    graph = _call_graph(tmp_path, use_jedi=True)
+    uri = KnowledgeGraphBuilder()._make_uri
+    run, connect = uri(f"{tmp_path}/app.py::run"), uri(f"{tmp_path}/app.py::Database.connect")
+    site = uri(f"{tmp_path}/app.py::run@L20c20")
+    assert str(graph.value(site, CODE.tier)) == "TJ"
+    assert graph.value(site, CODE.resolvedTo) == connect
+    assert (run, CODE.calls, connect) in graph
+
+
+@pytest.mark.parametrize("use_jedi", [False, True])
+def test_build_is_deterministic(tmp_path, use_jedi):
+    assert isomorphic(_call_graph(tmp_path / "a", use_jedi), _call_graph(tmp_path / "a", use_jedi))

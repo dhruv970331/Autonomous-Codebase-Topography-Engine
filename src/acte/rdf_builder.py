@@ -10,7 +10,8 @@ from pathlib import Path
 from rdflib import Graph, Literal, Namespace, URIRef
 from rdflib.namespace import RDF, XSD
 
-from acte.parser import EdgeInfo, NodeInfo
+from acte.parser import CodeParser, EdgeInfo, NodeInfo
+from acte.resolver import CallResolution, Resolution, resolve
 
 # Formal namespace for the codebase topography ontology
 CODE = Namespace("http://acte.local/code#")
@@ -43,8 +44,8 @@ class KnowledgeGraphBuilder:
     # Public API
     # ------------------------------------------------------------------
 
-    def build(self, nodes: list[NodeInfo], edges: list[EdgeInfo]) -> Graph:
-        """Translate NodeInfo / EdgeInfo objects into RDF triples.
+    def build(self, nodes: list[NodeInfo], edges: list[EdgeInfo], resolution: Resolution | None = None) -> Graph:
+        """Translate NodeInfo / EdgeInfo objects, and the CallSites of *resolution* if given, into RDF triples.
 
         Triples are *accumulated* into self.graph across repeated calls so that
         an entire repository can be ingested file-by-file. Call reset() first
@@ -54,6 +55,8 @@ class KnowledgeGraphBuilder:
             self._add_node(node)
         for edge in edges:
             self._add_edge(edge)
+        for call in resolution.calls if resolution else []:
+            self._add_call(call)
         return self.graph
 
     def reset(self) -> None:
@@ -76,7 +79,7 @@ class KnowledgeGraphBuilder:
     def _make_uri(self, identifier: str) -> URIRef:
         """Encode an arbitrary code identifier into a valid RDF URI."""
         # "#" is encoded: the namespace's "#" must stay the only one in the IRI.
-        safe = urllib.parse.quote(identifier, safe="/:.")
+        safe = urllib.parse.quote(identifier, safe="/:.@")
         return URIRef(CODE[safe])
 
     def _add_node(self, node: NodeInfo) -> None:
@@ -114,3 +117,42 @@ class KnowledgeGraphBuilder:
         predicate = predicate_map.get(edge.kind)
         if predicate:
             self.graph.add((source_uri, predicate, target_uri))
+
+    def _add_call(self, r: CallResolution) -> None:
+        """One code:CallSite record, plus the calls / instantiates arrow when resolved (spec §7, D9, R11)."""
+        call = r.call
+        uri = self._make_uri(f"{call.caller_id}@L{call.line}c{call.col}")
+        caller = self._make_uri(call.caller_id)
+        g = self.graph
+        g.add((uri, RDF.type, CODE.CallSite))
+        g.add((uri, CODE.inFunction, caller))
+        g.add((uri, CODE.line, Literal(call.line, datatype=XSD.integer)))
+        g.add((uri, CODE.column, Literal(call.col, datatype=XSD.integer)))
+        g.add((uri, CODE.targetName, Literal(call.target_name, datatype=XSD.string)))
+        if call.receiver is not None:
+            g.add((uri, CODE.receiver, Literal(call.receiver, datatype=XSD.string)))
+        g.add((uri, CODE.status, Literal(r.status, datatype=XSD.string)))
+        if r.reason:
+            g.add((uri, CODE.reason, Literal(r.reason, datatype=XSD.string)))
+        if r.status == "resolved":
+            target = self._make_uri(r.target)
+            g.add((uri, CODE.tier, Literal(r.tier, datatype=XSD.string)))
+            g.add((uri, CODE.resolvedTo, target))
+            if r.recursive:
+                g.add((uri, CODE.recursive, Literal(True, datatype=XSD.boolean)))
+            else:  # R11: a recursive call keeps its record but draws no self-edge
+                g.add((caller, CODE[r.edge], target))
+        elif r.status == "ambiguous":
+            g.add((uri, CODE.candidateCount, Literal(r.candidate_count, datatype=XSD.integer)))
+            for c in r.candidates:
+                g.add((uri, CODE.candidate, self._make_uri(c)))
+
+
+def build_graph(paths: list[Path], root: Path, use_jedi: bool = True) -> Graph:
+    """The whole pipeline over *paths*: parse, resolve calls across all of them, build one graph."""
+    parser = CodeParser()
+    results = [parser.parse_file(p) for p in paths]
+    builder = KnowledgeGraphBuilder()
+    for result in results:
+        builder.build(result.nodes, result.edges)
+    return builder.build([], [], resolve(results, root, use_jedi))

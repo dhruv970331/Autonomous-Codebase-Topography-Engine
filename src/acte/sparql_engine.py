@@ -238,7 +238,7 @@ ORDER BY ?file ?start
     def _uri(self, identifier: str) -> str:
         """Return a SPARQL inline URI for *identifier*, e.g. ``<code:foo>``."""
         # "#" is encoded: the namespace's "#" must stay the only one in the IRI.
-        safe = urllib.parse.quote(identifier, safe="/:.")
+        safe = urllib.parse.quote(identifier, safe="/:.@")
         return f"<{_CODE_NS}{safe}>"
 
     def _literal(self, value: str) -> str:
