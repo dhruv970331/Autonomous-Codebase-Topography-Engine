@@ -142,7 +142,7 @@ class Resolution:
     calls: list[CallResolution]  # sorted by (file, line, col, caller)
     index: SymbolIndex
     jedi_version: str | None = None  # the jedi that ran tier TJ; None when it did not run
-    jedi_unmapped: int = 0  # jedi definitions inside the root that are no project node (ignored)
+    jedi_unmapped: int = 0  # jedi definitions in a parsed file that are no project node (ignored)
     jedi_errors: int = 0  # goto calls that raised; those calls stay unknown-receiver
 
     def report(self) -> dict:
@@ -176,9 +176,8 @@ def resolve(results: list[ParseResult], root: Path, use_jedi: bool = True) -> Re
 
 def _jedi_tier(index: SymbolIndex, resolved: list[CallResolution]) -> tuple[list[CallResolution], int, int]:
     """TJ (D7): ask jedi where each receiver call left at unknown-receiver goes. Returns the calls,
-    how many definitions jedi found inside the root that map to no project node, and how many goto calls raised."""
-    root = index.root.resolve()
-    project = jedi.Project(root)
+    how many definitions jedi found in a parsed file that map to no project node, and how many goto calls raised."""
+    project = jedi.Project(index.root.resolve())
     files = {Path(f).resolve(): f for f in index.by_file}  # by_loc keys are the parser's path strings
     scripts, lines, unmapped, errors, out = {}, {}, 0, 0, []
     for r in resolved:
@@ -199,7 +198,7 @@ def _jedi_tier(index: SymbolIndex, resolved: list[CallResolution]) -> tuple[list
             continue
         for d in found:
             path = d.module_path.resolve() if d.module_path else None
-            if path is None or not path.is_relative_to(root):
+            if path not in files:  # only parsed files are the project; a `.venv` or vendored code under the root is not
                 external = True
                 continue
             nid = index.by_loc.get((files.get(path), d.line))

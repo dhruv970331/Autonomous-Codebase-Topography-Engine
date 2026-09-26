@@ -699,3 +699,14 @@ def test_jedi_errors_are_counted(tmp_path, monkeypatch):
     assert _calls(tmp_path, JEDI_FILES, use_jedi=True) == plain  # every call keeps its ladder result
     asked = sum(r.reason == "unknown-receiver" for r in resolution.calls)
     assert resolution.report()["jedi_errors"] == asked == 12
+
+
+def test_jedi_definition_outside_the_parsed_files_is_external(tmp_path):
+    """Code under the root that was not parsed (a `.venv`, vendored packages) is not the project."""
+    pytest.importorskip("jedi")
+    (tmp_path / "fakepkg").mkdir()
+    (tmp_path / "fakepkg" / "__init__.py").write_text("class Thing:\n    def go(self):\n        pass\n")  # importable, not parsed
+    files = {"app.py": "from fakepkg import Thing\n\n\ndef run():\n    [Thing()][0].go()\n"}
+    assert _calls(tmp_path, files, use_jedi=True)[("app.py::run", "go")] == ("external", None, None, "jedi-external")
+    resolution = resolve([CodeParser().parse_file(tmp_path / "app.py")], tmp_path)
+    assert resolution.jedi_unmapped == 0
