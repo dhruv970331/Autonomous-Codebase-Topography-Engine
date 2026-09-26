@@ -259,6 +259,10 @@ def _resolve_receiver(index: SymbolIndex, call: CallSite, typed: bool = True) ->
         # a variable: T4b when its type is certain; an import or `*` export of the same name makes it uncertain
         certain = typed and not rest and not imports and not (scope == file and _star_exports(index, head, file)[0])
         return _typed(index, call, *_one_type(index.locals[scope][head]), scope) if certain else unknown
+    if typed and not rest and not local and len(imports) == 1 and not (scope in (None, file) and _star_exports(index, head, file)[0]):
+        variable = _imported_variable(index, imports[0], file)
+        if variable:  # T4b on a variable another project module binds
+            return _typed(index, call, *variable)
     defs = {f"{file}::{head}" if scope == file else f"{scope}.<locals>.{head}" for b in local}
     modules, external, misses, ambiguous = set(), set(), set(), False  # misses: why a binding gave no target
     for b in imports:
@@ -318,6 +322,28 @@ def _resolve_receiver(index: SymbolIndex, call: CallSite, typed: bool = True) ->
     if external and not misses:
         return CallResolution(call, "external", reason="stdlib" if external == {"stdlib"} else "third-party")
     return CallResolution(call, "unresolved", reason="no-match" if misses == {"no-match"} else "unknown-receiver")
+
+
+def _imported_variable(index: SymbolIndex, b: ImportBinding, file: str) -> tuple[str | None, bool, str] | None:
+    """Follow ``from M import name`` (re-imports too, at most 10 hops) to a module-level variable:
+    its type (``_one_type``) and the file it is bound in. None when the name is not one such variable."""
+    seen = set()
+    for _ in range(10):
+        files = [] if b.is_module_alias else index.module_files(b.module, file)
+        submodule = b.module + ("" if b.module.endswith(".") else ".") + b.imported_name
+        if len(files) != 1 or (files[0], b.imported_name) in seen or index.module_files(submodule, file):
+            return None
+        file, name = files[0], b.imported_name
+        seen.add((file, name))
+        if name in index.exports[file] or _star_exports(index, name, file)[0]:
+            return None  # a definition, or a name a `*` import may bind: the ladder's own business
+        local, imports = _bindings(index, file, name)
+        if local and not imports:
+            return *_one_type(index.locals[file][name]), file
+        if local or len(imports) != 1:
+            return None
+        b = imports[0]
+    return None
 
 
 def _one_type(bindings: list[LocalBinding]) -> tuple[str | None, bool]:

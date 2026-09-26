@@ -710,3 +710,36 @@ def test_jedi_definition_outside_the_parsed_files_is_external(tmp_path):
     assert _calls(tmp_path, files, use_jedi=True)[("app.py::run", "go")] == ("external", None, None, "jedi-external")
     resolution = resolve([CodeParser().parse_file(tmp_path / "app.py")], tmp_path)
     assert resolution.jedi_unmapped == 0
+
+
+def test_receiver_imported_from_a_module_variable(tmp_path):
+    calls = _calls(tmp_path, {
+        "pkg/__init__.py": "from .impl import smth\n",  # an instance re-exported through a package
+        "pkg/impl.py": "class Smth:\n    def func(self):\n        pass\n\n\nsmth = Smth()\n",
+        "cfg.py": (
+            "class A:\n    def load(self):\n        pass\n\n\nclass B:\n    def load(self):\n        pass\n\n\n"
+            "settings = A()\nplain = []\n"
+        ),
+        "two.py": "from cfg import A, B\n\nmixed = A()\nmixed = B()\n",
+        "main.py": (
+            "from cfg import plain, settings\nfrom pkg import smth\nfrom two import mixed\n\n\n"
+            "def via_package():\n    smth.func()\n\n\n"
+            "def direct():\n    settings.load()\n\n\n"
+            "def missing():\n    settings.save()\n\n\n"
+            "def two_types():\n    mixed.load()\n\n\n"
+            "def untyped():\n    plain.load()\n"
+        ),
+    })
+    assert calls[("main.py::via_package", "func")] == ("resolved", "T4b", "pkg/impl.py::Smth.func", None)
+    assert calls[("main.py::direct", "load")] == ("resolved", "T4b", "cfg.py::A.load", None)
+    assert calls[("main.py::missing", "save")] == ("unresolved", None, None, "no-match")
+    assert calls[("main.py::two_types", "load")] == ("unresolved", None, None, "unknown-receiver")
+    assert calls[("main.py::untyped", "load")] == ("unresolved", None, None, "unknown-receiver")
+
+
+def test_imported_variable_cycle_terminates(tmp_path):
+    calls = _calls(tmp_path, {
+        "a.py": "from b import x\n\n\ndef f():\n    x.go()\n",
+        "b.py": "from a import x\n",
+    })
+    assert calls[("a.py::f", "go")] == ("unresolved", None, None, "unknown-receiver")
