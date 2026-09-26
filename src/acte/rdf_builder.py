@@ -110,7 +110,6 @@ class KnowledgeGraphBuilder:
 
         predicate_map = {
             "CONTAINS":    CODE.contains,
-            "CALLS":       CODE.calls,
             "IMPORTS_FROM": CODE.importsFrom,
             "INHERITS":    CODE.inherits,
         }

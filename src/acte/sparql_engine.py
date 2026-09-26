@@ -6,16 +6,15 @@ Design principle: the LLM decides *which* query to run and *with what argument*.
 It never writes SPARQL. Every named query is hardcoded and deterministic — that
 is what separates ACTE from hallucination-prone RAG approaches.
 
-URI note on CALLS edges
------------------------
-The parser records call targets as short, unqualified names (e.g. "db_connect")
-because cross-file call resolution is not yet implemented. The CALLS edge
-therefore points to a bare URI such as <code:db_connect>, which is NOT the same
-URI as the Function node <code:/path/to/file.py::db_connect>.
+Call shape (spec-001 §7)
+------------------------
+Every call is a ``code:CallSite`` record with a ``code:status``. Only a resolved
+call also draws an arrow between real nodes: ``caller code:calls target`` for a
+function, ``caller code:instantiates target`` for a class (D9). The caller is a
+Function, or the File for module-level calls. A recursive call keeps its record
+but draws no arrow (R11); ambiguous, unresolved and external calls draw none.
 
-Consequence: callers_of() and blast_radius() construct the target URI from the
-short name directly. This is intentional and consistent with how rdf_builder
-mints those URIs. Cross-file resolution is a V2 concern.
+Queries take a short ``code:name`` and match every node with that name.
 """
 
 import urllib.parse
@@ -82,16 +81,15 @@ class SPARQLEngine:
     # ------------------------------------------------------------------
 
     def callers_of(self, function_name: str) -> list[FunctionResult]:
-        """Return all functions that directly call *function_name*."""
-        target = self._uri(function_name)
+        """Return the functions and files that directly call or instantiate anything named *function_name*."""
         q = _PREFIXES + f"""
 SELECT DISTINCT ?name ?file ?start ?end WHERE {{
-    ?caller a code:Function ;
+    ?target code:name {self._literal(function_name)} .
+    ?caller code:calls|code:instantiates ?target ;
             code:name      ?name ;
             code:filePath  ?file ;
             code:lineStart ?start ;
-            code:lineEnd   ?end ;
-            code:calls {target} .
+            code:lineEnd   ?end .
 }}
 ORDER BY ?file ?start
 """
@@ -101,20 +99,19 @@ ORDER BY ?file ?start
         ]
 
     def blast_radius(self, function_name: str) -> list[FunctionResult]:
-        """Return every function that transitively calls *function_name*.
+        """Return every function or file that transitively calls or instantiates anything named *function_name*.
 
-        Uses SPARQL 1.1 property path ``code:calls+`` for multi-hop traversal.
-        Changing *function_name* may break every function returned here.
+        Uses the SPARQL 1.1 property path ``(code:calls|code:instantiates)+``.
+        Changing *function_name* may break every caller returned here.
         """
-        target = self._uri(function_name)
         q = _PREFIXES + f"""
 SELECT DISTINCT ?name ?file ?start ?end WHERE {{
-    ?caller a code:Function ;
+    ?target code:name {self._literal(function_name)} .
+    ?caller (code:calls|code:instantiates)+ ?target ;
             code:name      ?name ;
             code:filePath  ?file ;
             code:lineStart ?start ;
-            code:lineEnd   ?end ;
-            code:calls+    {target} .
+            code:lineEnd   ?end .
 }}
 ORDER BY ?file ?start
 """
@@ -124,7 +121,7 @@ ORDER BY ?file ?start
         ]
 
     def callees_of(self, function_name: str, file_path: str) -> list[str]:
-        """Return the names of every function directly called by *function_name*.
+        """Return the names of every function or class a call in *function_name* resolves to (itself too, if recursive).
 
         *file_path* is required to resolve the correct qualified URI when the
         same function name exists in multiple files.
@@ -132,15 +129,13 @@ ORDER BY ?file ?start
         source = self._uri(f"{file_path}::{function_name}")
         q = _PREFIXES + f"""
 SELECT DISTINCT ?callee_name WHERE {{
-    {source} code:calls ?callee_uri .
-    BIND(STRAFTER(STR(?callee_uri), "{_CODE_NS}") AS ?callee_name)
+    ?site code:inFunction {source} ;
+          code:resolvedTo ?callee .
+    ?callee code:name ?callee_name .
 }}
 ORDER BY ?callee_name
 """
-        return [
-            urllib.parse.unquote(str(r.callee_name))
-            for r in self.graph.query(q)
-        ]
+        return [str(r.callee_name) for r in self.graph.query(q)]
 
     def functions_in_file(self, file_path: str) -> list[FunctionResult]:
         """Return all functions defined in *file_path*, ordered by line number."""
@@ -195,18 +190,20 @@ ORDER BY ?dep
         """Return functions that are never called by anything in the graph.
 
         Useful for dead-code detection. A function is an orphan when no
-        ``code:calls`` triple points to its short-name URI.
+        calls / instantiates arrow and no resolved CallSite of another caller
+        points to it. A function called only by itself is an orphan: its
+        recursive CallSite does not count (R11).
         """
-        q = _PREFIXES + f"""
-SELECT DISTINCT ?name ?file ?start ?end WHERE {{
+        q = _PREFIXES + """
+SELECT DISTINCT ?name ?file ?start ?end WHERE {
     ?f a code:Function ;
        code:name      ?name ;
        code:filePath   ?file ;
        code:lineStart ?start ;
        code:lineEnd   ?end .
-    BIND(URI(CONCAT("{_CODE_NS}", ENCODE_FOR_URI(?name))) AS ?call_target)
-    FILTER NOT EXISTS {{ ?anything code:calls ?call_target . }}
-}}
+    FILTER NOT EXISTS { ?anything code:calls|code:instantiates ?f . }
+    FILTER NOT EXISTS { ?site code:resolvedTo ?f ; code:inFunction ?caller . FILTER(?caller != ?f) }
+}
 ORDER BY ?file ?start
 """
         return [

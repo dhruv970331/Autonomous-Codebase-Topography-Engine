@@ -22,7 +22,6 @@ def sample_data():
     edges = [
         EdgeInfo(kind="CONTAINS", source="main.py", target="main.py::AuthManager", file_path="main.py", line=2),
         EdgeInfo(kind="CONTAINS", source="main.py::AuthManager", target="main.py::AuthManager.verify", file_path="main.py", line=3),
-        EdgeInfo(kind="CALLS", source="main.py::AuthManager.verify", target="db_connect", file_path="main.py", line=4)
     ]
     return nodes, edges
 
@@ -34,13 +33,13 @@ def test_uri_alignment(builder, sample_data):
     func_node = next(n for n in nodes if n.name == "verify")
     func_uri = builder._make_uri(builder._node_id(func_node))
 
-    # Verify the CALLS edge uses the identical URI for its source
-    target_uri = builder._make_uri("db_connect")
+    # Verify the CONTAINS edge uses the identical URI for its target
+    class_uri = builder._make_uri("main.py::AuthManager")
     assert (
+        class_uri,
+        CODE.contains,
         func_uri,
-        CODE.calls,
-        target_uri,
-    ) in graph, "Fatal: Node URI and Edge source URI do not match."
+    ) in graph, "Fatal: Node URI and Edge target URI do not match."
 
 
 def test_accumulation_and_reset(builder, sample_data):
@@ -92,12 +91,6 @@ def test_edge_predicates(builder, sample_data):
     nodes, edges = sample_data
     graph = builder.build(nodes, edges)
 
-    # Verify CALLS edges map to code:calls
-    caller = builder._make_uri("main.py::AuthManager.verify")
-    callee = builder._make_uri("db_connect")
-
-    assert (caller, CODE.calls, callee) in graph
-
     # Verify CONTAINS edges map to code:contains
     file_uri = builder._make_uri("main.py")
     class_uri = builder._make_uri("main.py::AuthManager")
@@ -108,9 +101,7 @@ def test_hash_in_path_is_encoded(tmp_path):
     src = tmp_path / "dir#1" / "mod.py"
     src.parent.mkdir()
     src.write_text("def helper():\n    pass\n\ndef run():\n    helper()\n")
-    result = CodeParser().parse_file(src)
-    builder = KnowledgeGraphBuilder()
-    graph = builder.build(result.nodes, result.edges)
+    graph = build_graph([src], tmp_path)
 
     uris = {str(t) for triple in graph for t in triple if isinstance(t, URIRef)}
     code_uris = {u for u in uris if u.startswith(str(CODE))}

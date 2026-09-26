@@ -25,7 +25,8 @@ def test_call_extraction(parser, tmp_path):
     p.write_bytes(code)
     result = parser.parse_file(p)
     
-    assert any(e.kind == "CALLS" and "router" in e.source and e.target == "db_connect" for e in result.edges), "Failed to trace call edge."
+    assert any(cs.caller_id == f"{p}::router" and cs.target_name == "db_connect" for cs in result.call_sites), "Failed to trace call."
+    assert not any(e.kind == "CALLS" for e in result.edges), "Calls are CallSites now, not bare-name edges."
 
 def test_import_extraction(parser, tmp_path):
     code = b"import os\nfrom typing import List\n"
@@ -296,7 +297,6 @@ def test_call_in_nested_function_has_nested_caller_id(parser, tmp_path):
 
     cs = next(cs for cs in result.call_sites if cs.target_name == "g")
     assert cs.caller_id == f"{p}::outer.<locals>.helper"
-    assert any(e.kind == "CALLS" and e.source == cs.caller_id and e.target == "g" for e in result.edges)
 
 def test_call_in_class_body_is_attributed_to_enclosing_function_or_file(parser, tmp_path):
     p = tmp_path / "a.py"

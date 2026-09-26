@@ -461,7 +461,6 @@ class CodeParser:
                 if call_name:
                     # A call in a class body runs in the enclosing function, or the module.
                     caller = f"{file_path}::{func}" if func else file_path
-                    edges.append(EdgeInfo("CALLS", caller, call_name, file_path, _get_start_line(child)))
                     receiver = self._get_call_receiver(child, source)
                     call_sites.append(CallSite(caller, call_name, receiver, file_path, _get_start_line(name_node), _get_start_col(name_node)))
                 self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, import_bindings, local_bindings, scope, in_func, func, method_of, _depth + 1)
