@@ -1,0 +1,287 @@
+{
+  "missing": {
+    "args/assigned_call": [
+      "main.func -> main.param_func"
+    ],
+    "args/call": [
+      "main.func -> main.param_func"
+    ],
+    "args/imported_assigned_call": [
+      "to_import.func -> main.param_func"
+    ],
+    "args/imported_call": [
+      "to_import.func -> main.param_func"
+    ],
+    "args/nested_call": [
+      "main -> main.func",
+      "main.func -> main.param_func",
+      "main.param_func -> main.nested_func"
+    ],
+    "args/param_call": [
+      "main.func -> main.func3"
+    ],
+    "assignments/chained": [
+      "main -> main.func1",
+      "main -> main.func2"
+    ],
+    "assignments/recursive_tuple": [
+      "main -> main.func1",
+      "main -> main.func2",
+      "main -> main.func3",
+      "main -> main.func4",
+      "main -> main.func5",
+      "main -> main.func6"
+    ],
+    "assignments/starred": [
+      "main -> main.func1",
+      "main -> main.func2",
+      "main -> main.func3",
+      "main -> main.func4"
+    ],
+    "assignments/tuple": [
+      "main -> main.func1",
+      "main -> main.func2",
+      "main -> main.func3"
+    ],
+    "builtins/map": [
+      "main -> main.func",
+      "main -> main.func2",
+      "main -> main.func3",
+      "main -> main.func3.func"
+    ],
+    "classes/assigned_call": [
+      "main -> main.MyClass.func"
+    ],
+    "classes/assigned_self_call": [
+      "main.MyClass.func2 -> main.MyClass.func1"
+    ],
+    "classes/base_class_attr": [
+      "main -> main.A.B.bfunc"
+    ],
+    "classes/base_class_calls_child": [
+      "main -> main.A.func",
+      "main.A.func -> main.B.func2",
+      "main.A.func -> main.C.func2"
+    ],
+    "classes/nested_class_calls": [
+      "main.B.func -> main.C.func"
+    ],
+    "classes/parameter_call": [
+      "main.MyClass.func1 -> main.MyClass.func2",
+      "main.MyClass.func2 -> main.MyClass.func3"
+    ],
+    "classes/return_call": [
+      "main -> main.MyClass.func2"
+    ],
+    "classes/return_call_direct": [
+      "main -> main.MyClass.func2"
+    ],
+    "classes/self_assign_func": [
+      "main.B.func -> main.A.func"
+    ],
+    "classes/self_assignment": [
+      "main.A.func -> main.A.func2"
+    ],
+    "classes/super_class_return": [
+      "main -> main.A.func1"
+    ],
+    "classes/tuple_assignment": [
+      "main -> main.MyClass.func1",
+      "main -> main.MyClass.func2",
+      "main -> main.MyClass.func3"
+    ],
+    "decorators/assigned": [
+      "main -> main.dec2"
+    ],
+    "decorators/call": [
+      "main -> main.dec"
+    ],
+    "decorators/nested": [
+      "main.func -> main.func.dec"
+    ],
+    "decorators/nested_decorators": [
+      "main -> main.dec1",
+      "main -> main.dec1.inner",
+      "main -> main.dec2",
+      "main.dec1.inner -> main.dec2.inner",
+      "main.dec2.inner -> main.func"
+    ],
+    "decorators/param_call": [
+      "main -> main.dec",
+      "main.dec -> main.func"
+    ],
+    "decorators/return": [
+      "main -> main.func1.dec"
+    ],
+    "decorators/return_different_func": [
+      "main -> main.dec",
+      "main.dec.inner -> main.func",
+      "main.func2 -> main.dec.inner"
+    ],
+    "dicts/add_key": [
+      "main -> main.func"
+    ],
+    "dicts/assign": [
+      "main -> main.func2"
+    ],
+    "dicts/call": [
+      "main -> main.func1",
+      "main -> main.func2"
+    ],
+    "dicts/ext_key": [
+      "main -> main.func"
+    ],
+    "dicts/nested": [
+      "main -> main.func2"
+    ],
+    "dicts/new_key_param": [
+      "main -> main.func2"
+    ],
+    "dicts/param": [
+      "main.func1 -> main.func2"
+    ],
+    "dicts/param_key": [
+      "main.func1 -> main.func2",
+      "main.func1 -> main.func3"
+    ],
+    "dicts/return": [
+      "main -> main.func2"
+    ],
+    "dicts/return_assign": [
+      "main -> main.func2"
+    ],
+    "dicts/type_coercion": [
+      "main -> main.func1"
+    ],
+    "dicts/update": [
+      "main -> main.func2"
+    ],
+    "direct_calls/assigned_call": [
+      "main -> main.func",
+      "main -> main.return_func"
+    ],
+    "direct_calls/imported_return_call": [
+      "main -> to_import.return_func"
+    ],
+    "direct_calls/return_call": [
+      "main -> main.return_func",
+      "main -> main.return_func.nested_return_func"
+    ],
+    "direct_calls/with_parameters": [
+      "main -> main.func",
+      "main -> main.func2"
+    ],
+    "dynamic/eval": [
+      "main -> main.func"
+    ],
+    "exceptions/raise": [
+      "main -> main.A.__init__"
+    ],
+    "exceptions/raise_assigned": [
+      "main -> main.A.__init__"
+    ],
+    "exceptions/raise_attr": [
+      "main -> main.A.B.__init__"
+    ],
+    "functions/assigned_call": [
+      "main -> main.func"
+    ],
+    "functions/assigned_call_lit_param": [
+      "main -> main.func"
+    ],
+    "functions/imported_call": [
+      "main -> to_import.func"
+    ],
+    "generators/iter_param": [
+      "main.func -> main.Cls.__iter__",
+      "main.func -> main.Cls.__next__"
+    ],
+    "generators/iter_return": [
+      "main -> main.Cls.__iter__",
+      "main -> main.Cls.__next__",
+      "main -> main.func"
+    ],
+    "generators/iterable": [
+      "main -> main.func.__iter__",
+      "main -> main.func.__next__"
+    ],
+    "generators/iterable_assigned": [
+      "main -> main.Cls.__iter__",
+      "main -> main.Cls.__next__"
+    ],
+    "generators/yield": [
+      "main -> main.func2"
+    ],
+    "kwargs/assigned_call": [
+      "main -> main.func",
+      "main.func -> main.func2"
+    ],
+    "kwargs/call": [
+      "main.func -> main.func2",
+      "main.func -> main.func3",
+      "main.func -> main.func4"
+    ],
+    "kwargs/chained_call": [
+      "main.func1 -> main.func2",
+      "main.func2 -> main.func3"
+    ],
+    "lists/ext_index": [
+      "main -> main.func2"
+    ],
+    "lists/nested": [
+      "main -> main.func1"
+    ],
+    "lists/param_index": [
+      "main.func1 -> main.func2"
+    ],
+    "lists/simple": [
+      "main -> main.func1",
+      "main -> main.func2",
+      "main -> main.func3",
+      "main -> main.func4"
+    ],
+    "lists/slice": [
+      "main -> main.func2"
+    ],
+    "mro/basic": [
+      "main -> main.A.func"
+    ],
+    "mro/basic_init": [
+      "main -> main.A.__init__"
+    ],
+    "mro/parents_same_superclass": [
+      "main -> main.A.__init__",
+      "main -> main.C.func"
+    ],
+    "mro/self_assignment": [
+      "main -> main.A.func",
+      "main -> main.B.func",
+      "main -> main.B.funcb"
+    ],
+    "mro/super_call": [
+      "main.B.__init__ -> main.A.__init__",
+      "main.C.__init__ -> main.B.__init__"
+    ],
+    "mro/two_parents": [
+      "main -> main.A.func",
+      "main -> main.B.__init__"
+    ],
+    "returns/call": [
+      "main -> main.return_func"
+    ],
+    "returns/imported_call": [
+      "main -> to_import.return_func"
+    ],
+    "returns/nested_import_call": [
+      "main -> to_import2.return_func"
+    ],
+    "returns/return_complex": [
+      "main -> main.func2"
+    ]
+  },
+  "wrong": {
+    "decorators/return_different_func": {
+      "main.func2 -> main.func": "the project decorator dec replaces func with inner; ACTE links to the decorated definition by design (spec D11)"
+    }
+  }
+}
