@@ -114,8 +114,11 @@ class SymbolIndex:
         return [self.modules[name]] if name in self.modules else []
 
     def modules_for(self, name: str) -> list[str]:
-        """Files whose module is *name* or ends with ``.name`` (src-layout: ``src.acte.parser`` serves ``acte.parser``)."""
-        return sorted(f for m, f in self.modules.items() if m == name or m.endswith("." + name))
+        """The file whose module is *name*; only when there is none, files whose module ends with ``.name``
+        (src-layout: ``src.acte.parser`` serves ``acte.parser``)."""
+        if name in self.modules:  # as in Python: `nested` is the package, not `nested.nested`
+            return [self.modules[name]]
+        return sorted(f for m, f in self.modules.items() if m.endswith("." + name))
 
 
 def _module_name(file_path: str, root: Path) -> str:

@@ -92,6 +92,13 @@ def test_modules_and_lookup(project):
     assert index.modules_for("os") == []
 
 
+def test_exact_module_wins_over_suffix_match(tmp_path):
+    index = _index(tmp_path, {rel: "def f():\n    pass\n" for rel in ("nested/__init__.py", "nested/nested.py", "src/acte/parser.py")})
+    assert index.modules_for("nested") == [f"{tmp_path}/nested/__init__.py"]
+    assert index.modules_for("nested.nested") == [f"{tmp_path}/nested/nested.py"]
+    assert index.modules_for("acte.parser") == [f"{tmp_path}/src/acte/parser.py"]  # src-layout: no exact match
+
+
 @pytest.mark.parametrize("order", [1, -1])
 def test_package_wins_over_same_named_module(tmp_path, order):
     files = [tmp_path / "pkg.py", tmp_path / "pkg" / "__init__.py"]
