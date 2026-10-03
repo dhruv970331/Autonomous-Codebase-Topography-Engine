@@ -30,7 +30,7 @@ Early. Layers 1 to 3 exist and are tested; layer 4 has not been started.
 | AST extraction | Working for Python; Java, JavaScript and TypeScript extract structure only |
 | RDF graph + Turtle output | Working |
 | Named SPARQL queries | 8 implemented |
-| Cross-file call resolution | **Not implemented**, see Limitations |
+| Cross-file call resolution | Working for Python, see Limitations |
 | Repository ingestion / CLI | Not implemented |
 | MCP server | Not implemented |
 
@@ -49,21 +49,16 @@ There is no command-line interface yet. The pipeline is used from Python:
 
 ```python
 from pathlib import Path
-from acte.parser import CodeParser
-from acte.rdf_builder import KnowledgeGraphBuilder
+from acte.rdf_builder import build_graph
 from acte.sparql_engine import SPARQLEngine
 
-parser  = CodeParser()
-builder = KnowledgeGraphBuilder()
+root  = Path("src")
+graph = build_graph(sorted(root.rglob("*.py")), root)   # parse, resolve calls, build
+graph.serialize("graph.ttl", format="turtle")
 
-for path in Path("src").rglob("*.py"):
-    result = parser.parse_file(path)
-    builder.build(result.nodes, result.edges)
-
-builder.serialize("graph.ttl")
-
-engine = SPARQLEngine(graph=builder.graph)
+engine = SPARQLEngine(graph=graph)
 engine.callers_of("db_connect")
+engine.blast_radius("db_connect", depth=3)
 engine.functions_in_file("src/app.py")
 engine.dependencies_of("src/app.py")
 engine.orphan_functions()
@@ -73,16 +68,15 @@ engine.orphan_functions()
 
 Stated plainly, because they affect what the results mean.
 
-- **Call targets are recorded as bare names, not qualified identifiers.** A `CALLS` edge
-  points at `db_connect` rather than `src/db.py::db_connect`, so it does not connect to the
-  function's node. Multi-hop traversal therefore stops after one step, and
-  `blast_radius()` currently returns the same results as `callers_of()`. Fixing this is the
-  next piece of work.
-- **Method calls on variables are not resolved.** `db.connect()` cannot be traced without
-  knowing the type of `db`.
-- **Dead-code detection over-reports.** Because call targets are unqualified, and because
-  entry points and constructors are never called by name, `orphan_functions()` returns
-  false positives.
+- **Not every call is resolved.** A call is linked only when its target is certain. Calls
+  that could go to several places are recorded as ambiguous, and `callers_of()` and
+  `blast_radius()` label their answers `lower-bound` when such calls might reach the target.
+- **Method calls on variables resolve only when the variable's type is known**, from an
+  annotation or an assignment like `db = Database()`. Values passed around (callbacks,
+  dicts, decorators) are not followed.
+- **Dead-code detection over-reports.** Entry points, `__init__` methods, properties and
+  functions passed as values or reached only through unresolved calls show up in
+  `orphan_functions()`.
 - **Go and TSX are mapped to file extensions but have no grammar rules**, so those files
   produce a file node and nothing else.
 - **Class inheritance is not extracted.** The `code:inherits` predicate exists but nothing

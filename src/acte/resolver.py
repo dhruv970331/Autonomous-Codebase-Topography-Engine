@@ -1,6 +1,7 @@
 """
 Call resolution (spec-001): every CallSite gets exactly one status, and a target only
-when nothing else is possible. Not yet wired into the graph.
+when nothing else is possible.
+Used by `rdf_builder.build_graph`.
 """
 
 import builtins
