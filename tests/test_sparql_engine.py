@@ -60,11 +60,9 @@ def test_callers_of_direct(mock_engine, tmp_path):
 
 def test_blast_radius_transitive(mock_engine):
     """Test multi-hop transitive caller resolution (The core feature)."""
-    results = mock_engine.blast_radius("db_connect")
-    assert len(results) == 2
-    names = {r.name for r in results}
-    assert "verify_token" in names
-    assert "login" in names
+    [answer] = mock_engine.blast_radius("db_connect")
+    assert [(i.name, i.distance) for i in answer.affected] == [("verify_token", 1), ("login", 2)]
+    assert (answer.total, answer.truncated, answer.depth, answer.completeness) == (2, False, 3, "exact")
 
 def test_callees_of(mock_engine, tmp_path):
     """Test outbound call extraction using the qualified parent scope."""
@@ -192,9 +190,69 @@ def test_blast_radius_follows_a_chain_across_files(tmp_path):
         "a.py": "from b import level2\n\n\ndef entry():\n    level1()\n\n\ndef level1():\n    level2()\n",
         "b.py": "def level2():\n    level3()\n\n\ndef level3():\n    pass\n",
     })
-    assert {(r.name, r.file_path) for r in engine.blast_radius("level3")} == {
-        ("level2", f"{tmp_path}/b.py"), ("level1", f"{tmp_path}/a.py"), ("entry", f"{tmp_path}/a.py"),
-    }
+    [answer] = engine.blast_radius("level3")
+    assert [(i.name, i.file_path, i.distance, i.via.rsplit("::")[-1]) for i in answer.affected] == [
+        ("level2", f"{tmp_path}/b.py", 1, "level3"), ("level1", f"{tmp_path}/a.py", 2, "level2"),
+        ("entry", f"{tmp_path}/a.py", 3, "level1"),
+    ]
+    assert (answer.completeness, answer.reasons) == ("exact", {})
+    [answer] = engine.blast_radius("level3", depth=1)
+    assert [i.name for i in answer.affected] == ["level2"]
+    assert (answer.depth, answer.completeness, answer.reasons) == (1, "lower-bound", {"depth-limit": 1})
+
+
+RANKED = (
+    "def t():\n    pass\n\n\ndef a():\n    t()\n\n\ndef b():\n    t()\n\n\n"
+    "def x():\n    a()\n\n\ndef y():\n    b()\n\n\ndef z():\n    b()\n"
+)
+
+
+def test_blast_radius_ranks_by_in_degree_and_truncates(tmp_path):
+    """D5: within a distance, the node with more confirmed callers comes first; limit cuts after ranking."""
+    engine = _engine(tmp_path, {"r.py": RANKED})
+    [answer] = engine.blast_radius("t", depth=2)
+    assert [(i.name, i.distance, i.via.rsplit("::")[-1]) for i in answer.affected] == [
+        ("b", 1, "t"), ("a", 1, "t"), ("x", 2, "a"), ("y", 2, "b"), ("z", 2, "b"),
+    ]
+    [cut] = engine.blast_radius("t", depth=2, limit=1)
+    assert ([i.name for i in cut.affected], cut.total, cut.truncated) == (["b"], 5, True)
+    assert engine.blast_radius("t", depth=0)[0].depth == 1
+    assert engine.blast_radius("t", depth=99)[0].depth == 10
+
+
+def test_blast_radius_mutual_recursion_terminates(tmp_path):
+    engine = _engine(tmp_path, {"m.py": "def p():\n    q()\n\n\ndef q():\n    p()\n"})
+    [answer] = engine.blast_radius("p", depth=10)
+    assert [(i.name, i.distance) for i in answer.affected] == [("q", 1)]
+    assert answer.completeness == "exact"
+
+
+def test_blast_radius_of_init_reaches_instantiators_and_files(tmp_path):
+    """spec §10.15 (D9); a module-level caller is affected but not expanded."""
+    engine = _engine(tmp_path, {"db.py": SHOP + "\n\ndef checkout():\n    place_order()\n\n\nplace_order()\n"})
+    [answer] = engine.blast_radius("Database.__init__")
+    assert [(i.id.removeprefix(f"{tmp_path}/"), i.distance) for i in answer.affected] == [
+        ("db.py::place_order", 1), ("db.py", 2), ("db.py::checkout", 2),
+    ]
+
+
+def test_blast_radius_unknown_receiver_on_the_path_is_lower_bound(tmp_path):
+    engine = _engine(tmp_path, {"u.py": RANKED + "\n\ndef other(o):\n    o.a()\n"})
+    [answer] = engine.blast_radius("t")
+    assert (answer.completeness, answer.reasons) == ("lower-bound", {"unknown-receiver": 1})
+
+
+def test_blast_radius_possible_callers_two_hops_away(tmp_path):
+    """R19: an ambiguous x.save() reaching both saves (which call t) is listed once, and not followed."""
+    model = "from lib import t\n\n\nclass Database:\n    def save(self):\n        t()\n"
+    engine = _engine(tmp_path, {
+        "lib.py": "def t():\n    pass\n", "two/m1.py": model, "two/m2.py": model,
+        "a.py": "from m1 import *\nfrom m2 import *\n\n\ndef f(x: Database):\n    x.save()\n\n\ndef g():\n    f(1)\n",
+    })
+    [answer] = engine.blast_radius("t")
+    assert [i.id.removeprefix(f"{tmp_path}/") for i in answer.affected] == ["two/m1.py::Database.save", "two/m2.py::Database.save"]
+    assert [(c.name, c.line) for c in answer.possible] == [("f", 6)]
+    assert (answer.completeness, answer.reasons) == ("lower-bound", {"ambiguous": 1})
 
 
 def test_arrows_reach_typed_nodes_and_every_call_site_has_one_status():

@@ -14,8 +14,8 @@ function, ``caller code:instantiates target`` for a class (D9). The caller is a
 Function, or the File for module-level calls. A recursive call keeps its record
 but draws no arrow (R11); ambiguous, unresolved and external calls draw none.
 
-``callers_of`` takes a qualified id, qualname or short name (see its docstring);
-the other queries take a short ``code:name`` and match every node with that name.
+``callers_of`` and ``blast_radius`` take a qualified id, qualname or short name
+(see ``callers_of``); the other queries take a short ``code:name``.
 """
 
 import urllib.parse
@@ -31,6 +31,7 @@ _PREFIXES = (
     "PREFIX xsd:  <http://www.w3.org/2001/XMLSchema#>\n"
 )
 _MAX_ANSWERS = 6  # R23: per-definition answers for an ambiguous name
+_MAX_DEPTH = 10  # D3: hard ceiling on blast_radius hops
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +69,27 @@ class CallerAnswer:
     possible: list[Caller]  # ambiguous CallSites listing target as a candidate (R19)
     completeness: str       # "exact" | "lower-bound" (R23)
     reasons: dict[str, int]  # why lower-bound: "ambiguous", "unknown-receiver", "ceiling" counts
+
+
+@dataclass
+class Impact:
+    id: str
+    name: str
+    file_path: str
+    distance: int  # hops from the target (1 = direct caller)
+    via: str       # id of the node one hop closer that it calls (first in rank order)
+
+
+@dataclass
+class BlastAnswer:
+    target: str
+    affected: list[Impact]   # ranked D5: distance, in-degree desc, file, line_start
+    possible: list[Caller]   # possible callers of any expanded node (R19), not followed
+    total: int               # affected count before truncation
+    truncated: bool
+    depth: int               # depth actually used
+    completeness: str        # "exact" | "lower-bound" (R23)
+    reasons: dict[str, int]  # summed over expanded nodes, plus "depth-limit"
 
 
 # ---------------------------------------------------------------------------
@@ -111,27 +133,18 @@ class SPARQLEngine:
         answers.sort(key=lambda a: (-len(a.callers), a.target))
         return answers[:_MAX_ANSWERS]
 
-    def blast_radius(self, function_name: str) -> list[FunctionResult]:
-        """Return every function or file that transitively calls or instantiates anything named *function_name*.
+    def blast_radius(self, name: str, depth: int = 3, limit: int = 50) -> list[BlastAnswer]:
+        """Return everything that transitively calls or instantiates each definition matching *name*, ranked (D5).
 
-        Uses the SPARQL 1.1 property path ``(code:calls|code:instantiates)+``.
-        Changing *function_name* may break every caller returned here.
+        Stepped in Python one hop at a time (D3), at most *depth* hops (1..10).
+        Each hop reuses ``_caller_answer``, so D9 and the lower-bound reasons
+        carry over; possible callers are reported but not followed (R19). Name
+        matching and the 6-answer cap are those of ``callers_of``.
         """
-        q = _PREFIXES + f"""
-SELECT DISTINCT ?name ?file ?start ?end WHERE {{
-    ?target code:name {self._literal(function_name)} .
-    ?caller (code:calls|code:instantiates)+ ?target ;
-            code:name      ?name ;
-            code:filePath  ?file ;
-            code:lineStart ?start ;
-            code:lineEnd   ?end .
-}}
-ORDER BY ?file ?start
-"""
-        return [
-            FunctionResult(str(r.name), str(r.file), int(r.start), int(r.end))
-            for r in self.graph.query(q)
-        ]
+        depth = min(max(depth, 1), _MAX_DEPTH)
+        answers = [self._blast(*d, depth, limit) for d in self._definitions(name)]
+        answers.sort(key=lambda a: (-a.total, a.target))
+        return answers[:_MAX_ANSWERS]
 
     def callees_of(self, function_name: str, file_path: str) -> list[str]:
         """Return the names of every function or class a call in *function_name* resolves to (itself too, if recursive).
@@ -288,6 +301,60 @@ SELECT (COUNT(?site) AS ?n) WHERE {{
             reasons[reason] = int(next(iter(self.graph.query(q))).n)
         reasons = {k: v for k, v in reasons.items() if v}
         return CallerAnswer(target, callers, possible, "lower-bound" if reasons else "exact", reasons)
+
+    def _blast(self, target: str, bare: str, depth: int, limit: int) -> BlastAnswer:
+        """Breadth-first over confirmed callers of *target*; each node visited once, so cycles end."""
+        answers: dict[str, CallerAnswer] = {}
+        found: dict[str, Impact] = {}
+        possible: dict[tuple[str, int], Caller] = {}  # shortcut: dedupes on (caller, line), so two unsure calls on one line count once
+        reasons: dict[str, int] = {}
+        names, line_start = {target: bare}, {}
+
+        def answer(node: str) -> CallerAnswer:
+            if node not in answers:
+                answers[node] = self._caller_answer(node, names[node])
+            return answers[node]
+
+        def rank(i: Impact) -> tuple:  # D5; File nodes are never called, so their in-degree is 0
+            return (i.distance, -len(answer(i.id).callers) if "::" in i.id else 0, i.file_path, line_start[i.id], i.id)
+
+        level = [target]
+        for distance in range(1, depth + 1):
+            new = []
+            for node in level:
+                a = answer(node)
+                possible.update({(c.id, c.line): c for c in a.possible})
+                for reason in ("unknown-receiver", "ceiling"):
+                    if a.reasons.get(reason):
+                        reasons[reason] = reasons.get(reason, 0) + a.reasons[reason]
+                for c in a.callers:
+                    if c.id != target and c.id not in found:
+                        names[c.id] = c.name
+                        found[c.id] = Impact(c.id, c.name, c.file_path, distance, node)
+                        new.append(found[c.id])
+            line_start |= self._line_starts([i.id for i in new])
+            level = [i.id for i in sorted(new, key=rank) if "::" in i.id]  # File nodes are not expanded
+        if possible:
+            reasons["ambiguous"] = len(possible)
+        cut = sum(1 for n in level if answer(n).possible or answer(n).reasons
+                  or any(c.id != target and c.id not in found for c in answer(n).callers))
+        if cut:
+            reasons["depth-limit"] = cut
+        affected = sorted(found.values(), key=rank)
+        return BlastAnswer(target, affected[:limit], sorted(possible.values(), key=lambda c: (c.file_path, c.line, c.id)),
+                           len(affected), len(affected) > limit, depth, "lower-bound" if reasons else "exact", reasons)
+
+    def _line_starts(self, ids: list[str]) -> dict[str, int]:
+        """Return the lineStart of each node in *ids*."""
+        if not ids:
+            return {}
+        q = _PREFIXES + f"""
+SELECT ?n ?start WHERE {{
+    VALUES ?n {{ {" ".join(self._uri(i) for i in ids)} }}
+    ?n code:lineStart ?start .
+}}
+"""
+        return {self._id(r.n): int(r.start) for r in self.graph.query(q)}
 
     def _callers(self, site_pattern: str) -> list[Caller]:
         """One Caller per CallSite matching *site_pattern* (which binds ?site), by file and line."""
