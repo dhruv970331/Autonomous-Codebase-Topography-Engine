@@ -5,14 +5,15 @@ from rdflib.namespace import RDF
 
 from acte.parser import CodeParser
 from acte.rdf_builder import CODE, build_graph
-from acte.resolver import resolve
-from acte.sparql_engine import SPARQLEngine
+from acte.resolver import CANDIDATE_CEILING, resolve
+from acte.sparql_engine import Caller, CallerAnswer, SPARQLEngine
 
 SRC = Path(__file__).resolve().parents[1] / "src"
 
 
 def _engine(root: Path, files: dict[str, str]) -> SPARQLEngine:
     for rel, code in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
         (root / rel).write_text(code)
     return SPARQLEngine(graph=build_graph(sorted(root / rel for rel in files), root, use_jedi=False))
 
@@ -49,11 +50,13 @@ def test_classes_in_file(mock_engine, tmp_path):
     assert len(results) == 1
     assert results[0].name == "AuthManager"
 
-def test_callers_of_direct(mock_engine):
-    """Test single-hop caller resolution."""
-    results = mock_engine.callers_of("db_connect")
-    assert len(results) == 1
-    assert results[0].name == "verify_token"
+def test_callers_of_direct(mock_engine, tmp_path):
+    """Single-hop callers: exact when every call named db_connect is accounted for."""
+    assert mock_engine.callers_of("db_connect") == [CallerAnswer(
+        f"{tmp_path}/db.py::db_connect",
+        [Caller(f"{tmp_path}/app.py::AuthManager.verify_token", "verify_token", f"{tmp_path}/app.py", 9)],
+        [], "exact", {},
+    )]
 
 def test_blast_radius_transitive(mock_engine):
     """Test multi-hop transitive caller resolution (The core feature)."""
@@ -94,6 +97,93 @@ def test_raw_sparql_error_handling(mock_engine):
 def test_missing_function_returns_empty(mock_engine):
     results = mock_engine.callers_of("does_not_exist")
     assert results == []
+
+
+SHOP = (
+    "class Database:\n    def __init__(self):\n        pass\n\n    def save(self):\n        pass\n\n\n"
+    "class Store:\n    def save(self):\n        pass\n\n\n"
+    "def place_order():\n    db = Database()\n    db.save()\n    db.save()\n\n\n"  # lines 14-17
+    "def fact(n):\n    return fact(n - 1)\n"
+)
+
+
+def _summary(answers: list[CallerAnswer], root: Path) -> list[tuple]:
+    return [(a.target.removeprefix(f"{root}/"), [(c.name, c.line) for c in a.callers], [c.name for c in a.possible],
+             a.completeness, a.reasons) for a in answers]
+
+
+def test_callers_of_possible_callers(tmp_path):
+    """spec §10.18 (R19): an ambiguous x.save() is a possible caller of both saves, never a confirmed one."""
+    model = "class Database:\n    def save(self):\n        pass\n"
+    engine = _engine(tmp_path, {"two/m1.py": model, "two/m2.py": model,
+                                "a.py": "from m1 import *\nfrom m2 import *\n\n\ndef f(x: Database):\n    x.save()\n"})
+    assert _summary(engine.callers_of("Database.save"), tmp_path) == [
+        ("two/m1.py::Database.save", [], ["f"], "lower-bound", {"ambiguous": 1}),
+        ("two/m2.py::Database.save", [], ["f"], "lower-bound", {"ambiguous": 1}),
+    ]
+
+
+def test_callers_of_lower_bound(tmp_path):
+    """spec §10.22 (R23): an unknown-receiver x.save() makes the answer lower-bound without naming g."""
+    engine = _engine(tmp_path, {"db.py": SHOP + "\n\ndef g(x):\n    x.save()\n"})
+    assert _summary(engine.callers_of("Database.save"), tmp_path) == [
+        ("db.py::Database.save", [("place_order", 16), ("place_order", 17)], [], "lower-bound", {"unknown-receiver": 1}),
+    ]
+
+
+def test_callers_of_init_and_class_include_instantiators(tmp_path):
+    """spec §10.15 (D9): Database() is a caller of Database and of Database.__init__."""
+    engine = _engine(tmp_path, {"db.py": SHOP})
+    for name in ("Database.__init__", "Database"):
+        assert [(c.name, c.line) for a in engine.callers_of(name) for c in a.callers] == [("place_order", 15)], name
+
+
+def test_callers_of_bare_name_gives_one_answer_per_definition(tmp_path):
+    """An undotted name matches top-level functions and methods alike; a dotted one is a qualname."""
+    engine = _engine(tmp_path, {"db.py": SHOP, "util.py": "def save():\n    pass\n"})
+    assert _summary(engine.callers_of("save"), tmp_path) == [
+        ("db.py::Database.save", [("place_order", 16), ("place_order", 17)], [], "exact", {}),
+        ("db.py::Store.save", [], [], "exact", {}),
+        ("util.py::save", [], [], "exact", {}),
+    ]
+    assert [a.target for a in engine.callers_of(f"{tmp_path}/db.py::Store.save")] == [f"{tmp_path}/db.py::Store.save"]
+    assert [a.target for a in engine.callers_of("Store.save")] == [f"{tmp_path}/db.py::Store.save"]
+    assert engine.callers_of("Missing.save") == []
+
+
+def test_callers_of_init_counts_unsure_instantiations(tmp_path):
+    """An ambiguous Database() is a possible caller of each Database.__init__; m.Database() counts as unknown-receiver."""
+    model = "class Database:\n    def __init__(self):\n        pass\n"
+    engine = _engine(tmp_path, {"two/m1.py": model, "two/m2.py": model,
+                                "a.py": "from m1 import *\nfrom m2 import *\n\n\ndef h(m):\n    Database()\n    m.Database()\n"})
+    assert _summary(engine.callers_of("Database.__init__"), tmp_path) == [
+        (f"two/m{i}.py::Database.__init__", [], ["h"], "lower-bound", {"ambiguous": 1, "unknown-receiver": 1}) for i in (1, 2)
+    ]
+
+
+def test_callers_of_ceiling_is_lower_bound(tmp_path):
+    """A call over the candidate ceiling lists no candidates, so it is counted in reasons instead."""
+    files = {f"d{i}/util.py": "def h():\n    pass\n" for i in range(CANDIDATE_CEILING + 1)}
+    engine = _engine(tmp_path, files | {"a.py": "from util import h\n\n\ndef f():\n    h()\n"})
+    answers = engine.callers_of("h")
+    assert len(answers) == 6
+    assert {(len(a.callers), len(a.possible), a.completeness, str(a.reasons)) for a in answers} == {
+        (0, 0, "lower-bound", "{'ceiling': 1}"),
+    }
+
+
+def test_callers_of_excludes_recursion(tmp_path):
+    engine = _engine(tmp_path, {"db.py": SHOP})
+    assert _summary(engine.callers_of("fact"), tmp_path) == [("db.py::fact", [], [], "exact", {})]
+
+
+def test_callers_of_locals_qualname_and_cap(tmp_path):
+    files = {"n.py": "def outer():\n    def helper():\n        pass\n    helper()\n"}
+    files |= {f"r{i}.py": "def run():\n    pass\n" for i in range(7)}
+    engine = _engine(tmp_path, files)
+    for name in ("outer.<locals>.helper", "outer.helper"):
+        assert _summary(engine.callers_of(name), tmp_path) == [("n.py::outer.<locals>.helper", [("outer", 4)], [], "exact", {})]
+    assert [a.target for a in engine.callers_of("run")] == [f"{tmp_path}/r{i}.py::run" for i in range(6)]  # R23: at most 6
 
 
 def test_blast_radius_follows_a_chain_across_files(tmp_path):
