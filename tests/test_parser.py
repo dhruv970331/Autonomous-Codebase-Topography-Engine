@@ -366,7 +366,7 @@ def test_local_binding_param(parser, tmp_path):
         ("a.py::C.m", "d", "db.Pool", 2),
         ("a.py::C.m", "args", None, 2),
         ("a.py::C.m", "e", None, 2),
-        ("a.py::C.m", "f", None, 2),
+        ("a.py::C.m", "f", "X", 2),
         ("a.py::C.m", "kw", None, 2),
     ]
 
@@ -418,8 +418,8 @@ def test_local_binding_annotation(parser, tmp_path):
     )
     assert _bindings(parser, tmp_path, code, "annotation") == [
         ("a.py::load", "a", "Database", 2),
-        ("a.py::load", "b", None, 3),
-        ("a.py::load", "c", None, 4),
+        ("a.py::load", "b", "Database", 3),
+        ("a.py::load", "c", "Database", 4),
         ("a.py::load", "d", "m.Pool", 5),
     ]
 
@@ -546,11 +546,24 @@ def test_local_binding_string_annotations(parser, tmp_path):
     code = 'def f(p: "m.Database", q: "Optional[X]"):\n    a: "Database" = connect()\n    b: "None"\n'
     assert _bindings(parser, tmp_path, code, "param") == [
         ("a.py::f", "p", "m.Database", 1),
-        ("a.py::f", "q", None, 1),
+        ("a.py::f", "q", "X", 1),
     ]
     assert _bindings(parser, tmp_path, code, "annotation") == [
         ("a.py::f", "a", "Database", 2),
         ("a.py::f", "b", None, 3),
+    ]
+
+def test_optional_annotation_is_its_one_type(parser, tmp_path):
+    forms = [
+        "X | None", "None | X", "Optional[X]", "typing.Optional[m.X]",
+        '"X | None"', '"None | X"', '"Optional[X]"', '"typing.Optional[m.X]"',
+        "X | int", "X | Y | None", "Union[X, None]", "Optional[X | int]", '"X | int"',
+    ]
+    code = "def f():\n" + "".join(f"    v{i}: {t}\n" for i, t in enumerate(forms))
+    assert [b[2] for b in _bindings(parser, tmp_path, code, "annotation")] == [
+        "X", "X", "X", "m.X",
+        "X", "X", "X", "m.X",
+        None, None, None, None, None,
     ]
 
 def test_local_binding_def_and_class(parser, tmp_path):
@@ -601,5 +614,5 @@ def test_function_return_type(parser, tmp_path):
     p.write_text(code)
     result = parser.parse_file(p)
     assert [(n.name, n.return_type) for n in result.nodes if n.kind != "File"] == [
-        ("a", "Database"), ("b", "m.Database"), ("c", None), ("d", None), ("K", None), ("e", "m.Repo"),
+        ("a", "Database"), ("b", "m.Database"), ("c", "X"), ("d", None), ("K", None), ("e", "m.Repo"),
     ]

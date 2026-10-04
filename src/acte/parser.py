@@ -660,16 +660,24 @@ class CodeParser:
         return _compact_text(callee, source) if self._is_dotted(callee) else None
 
     def _annotation_type(self, type_node, source: bytes) -> str | None:
-        """The annotation as written, when it is a plain or dotted name (not Optional[X], X | None, ...)."""
+        """The annotation as written, when it is a plain or dotted name X, or X made optional:
+        ``X | None``, ``None | X``, ``Optional[X]``, ``typing.Optional[X]``, each also in quotes.
+        A method call on an optional value only works when it is an X. Any other union is None."""
         parts = _get_children(type_node)
-        if len(parts) == 1 and self._is_dotted(parts[0]):
-            return _compact_text(parts[0], source)
+        text = _compact_text(type_node, source)
         if len(parts) == 1 and _get_type(parts[0]) == "string":  # x: "Database"
             inner = _get_children(parts[0])
-            if len(inner) == 3 and _get_type(inner[1]) == "string_content":
-                text = _safe_text(inner[1], source)
-                if all(p.isidentifier() and not keyword.iskeyword(p) for p in text.split(".")):
-                    return text
+            if len(inner) != 3 or _get_type(inner[1]) != "string_content":
+                return None
+            text = "".join(_safe_text(inner[1], source).split())
+        sides = text.split("|")
+        if len(sides) == 2 and "None" in sides:
+            text = sides[1] if sides[0] == "None" else sides[0]
+        for prefix in ("Optional[", "typing.Optional["):
+            if text.startswith(prefix) and text.endswith("]"):
+                text = text[len(prefix):-1]
+        if all(p.isidentifier() and not keyword.iskeyword(p) for p in text.split(".")):
+            return text
         return None
 
     def _is_dotted(self, node) -> bool:
