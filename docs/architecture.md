@@ -92,7 +92,13 @@ Nodes, edges and resolved calls become RDF triples in the namespace
 | Edge kind | predicate |
 |---|---|
 | CONTAINS | `code:contains` |
-| IMPORTS_FROM | `code:importsFrom` |
+| IMPORTS_FROM | `code:importsFrom` the imported project File, or `code:importsExternal` its module name |
+
+An import is looked up like a call's module (relative imports included). One project file
+gives a `code:importsFrom` arrow to that File node. No project file gives a
+`code:importsExternal` string, the module as written (`"os.path"`), unless the import is
+relative: a relative import is inside the project, so it records nothing. Several project
+files make it ambiguous, and nothing is recorded. Only Python imports are kept.
 
 Every node also carries `code:name`, `code:filePath`, `code:lineStart`, `code:lineEnd` and
 `code:language`.
@@ -128,7 +134,7 @@ A fixed set of named queries over the graph:
 | `blast_radius` | who depends on it, hop by hop: a `BlastAnswer` |
 | `callees_of` | what this function's calls resolve to |
 | `functions_in_file` / `classes_in_file` | what a file defines |
-| `dependencies_of` | what a file imports |
+| `dependencies_of` | what a file imports: project file paths and external module names |
 | `orphan_functions` | functions nothing calls (recursion does not count) |
 | `execute_raw_sparql` | escape hatch for exploration |
 

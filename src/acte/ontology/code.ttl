@@ -48,8 +48,14 @@ code:contains a rdf:Property ;
     rdfs:comment "A file, class or function directly defines the target." .
 
 code:importsFrom a rdf:Property ;
-    rdfs:comment "A file imports from the target, a URI made from the module name as the import statement writes it." ;
-    rdfs:domain code:File .
+    rdfs:comment "A Python file imports the project module that is the target file." ;
+    rdfs:domain code:File ;
+    rdfs:range code:File .
+
+code:importsExternal a rdf:Property ;
+    rdfs:comment "A Python file imports a module that is not in the project, named as the import writes it." ;
+    rdfs:domain code:File ;
+    rdfs:range xsd:string .
 
 code:calls a rdf:Property ;
     rdfs:comment "A function, or a file's module-level code, has a resolved call to the target function." ;

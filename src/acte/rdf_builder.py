@@ -11,7 +11,7 @@ from rdflib import Graph, Literal, Namespace, URIRef
 from rdflib.namespace import RDF, XSD
 
 from acte.parser import CodeParser, EdgeInfo, NodeInfo
-from acte.resolver import CallResolution, Resolution, resolve
+from acte.resolver import CallResolution, Resolution, SymbolIndex, resolve
 
 # Formal namespace for the codebase topography ontology
 CODE = Namespace("http://acte.local/code#")
@@ -47,6 +47,8 @@ class KnowledgeGraphBuilder:
     def build(self, nodes: list[NodeInfo], edges: list[EdgeInfo], resolution: Resolution | None = None) -> Graph:
         """Translate NodeInfo / EdgeInfo objects, and the CallSites of *resolution* if given, into RDF triples.
 
+        Imports need the index of *resolution* to find the imported file; without it they are left out.
+
         Triples are *accumulated* into self.graph across repeated calls so that
         an entire repository can be ingested file-by-file. Call reset() first
         if you want to start from a clean slate.
@@ -54,7 +56,7 @@ class KnowledgeGraphBuilder:
         for node in nodes:
             self._add_node(node)
         for edge in edges:
-            self._add_edge(edge)
+            self._add_edge(edge, resolution.index if resolution else None)
         for call in resolution.calls if resolution else []:
             self._add_call(call)
         return self.graph
@@ -104,17 +106,18 @@ class KnowledgeGraphBuilder:
         if node.language:
             self.graph.add((uri, CODE.language, Literal(node.language, datatype=XSD.string)))
 
-    def _add_edge(self, edge: EdgeInfo) -> None:
+    def _add_edge(self, edge: EdgeInfo, index: SymbolIndex | None = None) -> None:
         source_uri = self._make_uri(edge.source)
-        target_uri = self._make_uri(edge.target)
 
-        predicate_map = {
-            "CONTAINS":    CODE.contains,
-            "IMPORTS_FROM": CODE.importsFrom,
-        }
-        predicate = predicate_map.get(edge.kind)
-        if predicate:
-            self.graph.add((source_uri, predicate, target_uri))
+        if edge.kind == "CONTAINS":
+            self.graph.add((source_uri, CODE.contains, self._make_uri(edge.target)))
+        elif edge.kind == "IMPORTS_FROM" and index and edge.source.endswith(".py"):  # the index only knows Python modules
+            files = index.module_files(edge.target, edge.source)
+            if len(files) == 1:
+                self.graph.add((source_uri, CODE.importsFrom, self._make_uri(files[0])))
+            elif not files and not edge.target.startswith("."):  # a relative import is inside the project, never external
+                self.graph.add((source_uri, CODE.importsExternal, Literal(edge.target, datatype=XSD.string)))
+            # several files: ambiguous, so no arrow
 
     def _add_call(self, r: CallResolution) -> None:
         """One code:CallSite record, plus the calls / instantiates arrow when resolved (spec §7, D9, R11)."""
@@ -150,7 +153,6 @@ def build_graph(paths: list[Path], root: Path, use_jedi: bool = True) -> Graph:
     """The whole pipeline over *paths*: parse, resolve calls across all of them, build one graph."""
     parser = CodeParser()
     results = [parser.parse_file(p) for p in paths]
-    builder = KnowledgeGraphBuilder()
-    for result in results:
-        builder.build(result.nodes, result.edges)
-    return builder.build([], [], resolve(results, root, use_jedi))
+    nodes = [n for r in results for n in r.nodes]
+    edges = [e for r in results for e in r.edges]
+    return KnowledgeGraphBuilder().build(nodes, edges, resolve(results, root, use_jedi))

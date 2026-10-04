@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from rdflib import Literal, URIRef
 from rdflib.compare import isomorphic
@@ -229,3 +231,33 @@ def test_jedi_resolved_call_site(tmp_path):
 @pytest.mark.parametrize("use_jedi", [False, True])
 def test_build_is_deterministic(tmp_path, use_jedi):
     assert isomorphic(_call_graph(tmp_path / "a", use_jedi), _call_graph(tmp_path / "a", use_jedi))
+
+
+def test_imports_point_at_file_nodes_or_name_external_modules(tmp_path):
+    files = {
+        "pkg/__init__.py": "",
+        "pkg/b.py": "def f():\n    pass\n",
+        "pkg/a.py": "from . import b\nfrom .b import f\nimport pkg.b\nimport os.path\nfrom util import build\nfrom .gone import g\n",
+        "x/util.py": "def build():\n    pass\n",
+        "y/util.py": "def build():\n    pass\n",
+    }
+    for rel, code in files.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(code)
+    graph = build_graph(sorted(tmp_path / rel for rel in files), tmp_path, use_jedi=False)
+    uri = KnowledgeGraphBuilder()._make_uri
+    a = uri(f"{tmp_path}/pkg/a.py")
+
+    imported = set(graph.objects(a, CODE.importsFrom))
+    assert imported == {uri(f"{tmp_path}/pkg/__init__.py"), uri(f"{tmp_path}/pkg/b.py")}
+    assert all((f, RDF.type, CODE.File) in graph for f in imported)
+    # `util` matches two files (ambiguous) and `.gone` is relative: neither gets an arrow or an external name
+    assert set(graph.objects(a, CODE.importsExternal)) == {Literal("os.path", datatype=XSD.string)}
+
+
+def test_imports_in_own_source_reach_typed_files():
+    src = Path(__file__).resolve().parents[1] / "src"
+    graph = build_graph(sorted(src.rglob("*.py")), src, use_jedi=False)
+    imported = set(graph.objects(None, CODE.importsFrom))
+    assert imported
+    assert all((f, RDF.type, CODE.File) in graph for f in imported)

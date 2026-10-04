@@ -198,19 +198,18 @@ ORDER BY ?start
         ]
 
     def dependencies_of(self, file_path: str) -> list[str]:
-        """Return the import targets of *file_path* (module names or paths)."""
+        """Return what *file_path* imports, sorted: the path of each project file it imports,
+        and the dotted name (``os.path``) of each module outside the project."""
         file_uri = self._uri(file_path)
         q = _PREFIXES + f"""
 SELECT DISTINCT ?dep WHERE {{
-    {file_uri} code:importsFrom ?dep_uri .
-    BIND(STRAFTER(STR(?dep_uri), "{_CODE_NS}") AS ?dep)
+    {{ {file_uri} code:importsFrom/code:filePath ?dep }}
+    UNION
+    {{ {file_uri} code:importsExternal ?dep }}
 }}
 ORDER BY ?dep
 """
-        return [
-            urllib.parse.unquote(str(r.dep))
-            for r in self.graph.query(q)
-        ]
+        return [str(r.dep) for r in self.graph.query(q)]
 
     def orphan_functions(self) -> list[FunctionResult]:
         """Return functions that are never called by anything in the graph.

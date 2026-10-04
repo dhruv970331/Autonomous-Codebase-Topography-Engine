@@ -71,8 +71,11 @@ def test_callees_of(mock_engine, tmp_path):
 
 def test_dependencies_of(mock_engine, tmp_path):
     results = mock_engine.dependencies_of(f"{tmp_path}/app.py")
-    assert len(results) == 1
-    assert results[0] == "db"
+    assert results == [f"{tmp_path}/db.py"]
+
+def test_dependencies_of_lists_project_files_and_external_modules(tmp_path):
+    engine = _engine(tmp_path, {"app.py": "import os.path\nimport json\nfrom db import x\n", "db.py": "x = 1\n"})
+    assert engine.dependencies_of(f"{tmp_path}/app.py") == [f"{tmp_path}/db.py", "json", "os.path"]
 
 def test_orphan_functions(mock_engine):
     results = mock_engine.orphan_functions()
