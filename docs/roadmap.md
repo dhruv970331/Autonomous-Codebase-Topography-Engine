@@ -40,7 +40,8 @@ calls as external; it added no new links.
       have no call resolution. Extraction and resolution will be documented as separate tiers
       per language.
 
-- [ ] **Class inheritance.** The `code:inherits` predicate is declared but nothing emits it.
+- [ ] **Class inheritance.** Nothing records "class B inherits from A" yet, so calls to an
+      inherited method are not linked.
 
 ## Later
 

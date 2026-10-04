@@ -93,7 +93,6 @@ Nodes, edges and resolved calls become RDF triples in the namespace
 |---|---|
 | CONTAINS | `code:contains` |
 | IMPORTS_FROM | `code:importsFrom` |
-| INHERITS | `code:inherits` *(declared, not yet emitted)* |
 
 Every node also carries `code:name`, `code:filePath`, `code:lineStart`, `code:lineEnd` and
 `code:language`.

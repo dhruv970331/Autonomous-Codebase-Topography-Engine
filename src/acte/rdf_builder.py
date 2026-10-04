@@ -111,7 +111,6 @@ class KnowledgeGraphBuilder:
         predicate_map = {
             "CONTAINS":    CODE.contains,
             "IMPORTS_FROM": CODE.importsFrom,
-            "INHERITS":    CODE.inherits,
         }
         predicate = predicate_map.get(edge.kind)
         if predicate:

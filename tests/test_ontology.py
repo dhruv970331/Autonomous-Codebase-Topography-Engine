@@ -1,0 +1,52 @@
+from importlib.resources import files
+from pathlib import Path
+
+from rdflib import Graph
+from rdflib.namespace import RDF, RDFS
+
+from acte.rdf_builder import CODE, build_graph
+
+SRC = Path(__file__).parent.parent / "src" / "acte"
+
+# One file per CallSite shape: resolved, ambiguous with candidates, external with
+# reason, recursive, instantiates, and a receiver.
+PROJECT = {
+    "x/util.py": "def build():\n    pass\n",
+    "y/util.py": "def build():\n    pass\n",
+    "app.py": (
+        "import os\n"
+        "from util import build\n"
+        "\n"
+        "class Db:\n"
+        "    pass\n"
+        "\n"
+        "def run(n):\n"
+        "    Db()\n"
+        "    build()\n"
+        "    os.getcwd()\n"
+        "    run(n - 1)\n"
+    ),
+}
+
+
+def _ontology():
+    return Graph().parse(files("acte") / "ontology" / "code.ttl", format="turtle")
+
+
+def _graph(tmp_path):
+    for rel, code in PROJECT.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(code)
+    graph = build_graph(sorted(SRC.glob("*.py")), SRC.parent.parent, use_jedi=False)
+    graph += build_graph(sorted(tmp_path / rel for rel in PROJECT), tmp_path, use_jedi=False)
+    return graph
+
+
+def test_ontology_and_graph_agree(tmp_path):
+    onto = _ontology()
+    declared = set(onto.subjects(RDF.type, RDFS.Class)) | set(onto.subjects(RDF.type, RDF.Property))
+    graph = _graph(tmp_path)
+    used = set(graph.objects(None, RDF.type)) | {p for p in graph.predicates() if p.startswith(CODE)}
+    assert used - declared == set(), "emitted but not declared in code.ttl"
+    assert declared - used == set(), "declared in code.ttl but never emitted"
+    assert all(onto.value(t, RDFS.comment) for t in declared)
