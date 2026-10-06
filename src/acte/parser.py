@@ -393,7 +393,7 @@ class CodeParser:
         call_sites: list[CallSite] = []
         import_bindings: list[ImportBinding] = []
         local_bindings: list[LocalBinding] = []
-        file_path_str = str(path)
+        file_path_str = path.as_posix()
 
         nodes.append(NodeInfo(
             kind="File",
