@@ -4,7 +4,7 @@ import pytest
 from rdflib.namespace import RDF
 
 from acte.parser import CodeParser
-from acte.rdf_builder import CODE, build_graph
+from acte.rdf_builder import CODE, KnowledgeGraphBuilder, build_graph
 from acte.resolver import CANDIDATE_CEILING, resolve
 from acte.sparql_engine import Caller, CallerAnswer, SPARQLEngine
 
@@ -287,3 +287,17 @@ def test_resolution_rate_without_jedi():
     # sanity floor, not a ratchet: this measures ACTE's own source, which changes every commit;
     # frozen-corpus accuracy is held by the PyCG ratchet in test_pycg.py
     assert _rate(use_jedi=False) >= 0.55
+
+
+@pytest.mark.parametrize("use_jedi", [False, True])
+def test_coverage_matches_report_and_survives_turtle(tmp_path, use_jedi):
+    if use_jedi:
+        pytest.importorskip("jedi")
+    results = [CodeParser().parse_file(p) for p in sorted(SRC.rglob("*.py"))]
+    resolution = resolve(results, SRC, use_jedi)  # one run feeds both sides: jedi is slow
+    report = resolution.report()
+    graph = KnowledgeGraphBuilder().build([n for r in results for n in r.nodes], [e for r in results for e in r.edges], resolution)
+    coverage = SPARQLEngine(graph=graph).coverage()
+    assert coverage == {k: report[k] for k in ("edge", "rate", "reason", "status", "tier", "total")}
+    graph.serialize(tmp_path / "g.ttl", format="turtle")
+    assert SPARQLEngine.from_turtle(tmp_path / "g.ttl").coverage() == coverage

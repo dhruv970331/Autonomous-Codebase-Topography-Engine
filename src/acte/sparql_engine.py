@@ -19,6 +19,7 @@ but draws no arrow (R11); ambiguous, unresolved and external calls draw none.
 """
 
 import urllib.parse
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -235,6 +236,36 @@ ORDER BY ?file ?start
             FunctionResult(str(r.name), str(r.file), int(r.start), int(r.end))
             for r in self.graph.query(q)
         ]
+
+    def coverage(self) -> dict:
+        """Counts per status, tier (resolved only), reason and edge kind, plus total and
+        rate = resolved / (total - external): ``Resolution.report()`` from the graph alone,
+        without the jedi fields only the resolver knows. A call's edge kind is the type
+        of its target, so a recursive call counts too, as in ``report()``."""
+        q = _PREFIXES + """
+SELECT ?site ?status ?tier ?reason ?kind WHERE {
+    ?site a code:CallSite ;
+          code:status ?status .
+    OPTIONAL { ?site code:tier ?tier }
+    OPTIONAL { ?site code:reason ?reason }
+    OPTIONAL { ?site code:resolvedTo/a ?kind }
+}
+"""
+        edges = {f"{_CODE_NS}Function": "calls", f"{_CODE_NS}Class": "instantiates"}
+        rows = list(self.graph.query(q))
+
+        def count(values):
+            return dict(sorted(Counter(str(v) for v in values if v is not None).items()))
+        status = count(r.status for r in rows)
+        measured = len(rows) - status.get("external", 0)
+        return {
+            "edge": count(edges.get(str(r.kind)) for r in rows),
+            "rate": status.get("resolved", 0) / measured if measured else None,
+            "reason": count(r.reason for r in rows),
+            "status": status,
+            "tier": count(r.tier for r in rows),
+            "total": len(rows),
+        }
 
     def execute_raw_sparql(self, query: str) -> list[dict[str, Any]]:
         """Escape hatch for dynamic graph exploration.
