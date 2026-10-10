@@ -1,4 +1,4 @@
-# The ACTE code ontology: every class and property rdf_builder.py emits.
+# The ACTE code ontology: every class and property rdf_builder.py and cli.py emit.
 # tests/test_ontology.py checks this file and the built graph agree both ways.
 
 @prefix code: <http://acte.local/code#> .
@@ -19,6 +19,9 @@ code:Function a rdfs:Class ;
 
 code:CallSite a rdfs:Class ;
     rdfs:comment "One call in the source, with how it was resolved." .
+
+code:Build a rdfs:Class ;
+    rdfs:comment "The run of acte build that made the graph." .
 
 # Properties of File, Class and Function
 
@@ -123,3 +126,25 @@ code:candidateCount a rdf:Property ;
     rdfs:comment "How many definitions an ambiguous call might reach." ;
     rdfs:domain code:CallSite ;
     rdfs:range xsd:integer .
+
+# Properties of Build
+
+code:root a rdf:Property ;
+    rdfs:comment "The name of the project root directory; every path in the graph is relative to that directory." ;
+    rdfs:domain code:Build ;
+    rdfs:range xsd:string .
+
+code:commit a rdf:Property ;
+    rdfs:comment "The git HEAD commit of the project when the graph was built, when it is a git work tree with a commit." ;
+    rdfs:domain code:Build ;
+    rdfs:range xsd:string .
+
+code:acteVersion a rdf:Property ;
+    rdfs:comment "The ACTE version that built the graph." ;
+    rdfs:domain code:Build ;
+    rdfs:range xsd:string .
+
+code:jediVersion a rdf:Property ;
+    rdfs:comment "The jedi version that ran the jedi resolution tier, when it ran." ;
+    rdfs:domain code:Build ;
+    rdfs:range xsd:string .

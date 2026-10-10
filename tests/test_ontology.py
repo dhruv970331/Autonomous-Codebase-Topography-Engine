@@ -1,9 +1,11 @@
+import subprocess
 from importlib.resources import files
 from pathlib import Path
 
 from rdflib import Graph
 from rdflib.namespace import RDF, RDFS
 
+from acte.cli import build
 from acte.rdf_builder import CODE, build_graph
 
 SRC = Path(__file__).parent.parent / "src" / "acte"
@@ -37,8 +39,10 @@ def _graph(tmp_path):
     for rel, code in PROJECT.items():
         (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / rel).write_text(code)
+    for args in (["init", "-q"], ["add", "."], ["commit", "-q", "-m", "init"]):  # a commit, so the Build node has one
+        subprocess.run(["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@t", *args], check=True)
     graph = build_graph(sorted(SRC.glob("*.py")), SRC.parent.parent, use_jedi=False)
-    graph += build_graph(sorted(tmp_path / rel for rel in PROJECT), tmp_path, use_jedi=False)
+    graph += build(tmp_path)  # with jedi, so the Build node has jediVersion; PROJECT has no call jedi is asked about
     return graph
 
 

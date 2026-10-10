@@ -12,6 +12,9 @@ dependencies = [
 ]
 
 
+[project.scripts]
+acte = "acte.cli:main"
+
 [project.optional-dependencies]
 jedi = ["jedi (>=0.20.1,<0.21.0)"]
 
