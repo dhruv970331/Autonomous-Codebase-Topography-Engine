@@ -1,7 +1,9 @@
 import subprocess
+from importlib.metadata import version
 
 import pytest
 from rdflib import Graph
+from rdflib.namespace import RDF
 
 from acte.cli import main
 from acte.rdf_builder import CODE
@@ -101,3 +103,42 @@ def test_default_output_is_in_the_working_directory(tmp_path, monkeypatch, capsy
     assert main(["build", "proj", "--no-jedi"]) == 0
     assert capsys.readouterr().out.splitlines()[0] == "wrote acte-graph.ttl"
     assert str(Graph().parse(tmp_path / "acte-graph.ttl", format="turtle").value(CODE["build"], CODE.root)) == "proj"
+
+
+def test_stats_on_a_built_graph(tmp_path, capsys):
+    jedi = pytest.importorskip("jedi")
+    repo = tmp_path / "repo"
+    _write(repo, PROJECT)
+    _git(repo, "init", "-q")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "init")
+    _build(capsys, repo, tmp_path / "g.ttl")
+
+    assert main(["stats", str(tmp_path / "g.ttl")]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "root: repo", f"commit: {_git(repo, 'rev-parse', 'HEAD')}", f"acteVersion: {version('acte')}",
+        f"jediVersion: {jedi.__version__}", *SUMMARY, "coverage: 100.0%",
+        "status: resolved 3", "tier: T2 1, T3 1, TJ 1", "reason: none", "health: ok",
+    ]
+
+
+def test_stats_on_a_broken_graph(tmp_path, capsys):
+    _write(tmp_path / "proj", PROJECT)
+    graph, _ = _build(capsys, tmp_path / "proj", tmp_path / "g.ttl", "--no-jedi")
+    graph.remove((CODE["shop/models.py::A"], RDF.type, CODE.Class))  # make() now instantiates a node that is no Class
+    graph.serialize(tmp_path / "broken.ttl", format="turtle")
+
+    assert main(["stats", str(tmp_path / "broken.ttl")]) == 1
+    out = capsys.readouterr().out.splitlines()
+    assert out[out.index("health: failing"):] == [
+        "health: failing",
+        "  dangling-call-arrows: 1 rows",
+        "    s=shop/models.py::make, p=instantiates, o=shop/models.py::A",
+    ]
+
+
+def test_stats_on_a_missing_file(tmp_path, capsys):
+    with pytest.raises(SystemExit) as exit_:
+        main(["stats", str(tmp_path / "missing.ttl")])
+    assert exit_.value.code == 2
+    assert f"acte: error: cannot read {tmp_path / 'missing.ttl'}" in capsys.readouterr().err

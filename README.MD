@@ -31,7 +31,7 @@ Early. Layers 1 to 3 exist and are tested; layer 4 has not been started.
 | RDF graph + Turtle output | Working |
 | Named SPARQL queries | 8 implemented |
 | Cross-file call resolution | Working for Python, see Limitations |
-| Repository ingestion / CLI | Not implemented |
+| Command line (`acte build`, `acte stats`) | Working |
 | MCP server | Not implemented |
 
 ## Requirements
@@ -45,7 +45,28 @@ poetry run pytest -q
 
 ## Usage
 
-There is no command-line interface yet. The pipeline is used from Python:
+### Command line
+
+```bash
+poetry run acte build src -o graph.ttl   # parse a project folder into one Turtle graph
+poetry run acte stats graph.ttl          # what a saved graph holds, and whether it is healthy
+```
+
+`acte build PATH` parses every source file under `PATH`. In a git repository it takes the
+files git knows about, so everything in `.gitignore` is left out; elsewhere it skips folders
+such as `.venv`, `node_modules` and hidden ones. Ids are relative to `PATH`
+(`shop/db.py::Database.connect`), so the graph does not depend on where the project sits.
+`--no-jedi` skips the jedi step. It prints how many files, functions, classes and calls it
+found, the share of calls resolved, and the result of the health checks.
+
+`acte stats GRAPH` prints the same summary for a saved graph, plus how it was built (folder
+name, git commit, versions) and, for any failing health check, the first rows that break it.
+
+Both commands exit with 1 when a health check fails.
+
+### Python
+
+The same pipeline from Python:
 
 ```python
 from pathlib import Path

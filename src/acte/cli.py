@@ -1,6 +1,7 @@
 """
 Command line.
 `acte build PATH` parses a project into one Turtle graph, with ids relative to PATH.
+`acte stats GRAPH.ttl` summarises a graph written by build.
 """
 
 import argparse
@@ -74,6 +75,39 @@ def build(root: Path, use_jedi: bool = True) -> Graph:
     return graph
 
 
+def _summary(graph: Graph) -> tuple[dict, dict[str, list[dict]]]:
+    """Print the counts and coverage rate of *graph*; return its coverage and health check results."""
+    cov = SPARQLEngine(graph=graph).coverage()
+    print(f"files parsed: {len(set(graph.subjects(RDF.type, CODE.File)))}")
+    print(f"functions: {len(set(graph.subjects(RDF.type, CODE.Function)))}")
+    print(f"classes: {len(set(graph.subjects(RDF.type, CODE.Class)))}")
+    print(f"call sites: {cov['total']}")
+    rate = cov["rate"]
+    print(f"coverage: {'n/a' if rate is None else f'{rate:.1%}'}")
+    return cov, run_checks(graph)
+
+
+def _stats(graph: Graph) -> int:
+    """Print the build metadata, summary, coverage breakdown and health of *graph*; 1 if a health check fails."""
+    meta = CODE["build"]
+    for prop in ("root", "commit", "acteVersion", "jediVersion"):
+        if (value := graph.value(meta, CODE[prop])) is not None:
+            print(f"{prop}: {value}")
+    cov, checks = _summary(graph)
+    for key in ("status", "tier", "reason"):
+        print(f"{key}: {', '.join(f'{k} {n}' for k, n in cov[key].items()) or 'none'}")
+    failing = {name: rows for name, rows in checks.items() if rows}
+    print(f"health: {'ok' if not failing else 'failing'}")
+    engine = SPARQLEngine()
+    for name, rows in failing.items():
+        print(f"  {name}: {len(rows)} rows")
+        for row in rows[:5]:  # code URIs shown as their ids, as SPARQLEngine._id decodes them
+            print("    " + ", ".join(f"{k}={engine._id(v) if v.startswith(str(CODE)) else v}" for k, v in row.items()))
+        if len(rows) > 5:
+            print(f"    ... and {len(rows) - 5} more")
+    return 1 if failing else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="acte")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -81,22 +115,24 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("path", help="the project root")
     b.add_argument("-o", "--output", default="acte-graph.ttl", help="Turtle file to write (default: acte-graph.ttl)")
     b.add_argument("--no-jedi", action="store_true", help="skip the jedi resolution tier")
+    st = sub.add_parser("stats", help="summarise a Turtle graph written by build")
+    st.add_argument("graph", help="the Turtle file")
     args = parser.parse_args(argv)
+
+    if args.command == "stats":
+        try:
+            graph = Graph().parse(args.graph, format="turtle")
+        except (OSError, SyntaxError, UnicodeDecodeError) as exc:  # rdflib's turtle BadSyntax is a SyntaxError
+            parser.error(f"cannot read {args.graph}: {exc}")
+        return _stats(graph)
 
     root = Path(args.path)
     if not root.is_dir():
         parser.error(f"{args.path} is not a directory")
     graph = build(root, not args.no_jedi)
     graph.serialize(destination=args.output, format="turtle")
-
-    cov = SPARQLEngine(graph=graph).coverage()
-    failing = [name for name, rows in run_checks(graph).items() if rows]
     print(f"wrote {args.output}")
-    print(f"files parsed: {len(set(graph.subjects(RDF.type, CODE.File)))}")
-    print(f"functions: {len(set(graph.subjects(RDF.type, CODE.Function)))}")
-    print(f"classes: {len(set(graph.subjects(RDF.type, CODE.Class)))}")
-    print(f"call sites: {cov['total']}")
-    rate = cov["rate"]
-    print(f"coverage: {'n/a' if rate is None else f'{rate:.1%}'}")
+    _, checks = _summary(graph)
+    failing = [name for name, rows in checks.items() if rows]
     print(f"health: {'ok' if not failing else ', '.join(failing)}")
     return 1 if failing else 0
