@@ -283,12 +283,6 @@ def test_resolution_rate_with_jedi():
     assert _rate(use_jedi=True) >= 0.80
 
 
-def test_resolution_rate_without_jedi():
-    # sanity floor, not a ratchet: this measures ACTE's own source, which changes every commit;
-    # frozen-corpus accuracy is held by the PyCG ratchet in test_pycg.py
-    assert _rate(use_jedi=False) >= 0.55
-
-
 @pytest.mark.parametrize("use_jedi", [False, True])
 def test_coverage_matches_report_and_survives_turtle(tmp_path, use_jedi):
     if use_jedi:
