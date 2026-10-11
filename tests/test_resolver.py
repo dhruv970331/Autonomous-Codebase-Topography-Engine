@@ -511,6 +511,42 @@ def test_src_layout_module_receivers(tmp_path):
     assert calls[("dotted.py::g", "parse_file")] == ("resolved", "T5", "src/acte/parser.py::parse_file", None)  # no acte/__init__.py
 
 
+# flask's own test fixtures hold a tests/test_apps/.../flask.py; a suffix match makes `flask` ambiguous
+FLASK_LIKE = {
+    "flask/__init__.py": "from .app import Flask\n",
+    "flask/app.py": "class Flask:\n    pass\n",
+    "tests/apps/inner/flask.py": "class Flask:\n    pass\n",
+    "tests/test_app.py": "from flask import Flask\n\n\ndef test():\n    Flask()\n",
+}
+
+
+def test_src_is_a_source_root(tmp_path):
+    files = {(f"src/{k}" if k.startswith("flask/") else k): v for k, v in FLASK_LIKE.items()}
+    assert _calls(tmp_path, files)[("tests/test_app.py::test", "Flask")] == ("resolved", "T3", "src/flask/app.py::Flask", None)
+    index = _index(tmp_path, files)
+    assert index.modules_for("flask") == [f"{tmp_path}/src/flask/__init__.py"]
+    assert index.modules_for("src.flask.app") == index.modules_for("flask.app") == [f"{tmp_path}/src/flask/app.py"]
+    assert index.modules_for("inner.flask") == [f"{tmp_path}/tests/apps/inner/flask.py"]  # the suffix match is still the fallback
+
+
+def test_flat_layout_has_no_src_names(tmp_path):
+    assert _calls(tmp_path, FLASK_LIKE)[("tests/test_app.py::test", "Flask")] == ("resolved", "T3", "flask/app.py::Flask", None)
+    assert _index(tmp_path, FLASK_LIKE).src_modules == {}
+
+
+def test_src_and_root_names_clash(tmp_path):
+    index = _index(tmp_path, {"m.py": "", "src/m.py": "", "p/__init__.py": "", "src/p.py": ""})
+    assert index.modules_for("m") == [f"{tmp_path}/m.py", f"{tmp_path}/src/m.py"]  # two modules: ambiguous
+    assert index.modules_for("p") == [f"{tmp_path}/p/__init__.py"]  # the package wins
+
+
+def test_src_package_is_not_a_source_root(tmp_path):
+    files = {"src/__init__.py": "", "src/utils.py": "def f():\n    pass\n",
+             "app.py": "from src.utils import f\n\n\ndef run():\n    f()\n"}
+    assert _calls(tmp_path, files)[("app.py::run", "f")] == ("resolved", "T3", "src/utils.py::f", None)
+    assert _index(tmp_path, files).src_modules == {}
+
+
 def test_external_receivers(tmp_path):
     calls = _calls(tmp_path, {
         "utils.py": "def join(items, sep):\n    pass\n\n\ndef get():\n    pass\n",

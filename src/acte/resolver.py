@@ -31,6 +31,7 @@ class SymbolIndex:
         self.by_file: dict[str, dict[str, str]] = {}
         self.by_class: dict[str, dict[str, str]] = {}
         self.modules: dict[str, str] = {}
+        self.src_modules: dict[str, str] = {}  # src-layout: src/pkg/mod.py is also pkg.mod, as once the package is installed
         self.by_loc: dict[tuple[str, int], str] = {}
         self.first_param: dict[str, str] = {}  # function scope -> its first parameter's name (T1: is it self/cls?)
         locals_: dict[str, dict[str, list[LocalBinding]]] = defaultdict(lambda: defaultdict(list))
@@ -38,13 +39,17 @@ class SymbolIndex:
         stars: dict[str, list[ImportBinding]] = defaultdict(list)
 
         nodes = [n for r in results for n in r.nodes]
+        src = root / "src"
+        # a src/__init__.py makes src a package imported as `src.x`, not a source root
+        src_root = not any(n.kind == "File" and Path(n.file_path) == src / "__init__.py" for n in nodes)
         for n in nodes:
             nid = n.qualified_id
             if n.kind == "File":
                 self.by_file.setdefault(n.file_path, {})
-                module = _module_name(n.file_path, root) if n.file_path.endswith(".py") else None
-                if module and Path(self.modules.get(module, "")).name != "__init__.py":  # pkg/__init__.py wins over pkg.py, as in Python
-                    self.modules[module] = n.file_path
+                if n.file_path.endswith(".py"):
+                    _add_module(self.modules, _module_name(n.file_path, root), n.file_path)
+                    if src_root and Path(n.file_path).is_relative_to(src):
+                        _add_module(self.src_modules, _module_name(n.file_path, src), n.file_path)
                 continue
             self.by_id[nid] = n  # Class and Function only; a redefinition replaces the earlier one (last wins)
             self.by_loc[(n.file_path, n.line_start)] = nid
@@ -115,11 +120,18 @@ class SymbolIndex:
         return [self.modules[name]] if name in self.modules else []
 
     def modules_for(self, name: str) -> list[str]:
-        """The file whose module is *name*; only when there is none, files whose module ends with ``.name``
-        (src-layout: ``src.acte.parser`` serves ``acte.parser``)."""
-        if name in self.modules:  # as in Python: `nested` is the package, not `nested.nested`
-            return [self.modules[name]]
+        """The files whose module is *name*, relative to the root or to ``src/`` (``src/acte/parser.py``
+        is ``acte.parser``); a package wins over a module, and two of a kind are ambiguous. Only when
+        there is none, files whose root-relative module ends with ``.name``."""
+        exact = {t[name] for t in (self.modules, self.src_modules) if name in t}
+        if exact:  # as in Python: `nested` is the package, not `nested.nested`
+            return sorted({f for f in exact if Path(f).name == "__init__.py"} or exact)
         return sorted(f for m, f in self.modules.items() if m.endswith("." + name))
+
+
+def _add_module(modules: dict[str, str], module: str, file: str) -> None:
+    if Path(modules.get(module, "")).name != "__init__.py":  # pkg/__init__.py wins over pkg.py, as in Python
+        modules[module] = file
 
 
 def _module_name(file_path: str, root: Path) -> str:
