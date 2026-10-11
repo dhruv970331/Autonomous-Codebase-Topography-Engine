@@ -43,6 +43,10 @@ poetry install
 poetry run pytest -q
 ```
 
+`ACTE_REAL_REPOS=1 poetry run pytest tests/test_real_repos.py -s` also builds pinned releases
+of rich, httpx, click and flask and checks them against recorded baselines. It is skipped by
+default, needs git and the network on first run, and takes a few minutes.
+
 ## Usage
 
 ### Command line
