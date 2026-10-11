@@ -87,16 +87,16 @@ def test_modules_and_lookup(project):
     }
     assert index.modules_for("acte.parser") == [f"{root}/src/acte/parser.py"]
     assert index.modules_for("pkg") == [f"{root}/pkg/__init__.py"]
-    assert index.modules_for("db") == [f"{root}/pkg/db.py"]
-    assert index.modules_for("cte.parser") == []  # whole segments only
+    assert index.modules_for("db") == []  # exact names only: pkg/db.py is pkg.db
+    assert index.modules_for("cte.parser") == []
     assert index.modules_for("os") == []
 
 
-def test_exact_module_wins_over_suffix_match(tmp_path):
+def test_package_is_the_module_of_its_name(tmp_path):
     index = _index(tmp_path, {rel: "def f():\n    pass\n" for rel in ("nested/__init__.py", "nested/nested.py", "src/acte/parser.py")})
     assert index.modules_for("nested") == [f"{tmp_path}/nested/__init__.py"]
     assert index.modules_for("nested.nested") == [f"{tmp_path}/nested/nested.py"]
-    assert index.modules_for("acte.parser") == [f"{tmp_path}/src/acte/parser.py"]  # src-layout: no exact match
+    assert index.modules_for("acte.parser") == [f"{tmp_path}/src/acte/parser.py"]  # src/ is a source root
 
 
 @pytest.mark.parametrize("order", [1, -1])
@@ -185,12 +185,13 @@ def test_exports_follow_re_exports(tmp_path):
 
 def test_exports_skip_ambiguous_modules_and_conflicts(tmp_path):
     index = _index(tmp_path, {
+        "util.py": "def h():\n    pass\n",
+        "src/util.py": "def h():\n    pass\n",
         "x/util.py": "def h():\n    pass\n",
-        "y/util.py": "def h():\n    pass\n",
-        "a.py": "from util import h\n",  # util matches two files: not exported
+        "a.py": "from util import h\n",  # util is util.py and src/util.py: not exported
         "b.py": "from x.util import h\n\n\ndef h():\n    pass\n",  # import and def disagree
     })
-    assert index.module_files("util", f"{tmp_path}/a.py") == [f"{tmp_path}/x/util.py", f"{tmp_path}/y/util.py"]
+    assert index.module_files("util", f"{tmp_path}/a.py") == [f"{tmp_path}/src/util.py", f"{tmp_path}/util.py"]
     assert index.exports[f"{tmp_path}/a.py"] == {}
     assert index.exports[f"{tmp_path}/b.py"] == {}
 
@@ -217,7 +218,7 @@ def test_module_files_relative(tmp_path):
     assert index.module_files("..a", b) == [f"{tmp_path}/src/pkg/a.py"]
     assert index.module_files("...", b) == []  # `src` is a directory, not a module
     assert index.module_files(".....x", b) == []  # above the root
-    assert index.module_files("pkg.sub", b) == [sub]  # src-layout suffix match
+    assert index.module_files("pkg.sub", b) == [sub]  # src/ is a source root
 
 
 def test_exports_follow_star_imports(tmp_path):
@@ -373,7 +374,8 @@ def test_imports_resolve_through_exports(tmp_path):
 def test_ambiguous_candidates_and_ceiling(tmp_path):
     files = {f"d{i}/util.py": "def h():\n    pass\n" for i in range(CANDIDATE_CEILING + 1)}
     files["two/m1.py"] = files["two/m2.py"] = "def run():\n    pass\n"
-    files["a.py"] = "from util import h\nfrom m1 import *\nfrom m2 import *\n\n\ndef f():\n    h()\n    run()\n"
+    stars = "".join(f"from d{i}.util import *\n" for i in range(CANDIDATE_CEILING + 1))
+    files["a.py"] = stars + "from two.m1 import *\nfrom two.m2 import *\n\n\ndef f():\n    h()\n    run()\n"
     parser = CodeParser()
     for rel, code in files.items():
         (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -472,8 +474,8 @@ def test_class_and_module_receivers(tmp_path):
         "shop/db.py": "class Database:\n    @classmethod\n    def create(cls):\n        pass\n\n\ndef helper():\n    pass\n",
         "shop/sub.py": "def f():\n    pass\n",
         "shop/rel.py": "from . import sub\n\n\ndef r():\n    sub.f()\n",
-        "x/util.py": "def h():\n    pass\n",
-        "y/util.py": "def h():\n    pass\n",
+        "util.py": "def h():\n    pass\n",
+        "src/util.py": "def h():\n    pass\n",
         "t4.py": (
             "from shop.db import Database\n\n\nclass Local:\n    def m(self):\n        pass\n\n\n"
             "def a():\n    Database.create()\n    Local.m(None)\n    Local.missing()\n    Database.create.x()\n"
@@ -496,7 +498,7 @@ def test_class_and_module_receivers(tmp_path):
     assert calls[("t5.py::b", "missing")] == ("unresolved", None, None, "no-match")
     assert calls[("t5.py::b", "x")] == ("unresolved", None, None, "unknown-receiver")
     assert calls[("t5.py::b", "Database")] == ("resolved", "T5", "shop/db.py::Database", None)  # `import a.b` binds `a`
-    assert calls[("t5.py::b", "h")] == ("ambiguous", None, None, None)  # util matches two files
+    assert calls[("t5.py::b", "h")] == ("ambiguous", None, None, None)  # util is util.py and src/util.py
     assert calls[("shop/rel.py::r", "f")] == ("resolved", "T5", "shop/sub.py::f", None)  # relative `from . import sub`
     assert calls[("deep.py::c", "m")] == ("unresolved", None, None, "unknown-receiver")  # more than one class name left
 
@@ -511,7 +513,7 @@ def test_src_layout_module_receivers(tmp_path):
     assert calls[("dotted.py::g", "parse_file")] == ("resolved", "T5", "src/acte/parser.py::parse_file", None)  # no acte/__init__.py
 
 
-# flask's own test fixtures hold a tests/test_apps/.../flask.py; a suffix match makes `flask` ambiguous
+# flask's own test fixtures hold a tests/test_apps/.../flask.py, which is tests.apps.inner.flask, not flask
 FLASK_LIKE = {
     "flask/__init__.py": "from .app import Flask\n",
     "flask/app.py": "class Flask:\n    pass\n",
@@ -526,7 +528,7 @@ def test_src_is_a_source_root(tmp_path):
     index = _index(tmp_path, files)
     assert index.modules_for("flask") == [f"{tmp_path}/src/flask/__init__.py"]
     assert index.modules_for("src.flask.app") == index.modules_for("flask.app") == [f"{tmp_path}/src/flask/app.py"]
-    assert index.modules_for("inner.flask") == [f"{tmp_path}/tests/apps/inner/flask.py"]  # the suffix match is still the fallback
+    assert index.modules_for("inner.flask") == []  # exact names only
 
 
 def test_flat_layout_has_no_src_names(tmp_path):
@@ -786,3 +788,12 @@ def test_imported_variable_cycle_terminates(tmp_path):
         "b.py": "from a import x\n",
     })
     assert calls[("a.py::f", "go")] == ("unresolved", None, None, "unknown-receiver")
+
+
+def test_stdlib_import_is_not_a_same_named_subpackage(tmp_path):
+    calls = _calls(tmp_path, {
+        "pkg/__init__.py": "",
+        "pkg/json/__init__.py": "def loads(s):\n    pass\n",
+        "pkg/provider.py": "import json\n\n\ndef f(s):\n    return json.loads(s)\n",  # the stdlib's json, as in flask
+    })
+    assert calls[("pkg/provider.py::f", "loads")] == ("external", None, None, "stdlib")

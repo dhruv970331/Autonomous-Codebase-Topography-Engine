@@ -121,12 +121,10 @@ class SymbolIndex:
 
     def modules_for(self, name: str) -> list[str]:
         """The files whose module is *name*, relative to the root or to ``src/`` (``src/acte/parser.py``
-        is ``acte.parser``); a package wins over a module, and two of a kind are ambiguous. Only when
-        there is none, files whose root-relative module ends with ``.name``."""
+        is ``acte.parser``); a package wins over a module, and two of a kind are ambiguous.
+        No other name matches: `import json` in a package with a json/ subpackage is the stdlib's."""
         exact = {t[name] for t in (self.modules, self.src_modules) if name in t}
-        if exact:  # as in Python: `nested` is the package, not `nested.nested`
-            return sorted({f for f in exact if Path(f).name == "__init__.py"} or exact)
-        return sorted(f for m, f in self.modules.items() if m.endswith("." + name))
+        return sorted({f for f in exact if Path(f).name == "__init__.py"} or exact)  # as in Python: `nested` is the package
 
 
 def _add_module(modules: dict[str, str], module: str, file: str) -> None:

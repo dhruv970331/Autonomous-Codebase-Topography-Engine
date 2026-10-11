@@ -130,7 +130,7 @@ CALL_PROJECT = {
     "y/util.py": "def build():\n    pass\n",
     "app.py": (
         "import os\n"
-        "from util import build\n"
+        "from x.util import *; from y.util import *\n"  # one line, so the line numbers below stay
         "\n"
         "\n"
         "def helper():\n"
@@ -251,8 +251,8 @@ def test_imports_point_at_file_nodes_or_name_external_modules(tmp_path):
     imported = set(graph.objects(a, CODE.importsFrom))
     assert imported == {uri(f"{tmp_path}/pkg/__init__.py"), uri(f"{tmp_path}/pkg/b.py")}
     assert all((f, RDF.type, CODE.File) in graph for f in imported)
-    # `util` matches two files (ambiguous) and `.gone` is relative: neither gets an arrow or an external name
-    assert set(graph.objects(a, CODE.importsExternal)) == {Literal("os.path", datatype=XSD.string)}
+    # `util` is no project module (x/util.py is x.util), so it is external; `.gone` is relative: no arrow, no name
+    assert set(graph.objects(a, CODE.importsExternal)) == {Literal("os.path", datatype=XSD.string), Literal("util", datatype=XSD.string)}
 
 
 def test_imports_in_own_source_reach_typed_files():

@@ -117,7 +117,7 @@ def test_callers_of_possible_callers(tmp_path):
     """spec §10.18 (R19): an ambiguous x.save() is a possible caller of both saves, never a confirmed one."""
     model = "class Database:\n    def save(self):\n        pass\n"
     engine = _engine(tmp_path, {"two/m1.py": model, "two/m2.py": model,
-                                "a.py": "from m1 import *\nfrom m2 import *\n\n\ndef f(x: Database):\n    x.save()\n"})
+                                "a.py": "from two.m1 import *\nfrom two.m2 import *\n\n\ndef f(x: Database):\n    x.save()\n"})
     assert _summary(engine.callers_of("Database.save"), tmp_path) == [
         ("two/m1.py::Database.save", [], ["f"], "lower-bound", {"ambiguous": 1}),
         ("two/m2.py::Database.save", [], ["f"], "lower-bound", {"ambiguous": 1}),
@@ -156,7 +156,7 @@ def test_callers_of_init_counts_unsure_instantiations(tmp_path):
     """An ambiguous Database() is a possible caller of each Database.__init__; m.Database() counts as unknown-receiver."""
     model = "class Database:\n    def __init__(self):\n        pass\n"
     engine = _engine(tmp_path, {"two/m1.py": model, "two/m2.py": model,
-                                "a.py": "from m1 import *\nfrom m2 import *\n\n\ndef h(m):\n    Database()\n    m.Database()\n"})
+                                "a.py": "from two.m1 import *\nfrom two.m2 import *\n\n\ndef h(m):\n    Database()\n    m.Database()\n"})
     assert _summary(engine.callers_of("Database.__init__"), tmp_path) == [
         (f"two/m{i}.py::Database.__init__", [], ["h"], "lower-bound", {"ambiguous": 1, "unknown-receiver": 1}) for i in (1, 2)
     ]
@@ -165,7 +165,8 @@ def test_callers_of_init_counts_unsure_instantiations(tmp_path):
 def test_callers_of_ceiling_is_lower_bound(tmp_path):
     """A call over the candidate ceiling lists no candidates, so it is counted in reasons instead."""
     files = {f"d{i}/util.py": "def h():\n    pass\n" for i in range(CANDIDATE_CEILING + 1)}
-    engine = _engine(tmp_path, files | {"a.py": "from util import h\n\n\ndef f():\n    h()\n"})
+    stars = "".join(f"from d{i}.util import *\n" for i in range(CANDIDATE_CEILING + 1))
+    engine = _engine(tmp_path, files | {"a.py": stars + "\n\ndef f():\n    h()\n"})
     answers = engine.callers_of("h")
     assert len(answers) == 6
     assert {(len(a.callers), len(a.possible), a.completeness, str(a.reasons)) for a in answers} == {
@@ -250,7 +251,7 @@ def test_blast_radius_possible_callers_two_hops_away(tmp_path):
     model = "from lib import t\n\n\nclass Database:\n    def save(self):\n        t()\n"
     engine = _engine(tmp_path, {
         "lib.py": "def t():\n    pass\n", "two/m1.py": model, "two/m2.py": model,
-        "a.py": "from m1 import *\nfrom m2 import *\n\n\ndef f(x: Database):\n    x.save()\n\n\ndef g():\n    f(1)\n",
+        "a.py": "from two.m1 import *\nfrom two.m2 import *\n\n\ndef f(x: Database):\n    x.save()\n\n\ndef g():\n    f(1)\n",
     })
     [answer] = engine.blast_radius("t")
     assert [i.id.removeprefix(f"{tmp_path}/") for i in answer.affected] == ["two/m1.py::Database.save", "two/m2.py::Database.save"]

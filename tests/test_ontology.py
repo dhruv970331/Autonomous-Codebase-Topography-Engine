@@ -17,7 +17,8 @@ PROJECT = {
     "y/util.py": "def build():\n    pass\n",
     "app.py": (
         "import os\n"
-        "from util import build\n"
+        "from x.util import *\n"
+        "from y.util import *\n"
         "\n"
         "class Db:\n"
         "    pass\n"
