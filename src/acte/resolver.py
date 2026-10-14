@@ -33,7 +33,8 @@ class SymbolIndex:
         self.modules: dict[str, str] = {}
         self.src_modules: dict[str, str] = {}  # src-layout: src/pkg/mod.py is also pkg.mod, as once the package is installed
         self.by_loc: dict[tuple[str, int], str] = {}
-        self.first_param: dict[str, str] = {}  # function scope -> its first parameter's name (T1: is it self/cls?)
+        # function scope -> the first parameter's name of each of its definitions (overloads, if/else share a scope) (T1)
+        self.first_params: dict[str, list[str]] = defaultdict(list)
         locals_: dict[str, dict[str, list[LocalBinding]]] = defaultdict(lambda: defaultdict(list))
         imports: dict[str, dict[str, list[ImportBinding]]] = defaultdict(lambda: defaultdict(list))
         stars: dict[str, list[ImportBinding]] = defaultdict(list)
@@ -62,11 +63,18 @@ class SymbolIndex:
             if n.kind == "Function" and n.parent_name and owner in self.by_class:  # direct methods only
                 self.by_class[owner][n.name] = n.qualified_id
 
+        spans = defaultdict(list)  # function id -> (line_start, line_end) of every definition with that id
+        for n in nodes:
+            if n.kind == "Function":
+                spans[n.qualified_id].append((n.line_start, n.line_end))
+        firsts = set()
         for r in results:
             for b in r.local_bindings:
                 locals_[b.scope_id][b.name].append(b)
-                if b.kind == "param":  # the parser emits parameters in source order
-                    self.first_param.setdefault(b.scope_id, b.name)
+                span = next((sp for sp in spans[b.scope_id] if sp[0] <= b.line <= sp[1]), None) if b.kind == "param" else None
+                if span and (b.scope_id, span) not in firsts:  # the parser emits parameters in source order
+                    firsts.add((b.scope_id, span))
+                    self.first_params[b.scope_id].append(b.name)
             for b in r.import_bindings:
                 imports[b.scope_id][b.local_name].append(b)
             for b in r.star_imports:
@@ -391,12 +399,16 @@ def _typed(index: SymbolIndex, call: CallSite, type_name: str | None, annotated:
 
 
 def _self_class(index: SymbolIndex, scope: str, name: str) -> str | None:
-    """The class whose method takes *name* (``self``/``cls``) as its first parameter and never rebinds it (T1)."""
+    """The class whose method takes *name* (``self``/``cls``) as its first parameter and never rebinds it (T1).
+    A method defined several times (``@overload`` stubs, if/else) qualifies when every binding of *name* is a first parameter."""
     node = index.by_id.get(scope)
-    if name not in ("self", "cls") or node is None or node.kind != "Function" or index.first_param.get(scope) != name:
+    if name not in ("self", "cls") or node is None or node.kind != "Function":
+        return None
+    bindings = index.locals.get(scope, {}).get(name, [])
+    if not bindings or any(b.kind != "param" for b in bindings) or len(bindings) != index.first_params.get(scope, []).count(name):
         return None
     owner = f"{node.file_path}::{node.parent_name}"
-    return owner if owner in index.by_class and len(index.locals[scope][name]) == 1 else None
+    return owner if owner in index.by_class else None
 
 
 def _star_exports(index: SymbolIndex, name: str, file: str) -> tuple[set[str], bool]:

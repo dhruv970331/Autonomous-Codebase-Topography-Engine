@@ -468,6 +468,29 @@ def test_self_and_cls_calls(tmp_path):
     assert calls[("order.py::free", "tax")] == ("unresolved", None, None, "unknown-receiver")  # not a method
 
 
+def test_self_calls_in_methods_defined_several_times(tmp_path):
+    """@overload stubs and if/else definitions share one scope, so `self` is bound once per definition (as in click's BaseCommand.main)."""
+    calls = _calls(tmp_path, {
+        "c.py": (
+            "import sys\nfrom typing import overload\n\n\n"
+            "class C:\n"
+            "    @overload\n    def run(self, x: int) -> int: ...\n"
+            "    @overload\n    def run(\n        self,\n        x: str,\n    ) -> str: ...\n"
+            "    def run(self, x):\n        return self.m()\n\n"
+            "    if sys.platform == 'win32':\n        def go(self):\n            self.m()\n"
+            "    else:\n        def go(self):\n            self.n()\n\n"
+            "    def bad(other, self): ...\n"
+            "    def bad(self):\n        self.m()\n\n"
+            "    def m(self):\n        pass\n\n"
+            "    def n(self):\n        pass\n"
+        ),
+    })
+    assert calls[("c.py::C.run", "m")] == ("resolved", "T1", "c.py::C.m", None)
+    assert calls[("c.py::C.go", "m")] == ("resolved", "T1", "c.py::C.m", None)
+    assert calls[("c.py::C.go", "n")] == ("resolved", "T1", "c.py::C.n", None)
+    assert calls[("c.py::C.bad", "m")] == ("unresolved", None, None, "unknown-receiver")  # self is a second parameter once
+
+
 def test_class_and_module_receivers(tmp_path):
     calls = _calls(tmp_path, {
         "shop/__init__.py": "",
