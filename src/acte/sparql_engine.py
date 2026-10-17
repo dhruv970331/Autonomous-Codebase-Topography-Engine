@@ -90,6 +90,7 @@ class Impact:
     file_path: str
     distance: int  # hops from the target (1 = direct caller)
     via: str       # id of the node one hop closer that it calls (first in rank order)
+    line: int      # the line of its call into via (the first, as Caller.line)
 
 
 @dataclass
@@ -410,7 +411,7 @@ SELECT (COUNT(?site) AS ?n) WHERE {{
                 for c in a.callers:
                     if c.id != target and c.id not in found:
                         names[c.id] = c.name
-                        found[c.id] = Impact(c.id, c.name, c.file_path, distance, node)
+                        found[c.id] = Impact(c.id, c.name, c.file_path, distance, node, c.line)
                         new.append(found[c.id])
             line_start |= self._line_starts([i.id for i in new])
             level = [i.id for i in sorted(new, key=rank) if "::" in i.id]  # File nodes are not expanded

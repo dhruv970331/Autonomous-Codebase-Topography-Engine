@@ -17,7 +17,8 @@ from acte.sparql_engine import SPARQLEngine
 _BUDGET = 4000  # characters per answer, about 1,000 tokens
 _MAX_MATCHES = 10
 _MAX_EXTERNAL = 10  # external call names listed by callees_of
-_NARROW = "a fuller name, such as Class.method"
+_MAX_DEPTH = 3  # blast_radius hops in the small profile
+_NARROW = "Narrow with a fuller name, such as Class.method."
 _REASONS = {  # why a call is not known for sure, in plain words: "2 calls on objects of unknown type"
     "unknown-receiver": "on objects of unknown type",
     "local": "through local variables",
@@ -27,10 +28,10 @@ _REASONS = {  # why a call is not known for sure, in plain words: "2 calls on ob
 }
 
 
-def _text(headline: str, sections: list[tuple[str | None, list[str]]], narrow: str,
+def _text(headline: str, sections: list[tuple[str | None, list[str]]], advice: str | None = None,
           total: int | None = None, tail: tuple[str, ...] = ()) -> str:
     """*headline*, then each non-empty (title, items) section, whole lines within the budget, then *tail*.
-    Ends with a Showing line when fewer items than *total* (default: all items given) were shown."""
+    Ends with a Showing line, plus *advice* if any, when fewer items than *total* (default: all items given) were shown."""
     lines, shown, full = [headline], 0, False
     room = _BUDGET - 100 - len(headline) - sum(len(t) + 1 for t in tail)  # 100: room for the Showing line
     for title, items in sections:
@@ -45,7 +46,7 @@ def _text(headline: str, sections: list[tuple[str | None, list[str]]], narrow: s
     lines += tail
     total = sum(len(items) for _, items in sections) if total is None else total
     if shown < total:
-        lines.append(f"Showing {shown} of {total}. Narrow with {narrow}.")
+        lines.append(f"Showing {shown} of {total}." + (f" {advice}" if advice else ""))
     return "\n".join(lines)
 
 
@@ -57,6 +58,11 @@ def _calls(reasons: dict[str, int]) -> str:
 def _symbol(s: tuple[str, str, str, str, int]) -> str:
     d, kind, _, file, line = s
     return f"{d} ({kind}) {file}:{line}"
+
+
+def _case_insensitive(name: str, symbols: list[tuple[str, str, str, str, int]]) -> list[tuple[str, str, str, str, int]]:
+    """The symbols whose id, qualname or bare name is *name* in any letter case."""
+    return [s for s in symbols if name.lower() in (k.lower() for k in (s[0], s[0].split("::", 1)[-1], s[2]))]
 
 
 def _not_found(name: str, symbols: list[tuple[str, str, str, str, int]]) -> str:
@@ -77,6 +83,9 @@ def create_server(graph_path: str | Path, project: str | Path | None = None, pro
         if len(defs) == 1:
             return defs[0], None
         symbols = engine.symbols()
+        defs = defs or [s[0] for s in _case_insensitive(name, symbols)]  # the same levels as find_symbol
+        if len(defs) == 1:
+            return defs[0], None
         if not defs:
             return None, _not_found(name, symbols)
         where = {s[0]: s for s in symbols}
@@ -93,7 +102,7 @@ def create_server(graph_path: str | Path, project: str | Path | None = None, pro
             exact = {d for d, _ in engine._definitions(name)}  # id, qualname, bare name: as callers_of matches
         matches = [s for s in symbols if s[0] in exact]
         if not matches:
-            matches = [s for s in symbols if name.lower() in (k.lower() for k in (s[0], s[0].split("::", 1)[-1], s[2]))]
+            matches = _case_insensitive(name, symbols)
         if not matches:
             return _not_found(name, symbols)
         noun = "match" if len(matches) == 1 else "matches"
@@ -115,7 +124,7 @@ def create_server(graph_path: str | Path, project: str | Path | None = None, pro
         return _text(headline, [
             ("Confirmed:", [f"{c.id}  {c.file_path}:{c.line}" for c in a.callers]),
             ("Possible (could not tell which function is called):", [f"{c.id}  {c.file_path}:{c.line}" for c in a.possible]),
-        ], _NARROW)
+        ])  # one definition already, so no advice: a fuller name would give the same list
 
     @server.tool(structured_output=False, description=(
         "List what a function calls: the project functions and classes it reaches, with the line of each "
@@ -129,14 +138,40 @@ def create_server(graph_path: str | Path, project: str | Path | None = None, pro
             sites = engine.call_sites(target)
         resolved = [s for s in sites if s.status == "resolved"]
         external = Counter(f"{s.receiver}.{s.target_name}" if s.receiver else s.target_name for s in sites if s.status == "external")
-        unsure = Counter(s.reason or "ambiguous" for s in sites if s.status in ("unresolved", "ambiguous"))
+        unresolved = Counter(s.reason for s in sites if s.status == "unresolved")
+        ambiguous = Counter(s.reason or "ambiguous" for s in sites if s.status == "ambiguous")
         tail = []
         if external:
             names = [n for n, _ in external.most_common(_MAX_EXTERNAL)] + (["..."] if len(external) > _MAX_EXTERNAL else [])
             tail.append(f"External: {', '.join(names)} ({external.total()} calls)")
-        if unsure:
-            tail.append(f"Unresolved: {_calls(unsure)}")
-        headline = f"callees_of {target}: {len(resolved)} resolved, {external.total()} external, {unsure.total()} unresolved"
-        return _text(headline, [("Calls:", [f"{s.resolved_to}  (line {s.line})" for s in resolved])], _NARROW, tail=tuple(tail))
+        if unresolved:
+            tail.append(f"Unresolved: {_calls(unresolved)}")
+        if ambiguous:
+            tail.append(f"Ambiguous: {_calls(ambiguous)}")
+        headline = (f"callees_of {target}: {len(resolved)} resolved, {external.total()} external, "
+                    f"{unresolved.total()} unresolved, {ambiguous.total()} ambiguous")
+        calls = [f"{s.resolved_to}  (line {s.line})" + ("  (recursive)" if s.resolved_to == target else "") for s in resolved]
+        return _text(headline, [("Calls:", calls)], tail=tuple(tail))
+
+    @server.tool(structured_output=False, description=(
+        "List everything that would be affected by changing a function or class: its callers, their "
+        "callers, and so on, grouped by distance. depth is 1 to 3 (default 2). Use to judge the risk of a "
+        "change. Accepts a full id, Class.method or a bare name."))
+    def blast_radius(name: str, depth: int = 2) -> str:
+        depth = min(max(depth, 1), _MAX_DEPTH)
+        with lock:
+            target, answer = one_definition("blast_radius", name)
+            if answer:
+                return answer
+            a = engine.blast_radius(target, depth, limit=_BUDGET)[0]  # the character budget cuts, not the count
+        reasons = _calls({k: n for k, n in a.reasons.items() if k != "depth-limit"})
+        if "depth-limit" in a.reasons:
+            reasons += (", " if reasons else "") + f"stopped at depth {a.depth} while callers continue"
+        label = a.completeness + (f": {reasons}" if reasons else "")
+        headline = f"blast_radius {a.target} (depth {a.depth}): {a.total} affected, {len(a.possible)} possible ({label})"
+        sections = [(f"Distance {d}:", [f"{i.id}  {i.file_path}:{i.line}  (calls {i.via})" for i in a.affected if i.distance == d])
+                    for d in range(1, a.depth + 1)]
+        sections.append(("Possible:", [f"{c.id}  {c.file_path}:{c.line}" for c in a.possible]))
+        return _text(headline, sections, "Use a smaller depth." if a.depth > 1 else None)
 
     return server
