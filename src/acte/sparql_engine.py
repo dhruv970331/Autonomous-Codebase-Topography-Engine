@@ -237,6 +237,22 @@ ORDER BY ?file ?start
             for r in self.graph.query(q)
         ]
 
+    def symbols(self) -> list[tuple[str, str, str, str, int]]:
+        """Return (id, kind, bare name, file, lineStart) of every Function and Class, sorted by id."""
+        q = _PREFIXES + """
+SELECT ?d ?kind ?name ?file ?start WHERE {
+    VALUES ?kind { code:Function code:Class }
+    ?d a ?kind ;
+       code:name      ?name ;
+       code:filePath  ?file ;
+       code:lineStart ?start .
+}
+"""
+        return sorted(
+            (self._id(r.d), self._id(r.kind), str(r.name), str(r.file), int(r.start))
+            for r in self.graph.query(q)
+        )
+
     def coverage(self) -> dict:
         """Counts per status, tier (resolved only), reason and edge kind, plus total and
         rate = resolved / (total - external): ``Resolution.report()`` from the graph alone,

@@ -2,6 +2,7 @@
 Command line.
 `acte build PATH` parses a project into one Turtle graph, with ids relative to PATH.
 `acte stats GRAPH.ttl` summarises a graph written by build.
+`acte serve GRAPH.ttl` answers questions about a graph as an MCP server over stdio.
 """
 
 import argparse
@@ -16,6 +17,7 @@ from rdflib.namespace import RDF, XSD
 
 from acte import resolver
 from acte.health import run_checks
+from acte.mcp_server import create_server
 from acte.parser import EXTENSION_TO_LANGUAGE
 from acte.rdf_builder import CODE, build_graph
 from acte.sparql_engine import SPARQLEngine
@@ -117,7 +119,19 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--no-jedi", action="store_true", help="skip the jedi resolution tier")
     st = sub.add_parser("stats", help="summarise a Turtle graph written by build")
     st.add_argument("graph", help="the Turtle file")
+    sv = sub.add_parser("serve", help="serve a Turtle graph as an MCP server over stdio")
+    sv.add_argument("graph", help="the Turtle file")
+    sv.add_argument("--project", help="the project root the graph was built from")
+    sv.add_argument("--profile", choices=["small", "full"], default="small", help="which tools to offer (default: small)")
     args = parser.parse_args(argv)
+
+    if args.command == "serve":
+        try:
+            server = create_server(args.graph, args.project, args.profile)
+        except (OSError, SyntaxError, UnicodeDecodeError) as exc:  # rdflib's turtle BadSyntax is a SyntaxError
+            parser.error(f"cannot read {args.graph}: {exc}")
+        server.run("stdio")
+        return 0
 
     if args.command == "stats":
         try:
