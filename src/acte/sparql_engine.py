@@ -56,6 +56,17 @@ class ClassResult:
 
 
 @dataclass
+class CallSiteResult:
+    line: int
+    column: int
+    target_name: str
+    receiver: str | None     # "db" in db.save()
+    status: str              # "resolved" | "ambiguous" | "unresolved" | "external"
+    resolved_to: str | None  # target id when resolved
+    reason: str | None
+
+
+@dataclass
 class Caller:
     id: str
     name: str
@@ -163,6 +174,29 @@ SELECT DISTINCT ?callee_name WHERE {{
 ORDER BY ?callee_name
 """
         return [str(r.callee_name) for r in self.graph.query(q)]
+
+    def call_sites(self, caller_id: str) -> list[CallSiteResult]:
+        """Return every call made directly in the Function (or File) with id *caller_id*, by line and column."""
+        q = _PREFIXES + f"""
+SELECT ?line ?col ?target_name ?receiver ?status ?resolved ?reason WHERE {{
+    ?site code:inFunction {self._uri(caller_id)} ;
+          code:line       ?line ;
+          code:column     ?col ;
+          code:targetName ?target_name ;
+          code:status     ?status .
+    OPTIONAL {{ ?site code:receiver   ?receiver }}
+    OPTIONAL {{ ?site code:resolvedTo ?resolved }}
+    OPTIONAL {{ ?site code:reason     ?reason }}
+}}
+ORDER BY ?line ?col
+"""
+        return [
+            CallSiteResult(int(r.line), int(r.col), str(r.target_name),
+                           None if r.receiver is None else str(r.receiver), str(r.status),
+                           None if r.resolved is None else self._id(r.resolved),
+                           None if r.reason is None else str(r.reason))
+            for r in self.graph.query(q)
+        ]
 
     def functions_in_file(self, file_path: str) -> list[FunctionResult]:
         """Return all functions defined in *file_path*, ordered by line number."""
