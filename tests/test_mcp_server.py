@@ -1,5 +1,7 @@
 import gc
 import json
+import subprocess
+from importlib.metadata import version
 
 import anyio
 import pytest
@@ -33,30 +35,62 @@ CHAIN = {
     "hub.py": "from chain import *\nfrom other import *\n\n\ndef go():\n    one()\n",
     "rec.py": "def loop(n):\n    loop(n - 1)\n",
 }
+# helper has 60 callers at distance 1; base has mid at distance 1 and 60 callers of mid at distance 2.
+# The long names make 60 lines overflow the budget.
+LONG = "handle_request_with_a_long_descriptive_name_number_"
+BIG = {
+    "big.py": ("def helper():\n    pass\n\n\ndef base():\n    pass\n\n\ndef mid():\n    base()\n"
+               + "".join(f"\n\ndef {LONG}{i:02}():\n    helper()\n" for i in range(60))),
+    "far.py": "from big import mid\n" + "".join(f"\n\ndef {LONG}{i:02}():\n    mid()\n" for i in range(60)),
+}
 SMALL_TOOLS = ["find_symbol", "callers_of", "callees_of", "blast_radius"]
+FULL_TOOLS = [*SMALL_TOOLS, "functions_in_file", "dependencies_of", "orphan_functions", "graph_info"]
 
 
-@pytest.fixture(autouse=True)
-def _no_outer_repo(tmp_path, monkeypatch):
-    # a git work tree that happens to enclose tmp_path must not be found
-    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
-
-
-def _server(tmp_path, files):
-    root = tmp_path / "proj"
-    root.mkdir()
+def _write(root, files):
     for rel, code in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
         (root / rel).write_text(code)
-    graph = tmp_path / "graph.ttl"
+
+
+def _build(root, graph):
     build(root, use_jedi=False).serialize(destination=graph, format="turtle")
     # the build's cyclic garbage holds tree-sitter parsers, which must not be freed on a tool's worker thread
     gc.collect()
-    return create_server(graph)
+
+
+def _git(root, *args):
+    return subprocess.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                          check=True, capture_output=True, text=True).stdout.strip()
+
+
+@pytest.fixture(scope="module")
+def graph_of(tmp_path_factory):
+    """graph_of(files): the Turtle graph of a project made of *files*, built once per module."""
+    graphs = {}
+
+    def get(files):
+        key = tuple(sorted(files.items()))
+        if key not in graphs:
+            root = tmp_path_factory.mktemp("proj")
+            _write(root, files)
+            graphs[key] = root.parent / f"{root.name}.ttl"
+            with pytest.MonkeyPatch.context() as mp:
+                mp.setenv("GIT_CEILING_DIRECTORIES", str(root.parent))  # a work tree enclosing it must not be found
+                _build(root, graphs[key])
+        return graphs[key]
+    return get
 
 
 @pytest.fixture
-def server(tmp_path):
-    return _server(tmp_path, PROJECT)
+def serve(graph_of):
+    """serve(files, **create_server options): a server over the project made of *files*."""
+    return lambda files, **options: create_server(graph_of(files), **options)
+
+
+@pytest.fixture
+def server(serve):
+    return serve(PROJECT)
 
 
 def _call(server, tool, **arguments):
@@ -68,11 +102,15 @@ def _call(server, tool, **arguments):
     return result.content[0].text
 
 
-def test_lists_small_profile_tools(server):
+def _tools(server):
     async def go():
         async with Client(server) as client:
             return (await client.list_tools()).tools
-    assert [t.name for t in anyio.run(go)] == SMALL_TOOLS
+    return anyio.run(go)
+
+
+def test_lists_small_profile_tools(server):
+    assert [t.name for t in _tools(server)] == SMALL_TOOLS
 
 
 @pytest.mark.parametrize(("name", "expected"), [
@@ -90,8 +128,8 @@ def test_find_symbol(server, name, expected):
     assert _call(server, "find_symbol", name=name) == "\n".join(expected)
 
 
-def test_find_symbol_shows_ten_of_many(tmp_path):
-    server = _server(tmp_path, {f"m{i:02}.py": "def run():\n    pass\n" for i in range(12)})
+def test_find_symbol_shows_ten_of_many(serve):
+    server = serve({f"m{i:02}.py": "def run():\n    pass\n" for i in range(12)})
     lines = _call(server, "find_symbol", name="run").splitlines()
     assert lines[0] == 'find_symbol "run": 12 matches'
     assert lines[1:11] == [f"m{i:02}.py::run (Function) m{i:02}.py:1" for i in range(10)]
@@ -127,19 +165,18 @@ def test_find_symbol_shows_ten_of_many(tmp_path):
                             "m1.py::tick (Function) m1.py:1",
                             "m2.py::tick (Function) m2.py:1"]),
 ])
-def test_calls(tmp_path, tool, name, expected):
-    assert _call(_server(tmp_path, CALLS), tool, name=name) == "\n".join(expected)
+def test_calls(serve, tool, name, expected):
+    assert _call(serve(CALLS), tool, name=name) == "\n".join(expected)
 
 
-def test_callers_of_cut_to_budget(tmp_path):
-    code = "def helper():\n    pass\n" + "".join(f"\n\ndef f{i:03}():\n    helper()\n" for i in range(300))
-    text = _call(_server(tmp_path, {"big.py": code}), "callers_of", name="helper")
+def test_callers_of_cut_to_budget(serve):
+    text = _call(serve(BIG), "callers_of", name="helper")
     lines = text.splitlines()
     assert len(text) <= mcp_server._BUDGET
-    assert lines[:2] == ["callers_of big.py::helper: 300 confirmed, 0 possible (exact)", "Confirmed:"]
+    assert lines[:2] == ["callers_of big.py::helper: 60 confirmed, 0 possible (exact)", "Confirmed:"]
     shown = len(lines) - 3
-    assert lines[2:-1] == [f"big.py::f{i:03}  big.py:{6 + 4 * i}" for i in range(shown)]
-    assert lines[-1] == f"Showing {shown} of 300."
+    assert lines[2:-1] == [f"big.py::{LONG}{i:02}  big.py:{14 + 4 * i}" for i in range(shown)]
+    assert lines[-1] == f"Showing {shown} of 60."
 
 
 @pytest.mark.parametrize(("tool", "arguments", "expected"), [
@@ -168,34 +205,115 @@ def test_callers_of_cut_to_budget(tmp_path):
     ("callees_of", {"name": "loop"}, ["callees_of rec.py::loop: 1 resolved, 0 external, 0 unresolved, 0 ambiguous",
                                       "Calls:", "rec.py::loop  (line 2)  (recursive)"]),
 ])
-def test_chain(tmp_path, tool, arguments, expected):
-    assert _call(_server(tmp_path, CHAIN), tool, **arguments) == "\n".join(expected)
+def test_chain(serve, tool, arguments, expected):
+    assert _call(serve(CHAIN), tool, **arguments) == "\n".join(expected)
 
 
-def test_blast_radius_depth_clamped_to_three(tmp_path):
-    server = _server(tmp_path, CHAIN)
+def test_blast_radius_depth_clamped_to_three(serve):
+    server = serve(CHAIN)
     assert _call(server, "blast_radius", name="base", depth=9) == _call(server, "blast_radius", name="base", depth=3)
 
 
-@pytest.mark.parametrize(("depth", "advice"), [(1, ""), (2, " Use a smaller depth.")])
-def test_blast_radius_cut_to_budget(tmp_path, depth, advice):
-    code = "def helper():\n    pass\n" + "".join(f"\n\ndef f{i:03}():\n    helper()\n" for i in range(300))
-    text = _call(_server(tmp_path, {"big.py": code}), "blast_radius", name="helper", depth=depth)
+@pytest.mark.parametrize("depth", [1, 2])
+def test_blast_radius_cut_to_budget(serve, depth):
+    text = _call(serve(BIG), "blast_radius", name="helper", depth=depth)
     lines = text.splitlines()
     assert len(text) <= mcp_server._BUDGET
-    assert lines[:2] == [f"blast_radius big.py::helper (depth {depth}): 300 affected, 0 possible (exact)", "Distance 1:"]
+    assert lines[:2] == [f"blast_radius big.py::helper (depth {depth}): 60 affected, 0 possible (exact)", "Distance 1:"]
     shown = len(lines) - 3
-    assert lines[2:-1] == [f"big.py::f{i:03}  big.py:{6 + 4 * i}  (calls big.py::helper)" for i in range(shown)]
-    assert lines[-1] == f"Showing {shown} of 300.{advice}"
+    assert lines[2:-1] == [f"big.py::{LONG}{i:02}  big.py:{14 + 4 * i}  (calls big.py::helper)" for i in range(shown)]
+    assert lines[-1] == f"Showing {shown} of 60."  # all at distance 1: a smaller depth would not help
+
+
+def test_blast_radius_advises_smaller_depth_when_it_helps(serve):
+    text = _call(serve(BIG), "blast_radius", name="base", depth=2)
+    lines = text.splitlines()
+    assert len(text) <= mcp_server._BUDGET
+    assert lines[:4] == ["blast_radius big.py::base (depth 2): 61 affected, 0 possible (exact)",
+                         "Distance 1:", "big.py::mid  big.py:10  (calls big.py::base)", "Distance 2:"]
+    shown = len(lines) - 5
+    assert lines[4:-1] == [f"far.py::{LONG}{i:02}  far.py:{5 + 4 * i}  (calls big.py::mid)" for i in range(shown)]
+    assert lines[-1] == f"Showing {shown + 1} of 61. Use a smaller depth."
 
 
 def test_tool_list_size(server):
-    async def go():
-        async with Client(server) as client:
-            return (await client.list_tools()).tools
-    tools = anyio.run(go)
+    tools = _tools(server)
     assert all(len(t.description) <= 300 for t in tools)
     assert len(json.dumps([t.model_dump(include={"name", "description", "input_schema"}, by_alias=True) for t in tools])) <= 2000
+
+
+def test_full_profile_lists_eight_tools(serve):
+    assert [t.name for t in _tools(serve(CALLS, profile="full"))] == FULL_TOOLS
+
+
+@pytest.mark.parametrize(("tool", "arguments", "expected"), [
+    ("functions_in_file", {"path": "db.py"}, ["functions_in_file db.py: 2 functions, 1 class",
+                                              "db.py::Database (Class) db.py:1",
+                                              "db.py::Database.connect (Function) db.py:2",
+                                              "db.py::Database.save (Function) db.py:5"]),
+    ("functions_in_file", {"path": "apps.py"}, ["functions_in_file: no file apps.py in the map. Did you mean: app.py?"]),
+    ("dependencies_of", {"path": "app.py"}, ["dependencies_of app.py: 1 project file, 1 outside module",
+                                             "Project files:", "db.py", "Outside modules:", "os"]),
+    ("dependencies_of", {"path": "hub.py"}, ["dependencies_of hub.py: 2 project files, 0 outside modules",
+                                             "Project files:", "m1.py", "m2.py"]),
+    ("dependencies_of", {"path": "nope/zz.txt"}, ["dependencies_of: no file nope/zz.txt in the map."]),
+    ("orphan_functions", {}, [("orphan_functions: 6 functions no resolved call reaches; entry points, __init__, "
+                               "callbacks and dynamically called code also appear here"),
+                              "app.py::run  app.py:6", "db.py::Database.save  db.py:5", "hub.py::go  hub.py:5",
+                              "m1.py::tick  m1.py:1", "m2.py::tick  m2.py:1", "store.py::Store.save  store.py:2"]),
+])
+def test_full_profile_tools(serve, tool, arguments, expected):
+    assert _call(serve(CALLS, profile="full"), tool, **arguments) == "\n".join(expected)
+
+
+def test_graph_info(serve):
+    lines = _call(serve(CALLS, profile="full"), "graph_info").splitlines()
+    assert lines[0].startswith("graph_info: proj")
+    assert lines[0].endswith(f", commit unknown, built by acte {version('acte')} without jedi")
+    assert lines[1:] == [
+        "Size: 6 files, 8 functions, 2 classes, 11 calls",
+        "Coverage: 50.0% of calls resolved (calls to outside code not counted)",
+        "Status: 1 ambiguous, 3 external, 4 resolved, 3 unresolved",
+        ("Resolved: 1 call on self or cls, 1 call to names in the same file, 1 call through imports, "
+         "1 call on variables of known type"),
+        ("Not resolved to project code: 2 calls to builtins, 1 call through local variables, 1 call to names not found, "
+         "1 call to the standard library, 1 call on objects of unknown type"),
+        "Health: ok",
+    ]
+
+
+CALLS_EACH_TOOL = [("find_symbol", {"name": "connect"}), ("callers_of", {"name": "zz"}), ("callees_of", {"name": "run"}),
+                   ("blast_radius", {"name": "helper"}), ("functions_in_file", {"path": "db.py"}),
+                   ("dependencies_of", {"path": "app.py"}), ("orphan_functions", {}), ("graph_info", {})]
+
+
+def test_stale_warning_after_a_new_commit(tmp_path, monkeypatch):
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))  # a work tree enclosing tmp_path must not be found
+    root = tmp_path / "proj"
+    _write(root, CALLS)
+    _git(root, "init", "-q")
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "one")
+    old = _git(root, "rev-parse", "HEAD")
+    graph = tmp_path / "graph.ttl"
+    _build(root, graph)
+    server = create_server(graph, project=root, profile="full")
+    for tool, arguments in CALLS_EACH_TOOL:
+        assert not _call(server, tool, **arguments).startswith("Warning")
+    _write(root, {"new.py": "x = 1\n"})
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "two")
+    new = _git(root, "rev-parse", "HEAD")
+    warning = f"Warning: this map was built at commit {old[:7]} but the project is now at {new[:7]}; answers may be out of date."
+    plain = create_server(graph, profile="full")  # no --project: never a warning
+    for tool, arguments in CALLS_EACH_TOOL:
+        answer = _call(plain, tool, **arguments)
+        assert not answer.startswith("Warning")
+        assert _call(server, tool, **arguments) == f"{warning}\n{answer}"
+    # a project git cannot read: no warning, and no error
+    missing = create_server(graph, project=tmp_path / "missing", profile="full")
+    for tool, arguments in CALLS_EACH_TOOL:
+        assert _call(missing, tool, **arguments) == _call(plain, tool, **arguments)
 
 
 def test_text_cuts_whole_lines_within_budget():

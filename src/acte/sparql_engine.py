@@ -288,6 +288,14 @@ SELECT ?d ?kind ?name ?file ?start WHERE {
             for r in self.graph.query(q)
         )
 
+    def files(self) -> list[str]:
+        """Return the path of every File in the graph, sorted."""
+        q = _PREFIXES + """
+SELECT ?path WHERE { ?f a code:File ; code:filePath ?path . }
+ORDER BY ?path
+"""
+        return [str(r.path) for r in self.graph.query(q)]
+
     def coverage(self) -> dict:
         """Counts per status, tier (resolved only), reason and edge kind, plus total and
         rate = resolved / (total - external): ``Resolution.report()`` from the graph alone,
