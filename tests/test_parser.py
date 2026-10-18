@@ -155,6 +155,17 @@ def test_call_site_multiline_chained_receiver_is_compacted(parser, tmp_path):
     cs = next(cs for cs in result.call_sites if cs.target_name == "m")
     assert cs.receiver == "a.b"
 
+def test_call_site_starred_in_bare_tuple(parser, tmp_path):
+    # tree-sitter parses an unparenthesised `*g()` as a call of `*g`, and `*o.m()` with the star on `o`
+    p = tmp_path / "test.py"
+    p.write_bytes(b"def f(o):\n    yield *g(), 1\n    x = *g(), 2\n    for y in *g(), 3:\n        pass\n"
+                  b"    print(*g())\n    return *o.a.m(), x, y\n")
+    result = parser.parse_file(p)
+
+    assert [(cs.target_name, cs.receiver, cs.line, cs.col) for cs in result.call_sites] == [
+        ("g", None, 2, 11), ("g", None, 3, 9), ("g", None, 4, 14),
+        ("print", None, 6, 4), ("g", None, 6, 11), ("m", "o.a", 7, 16)]
+
 def test_import_binding_plain(parser, tmp_path):
     code = b"import calc\n"
     p = tmp_path / "test.py"

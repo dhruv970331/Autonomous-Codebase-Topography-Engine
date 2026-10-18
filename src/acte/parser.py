@@ -496,6 +496,8 @@ class CodeParser:
         if not children:
             return None
         first = children[0]
+        if _get_type(first) == "list_splat":  # `return *g(), x` parses as a call of `*g`; the star belongs to the result
+            first = _get_children(first)[-1]
         t = _get_type(first)
         if t in ("identifier", "simple_identifier"):
             return first
@@ -510,11 +512,14 @@ class CodeParser:
         if not children:
             return None
         first = children[0]
+        if _get_type(first) == "list_splat":  # as in _get_call_name_node
+            first = _get_children(first)[-1]
         t = _get_type(first)
         if t in ("identifier", "simple_identifier"):
             return None
         if t in ("attribute", "member_expression"):
-            full_text = _compact_text(first, source)
+            # `return *o.m(), x` parses with the star on `o`; it belongs to the result, not the receiver
+            full_text = _compact_text(first, source).lstrip("*")
             if "." not in full_text:
                 return None
             method_name = self._get_call_name(node, source)
