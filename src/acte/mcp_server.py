@@ -8,7 +8,7 @@ import difflib
 import functools
 import subprocess
 import threading
-from collections import Counter
+from collections import Counter, defaultdict
 from importlib.metadata import version
 from pathlib import Path
 
@@ -89,12 +89,22 @@ def _case_insensitive(name: str, symbols: list[tuple[str, str, str, str, int]]) 
 
 
 def _not_found(name: str, symbols: list[tuple[str, str, str, str, int]]) -> str:
-    keys = {k for d, _, bare, _, _ in symbols for k in (d, d.split("::", 1)[-1], bare)}  # id, qualname, bare name
-    return _did_you_mean(f"No symbol named {name}.", name, keys)
+    names = defaultdict(set)  # each spelling (id, qualname, bare name) -> the symbols it names
+    for d, _, bare, _, _ in symbols:
+        for k in (d, d.split("::", 1)[-1], bare):
+            names[k].add(d)
+    return _did_you_mean(f"No symbol named {name}.", name, names)
 
 
-def _did_you_mean(message: str, name: str, known: set[str] | list[str]) -> str:
-    close = difflib.get_close_matches(name, sorted(known))
+def _did_you_mean(message: str, name: str, known: set[str] | list[str] | dict[str, set[str]]) -> str:
+    """*message*, plus up to 3 close spellings from *known*. When *known* maps spellings to the
+    symbols they name, spellings naming the same symbols are one suggestion: the shortest."""
+    best = {}  # what a spelling names -> its shortest close spelling, in the order of the best match
+    for k in difflib.get_close_matches(name, sorted(known), n=10):
+        same = frozenset(known[k]) if isinstance(known, dict) else k
+        if same not in best or len(k) < len(best[same]):
+            best[same] = k
+    close = list(best.values())[:3]
     return message + (f" Did you mean: {', '.join(close)}?" if close else "")
 
 

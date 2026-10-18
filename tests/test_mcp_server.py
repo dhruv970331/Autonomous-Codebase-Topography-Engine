@@ -128,6 +128,17 @@ def test_find_symbol(server, name, expected):
     assert _call(server, "find_symbol", name=name) == "\n".join(expected)
 
 
+@pytest.mark.parametrize(("files", "name", "expected"), [
+    ({"m.py": "def variable():\n    pass\n"}, "variabel", "Did you mean: variable?"),
+    ({"m.py": "def variable():\n    pass\n"}, "m.py::varable", "Did you mean: variable?"),
+    # the bare name names two symbols, each id one: three different suggestions
+    ({"m.py": "def variable():\n    pass\n", "n.py": "def variable():\n    pass\n"}, "variabel",
+     "Did you mean: variable, n.py::variable, m.py::variable?"),  # equal scores: difflib orders them
+])
+def test_did_you_mean_names_each_symbol_once(serve, files, name, expected):
+    assert _call(serve(files), "find_symbol", name=name) == f"No symbol named {name}. {expected}"
+
+
 def test_find_symbol_shows_ten_of_many(serve):
     server = serve({f"m{i:02}.py": "def run():\n    pass\n" for i in range(12)})
     lines = _call(server, "find_symbol", name="run").splitlines()
