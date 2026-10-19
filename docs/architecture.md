@@ -141,7 +141,10 @@ unresolved and external calls carry `code:reason`.
 Only a resolved call also draws an arrow between two nodes: `caller code:calls function`, or
 `caller code:instantiates class` for a constructor call like `Database()`. The caller is a
 Function, or the File for module-level code. A recursive call keeps its record, flagged
-`code:recursive`, but draws no arrow to itself.
+`code:recursive`, but draws no arrow to itself. A resolved call that creates a class also
+records the `__init__` it runs, found through the class's MRO as for T1: `code:initTarget`
+that method, or `code:initUnknown true` when an external or unknown base comes first.
+Neither is recorded when no project class in the MRO defines `__init__`.
 
 Triples accumulate across `build()` calls so a repository can be ingested file by file.
 
@@ -166,13 +169,16 @@ They return one answer per matching definition, at most 6.
 A `CallerAnswer` keeps confirmed callers (resolved calls) apart from possible callers:
 ambiguous calls that list the target as a candidate, and, for a method `Sub.m` that
 overrides `Base.m` of a project base class, calls resolved to `Base.m` through `self`/`cls`
-(T1, not `super()`) or a variable typed as the base (T4b), which may run `Sub.m` at runtime.
+(T1, not `super()`), a variable typed as the base (T4b) or jedi (TJ), which may run `Sub.m`
+at runtime.
 It is labelled `exact` or `lower-bound`, and a lower bound says why, with counts:
 `ambiguous`, `override`, `unknown-receiver`
 (calls like `x.save()` that might reach a `save`), `unknown-base` (calls like `self.save()`
 that stopped at a base outside the project, and might reach a project `save` after it),
 `ceiling`. Callers of `C.__init__`
-include everything that creates a `C`.
+include every creation whose `code:initTarget` is `C.__init__`: of `C`, or of a subclass that
+inherits it. Creating a subclass of `C` marked `code:initUnknown` is a possible caller, counted
+as `unknown-base`.
 
 A `BlastAnswer` steps outwards from the target one hop at a time in Python, up to `depth`
 hops (default 3, at most 10). Each affected node has its distance and the node it reaches

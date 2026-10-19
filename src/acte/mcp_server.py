@@ -201,6 +201,8 @@ def create_server(graph_path: str | Path, project: str | Path | None = None, pro
             ("Possible (could not tell which function is called):", [f"{c.id}  {c.file_path}:{c.line}" for c in a.possible if c.reason == "ambiguous"]),
             ("Possible (call the base-class version, which may run this override):",
              [f"{c.id}  {c.file_path}:{c.line}" for c in a.possible if c.reason == "override"]),
+            ("Possible (create a subclass that may get its __init__ from a base class outside the project):",
+             [f"{c.id}  {c.file_path}:{c.line}" for c in a.possible if c.reason == "unknown-base"]),
         ])  # one definition already, so no advice: a fuller name would give the same list
 
     @tool(

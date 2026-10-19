@@ -202,6 +202,8 @@ class CallResolution:
     candidates: list[str] = field(default_factory=list)  # sorted, ambiguous only; empty over the ceiling
     candidate_count: int = 0
     reason: str | None = None  # "local", "no-match", "ceiling", "builtin", "stdlib", "third-party", "unknown-receiver", "unknown-base", "jedi-external"
+    init: str | None = None  # instantiates only: the __init__ the class's MRO finds (D9)
+    init_unknown: bool = False  # instantiates only: the MRO reaches an external or unknown base before any __init__
 
 
 @dataclass
@@ -583,8 +585,11 @@ def _pick(index: SymbolIndex, call: CallSite, ids: set[str], ambiguous: bool, ti
     ids = sorted(i for i in ids if i in index.by_id)
     if len(ids) == 1 and not ambiguous:
         target = ids[0]
-        edge = "instantiates" if index.by_id[target].kind == "Class" else "calls"
-        return CallResolution(call, "resolved", tier, target, edge, target == call.caller_id)
+        if index.by_id[target].kind != "Class":
+            return CallResolution(call, "resolved", tier, target, "calls", target == call.caller_id)
+        init, reason = _method(index, target, "__init__")  # no-match: object.__init__, outside the project
+        return CallResolution(call, "resolved", tier, target, "instantiates", target == call.caller_id,
+                              init=init, init_unknown=reason == "unknown-base")
     if not ids:
         return CallResolution(call, "unresolved", reason="no-match")
     if len(ids) > CANDIDATE_CEILING:

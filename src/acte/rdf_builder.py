@@ -143,6 +143,10 @@ class KnowledgeGraphBuilder:
             target = self._make_uri(r.target)
             g.add((uri, CODE.tier, Literal(r.tier, datatype=XSD.string)))
             g.add((uri, CODE.resolvedTo, target))
+            if r.init:
+                g.add((uri, CODE.initTarget, self._make_uri(r.init)))
+            if r.init_unknown:
+                g.add((uri, CODE.initUnknown, Literal(True, datatype=XSD.boolean)))
             if r.recursive:
                 g.add((uri, CODE.recursive, Literal(True, datatype=XSD.boolean)))
             else:  # R11: a recursive call keeps its record but draws no self-edge

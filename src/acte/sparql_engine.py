@@ -72,14 +72,15 @@ class Caller:
     name: str
     file_path: str
     line: int  # the call's line, not the caller's definition
-    reason: str | None = None  # a possible caller's: "ambiguous" or "override" (A8)
+    reason: str | None = None  # a possible caller's: "ambiguous", "override" (A8) or "unknown-base" (D9)
 
 
 @dataclass
 class CallerAnswer:
     target: str             # qualified id of the definition asked about
     callers: list[Caller]   # confirmed: resolved, non-recursive CallSites (calls or instantiates)
-    possible: list[Caller]  # ambiguous CallSites listing target as a candidate (R19), and calls to a method target overrides (A8)
+    possible: list[Caller]  # ambiguous CallSites listing target as a candidate (R19), calls to a method target overrides (A8),
+                            # and, for C.__init__, creations of a subclass whose MRO stops at an outside base first (D9)
     completeness: str       # "exact" | "lower-bound" (R23)
     reasons: dict[str, int]  # why lower-bound: "ambiguous", "override", "unknown-receiver", "unknown-base", "ceiling" counts
 
@@ -369,29 +370,33 @@ SELECT ?d ?name WHERE {
 
     def _caller_answer(self, target: str, bare: str) -> CallerAnswer:
         """Confirmed callers, possible callers (R19) and the exact / lower-bound label (R23) of one definition."""
-        reached, names = [target], [bare]
-        if target.endswith(".__init__"):  # D9: whoever instantiates C runs C.__init__
+        reached, names, uri = [target], [bare], self._uri(target)
+        if target.endswith(".__init__"):  # D9: an unsure creation of C may run C.__init__
             cls = target[: -len(".__init__")]
             reached.append(cls)
             names.append(cls.split("::", 1)[-1].rsplit(".", 1)[-1])
         values = " ".join(self._uri(t) for t in reached)
-        callers = self._callers(f"VALUES ?t {{ {values} }} ?site code:resolvedTo ?t . "
+        # D9: creating a class runs the __init__ its MRO finds, recorded by the resolver as initTarget
+        callers = self._callers(f"{{ ?site code:resolvedTo {uri} }} UNION {{ ?site code:initTarget {uri} }} "
                                 "FILTER NOT EXISTS { ?site code:recursive true }")
         possible = self._callers(f"VALUES ?t {{ {values} }} ?site code:candidate ?t .", "ambiguous")
-        # A8: a call resolved to a method target overrides, through self / cls or a variable typed as that class,
-        # may run target when the object is of target's class
+        # A8: a call resolved to a method target overrides, through self / cls, a variable typed as that class
+        # or jedi, may run target when the object is of target's class
         override = self._callers(f"""
     {self._uri(target)} ^code:contains ?sub ; code:name ?m .
     ?sub a code:Class ; code:inherits+ ?base .
     ?base code:contains ?t .
     ?t a code:Function ; code:name ?m .
     FILTER(?t != {self._uri(target)})
-    {{ ?site code:resolvedTo ?t ; code:tier {self._literal("T4b")} . }}
+    {{ ?site code:resolvedTo ?t ; code:tier ?tier . VALUES ?tier {{ {self._literal("T4b")} {self._literal("TJ")} }} }}
     UNION
     {{ ?site code:resolvedTo ?t ; code:tier {self._literal("T1")} ; code:receiver ?r .
        VALUES ?r {{ {self._literal("self")} {self._literal("cls")} }} }}""", "override")
+        if target.endswith(".__init__"):  # a subclass whose MRO reaches an outside or unknown base before any __init__
+            possible += self._callers(f"?site code:initUnknown true ; code:resolvedTo/code:inherits+ {self._uri(cls)} .", "unknown-base")
         possible = sorted(possible + override, key=lambda c: (c.file_path, c.line, c.id))
-        reasons = {"ambiguous": len(possible) - len(override), "override": len(override)}
+        listed = Counter(c.reason for c in possible)
+        reasons = {"ambiguous": listed["ambiguous"], "override": listed["override"]}
         # a method not found before an external or unknown base may be a project method after it in the MRO
         for status, reason in (("unresolved", "unknown-receiver"), ("unresolved", "unknown-base"), ("ambiguous", "ceiling")):
             q = _PREFIXES + f"""
@@ -402,7 +407,7 @@ SELECT (COUNT(?site) AS ?n) WHERE {{
           code:targetName ?target_name .
 }}
 """
-            reasons[reason] = int(next(iter(self.graph.query(q))).n)
+            reasons[reason] = int(next(iter(self.graph.query(q))).n) + listed[reason]
         reasons = {k: v for k, v in reasons.items() if v}
         return CallerAnswer(target, callers, possible, "lower-bound" if reasons else "exact", reasons)
 
@@ -428,9 +433,10 @@ SELECT (COUNT(?site) AS ?n) WHERE {{
             for node in level:
                 a = answer(node)
                 possible.update({(c.id, c.line): c for c in a.possible})
+                listed = Counter(c.reason for c in a.possible)  # counted once below, over the deduplicated list
                 for reason in ("unknown-receiver", "unknown-base", "ceiling"):
-                    if a.reasons.get(reason):
-                        reasons[reason] = reasons.get(reason, 0) + a.reasons[reason]
+                    if a.reasons.get(reason, 0) - listed[reason]:
+                        reasons[reason] = reasons.get(reason, 0) + a.reasons[reason] - listed[reason]
                 for c in a.callers:
                     if c.id != target and c.id not in found:
                         names[c.id] = c.name
@@ -439,7 +445,7 @@ SELECT (COUNT(?site) AS ?n) WHERE {{
             line_start |= self._line_starts([i.id for i in new])
             level = [i.id for i in sorted(new, key=rank) if "::" in i.id]  # File nodes are not expanded
         for reason, n in sorted(Counter(c.reason for c in possible.values()).items()):
-            reasons[reason] = n
+            reasons[reason] = reasons.get(reason, 0) + n
         cut = sum(1 for n in level if answer(n).possible or answer(n).reasons
                   or any(c.id != target and c.id not in found for c in answer(n).callers))
         if cut:

@@ -346,3 +346,47 @@ def test_blast_radius_override_is_lower_bound(tmp_path):
     assert [i.name for i in answer.affected] == ["direct"]
     assert [(c.name, c.line, c.reason) for c in answer.possible] == [("run", 6, "override"), ("typed", 19, "override")]
     assert (answer.completeness, answer.reasons) == ("lower-bound", {"override": 2})
+
+
+def test_callers_of_override_includes_jedi_calls(tmp_path):
+    """A8: an x.m() only jedi resolves to Base.m (make() has no return annotation) may run Sub.m too."""
+    pytest.importorskip("jedi")
+    (tmp_path / "j.py").write_text(
+        "class Base:\n    def m(self):\n        pass\n\n\nclass Sub(Base):\n    def m(self):\n        pass\n\n\n"
+        "def make():\n    return Base()\n\n\ndef use():\n    x = make()\n    x.m()\n"  # line 17
+    )
+    engine = SPARQLEngine(graph=build_graph([tmp_path / "j.py"], tmp_path, use_jedi=True))
+    assert [(s.line, s.status, s.resolved_to) for s in engine.call_sites(f"{tmp_path}/j.py::use") if s.target_name == "m"] == [
+        (17, "resolved", f"{tmp_path}/j.py::Base.m"),
+    ]
+    assert engine.execute_raw_sparql("SELECT ?tier WHERE { ?s code:line 17 ; code:tier ?tier }") == [{"tier": "TJ"}]
+    assert _summary(engine.callers_of("Sub.m"), tmp_path) == [("j.py::Sub.m", [], ["use"], "lower-bound", {"override": 1})]
+
+
+INHERITED_INIT = (
+    "class B:\n    def __init__(self):\n        pass\n\n\n"
+    "class C(B):\n    pass\n\n\n"
+    "class D(C):\n    def __init__(self):\n        super().__init__()\n\n\n"  # line 12
+    "class E(dict, B):\n    pass\n\n\n"  # dict comes first: its __init__ may run
+    "class F(B, dict):\n    pass\n\n\n"  # B.__init__ comes before dict
+    "def make():\n    B()\n    C()\n    D()\n    E()\n    F()\n"  # lines 24-28
+)
+
+
+def test_callers_of_init_counts_creators_of_subclasses_that_inherit_it(tmp_path):
+    """D9: C() and F() run B.__init__; D() runs D.__init__; E() may run dict's, so it is only possible."""
+    engine = _engine(tmp_path, {"i.py": INHERITED_INIT})
+    assert _summary(engine.callers_of("B.__init__"), tmp_path) == [
+        ("i.py::B.__init__", [("__init__", 12), ("make", 24), ("make", 25), ("make", 28)], ["make"], "lower-bound", {"unknown-base": 1}),
+    ]
+    assert [(c.line, c.reason) for a in engine.callers_of("B.__init__") for c in a.possible] == [(27, "unknown-base")]
+    assert _summary(engine.callers_of("D.__init__"), tmp_path) == [("i.py::D.__init__", [("make", 26)], [], "exact", {})]
+    assert [(c.name, c.line) for a in engine.callers_of("C") for c in a.callers] == [("make", 25)]  # the class itself
+
+
+def test_blast_radius_counts_an_unknown_base_creator_once(tmp_path):
+    engine = _engine(tmp_path, {"i.py": INHERITED_INIT})
+    [answer] = engine.blast_radius("B.__init__")
+    assert [(i.name, i.distance) for i in answer.affected] == [("__init__", 1), ("make", 1)]  # D5: D.__init__ has a caller, make none
+    assert [(c.name, c.line, c.reason) for c in answer.possible] == [("make", 27, "unknown-base")]
+    assert (answer.completeness, answer.reasons) == ("lower-bound", {"unknown-base": 1})

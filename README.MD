@@ -162,8 +162,9 @@ Stated plainly, because they affect what the results mean.
   passed around as callbacks, stored in dicts or wrapped by decorators are not followed.
 - **Inheritance is followed statically.** A method is looked up through the MRO of the
   class the code declares, not the object's actual class. Calls to a base-class method
-  through `self`, `cls` or a variable typed as the base are listed as possible callers of
-  each project override, and make the answer `lower-bound`. A base outside the project,
+  through `self`, `cls`, a variable typed as the base, or found by jedi, are listed as
+  possible callers of each project override, and make the answer `lower-bound`. Calls
+  through `super()` are not listed for overrides. A base outside the project,
   such as `dict` or a library class, blocks the lookup: an inherited method not found
   before it stays unresolved, and answers that it might reach are labelled `lower-bound`.
 - **The dead-code list over-reports.** Entry points, `__init__` methods, properties and

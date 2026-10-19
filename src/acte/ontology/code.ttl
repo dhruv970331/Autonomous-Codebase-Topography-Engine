@@ -123,6 +123,16 @@ code:recursive a rdf:Property ;
     rdfs:domain code:CallSite ;
     rdfs:range xsd:boolean .
 
+code:initTarget a rdf:Property ;
+    rdfs:comment "The __init__ method a resolved call that creates an instance runs: the class's own, or the first one in its method resolution order." ;
+    rdfs:domain code:CallSite ;
+    rdfs:range code:Function .
+
+code:initUnknown a rdf:Property ;
+    rdfs:comment "True when a resolved call creates an instance of a class whose method resolution order reaches a base outside the project, or an unknown one, before any __init__." ;
+    rdfs:domain code:CallSite ;
+    rdfs:range xsd:boolean .
+
 code:candidate a rdf:Property ;
     rdfs:comment "One of the definitions an ambiguous call might reach." ;
     rdfs:domain code:CallSite .

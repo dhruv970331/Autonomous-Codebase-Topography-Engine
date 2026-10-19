@@ -11,7 +11,8 @@ from acte.rdf_builder import CODE, build_graph
 SRC = Path(__file__).parent.parent / "src" / "acte"
 
 # One file per CallSite shape: resolved, ambiguous with candidates, external with
-# reason, recursive, instantiates, and a receiver; and a class inheriting a project class.
+# reason, recursive, instantiates (an __init__ found, and one behind an outside base), and a
+# receiver; and a class inheriting a project class.
 PROJECT = {
     "x/util.py": "def build():\n    pass\n",
     "y/util.py": "def build():\n    pass\n",
@@ -26,8 +27,12 @@ PROJECT = {
         "class Pg(Db):\n"
         "    pass\n"
         "\n"
+        "class Env(dict):\n"
+        "    pass\n"
+        "\n"
         "def run(n):\n"
         "    Db()\n"
+        "    Env()\n"
         "    build()\n"
         "    os.getcwd()\n"
         "    run(n - 1)\n"

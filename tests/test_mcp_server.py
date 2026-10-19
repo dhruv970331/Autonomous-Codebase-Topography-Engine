@@ -360,3 +360,16 @@ def test_callers_of_override_in_plain_words(serve):
         "Possible:\n"
         "o.py::Base.run  o.py:6"
     )
+
+
+def test_callers_of_init_behind_an_outside_base_in_plain_words(serve):
+    server = serve({"i.py": ("class B:\n    def __init__(self):\n        pass\n\n\nclass C(B):\n    pass\n\n\n"
+                             "class E(dict, B):\n    pass\n\n\ndef make():\n    C()\n    E()\n")})
+    assert _call(server, "callers_of", name="B.__init__") == (
+        "callers_of i.py::B.__init__: 1 confirmed, 1 possible "
+        "(lower-bound: 1 call to methods that may be in base classes outside the project or unknown)\n"
+        "Confirmed:\n"
+        "i.py::make  i.py:15\n"
+        "Possible (create a subclass that may get its __init__ from a base class outside the project):\n"
+        "i.py::make  i.py:16"
+    )
