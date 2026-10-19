@@ -76,7 +76,7 @@ def _measure(root: Path, use_jedi: bool) -> tuple[dict, dict]:
         "files": files, "functions": functions, "nodes": files + functions + classes,
         "call_sites": cov["total"], "resolved": cov["status"].get("resolved", 0),
         "external": cov["status"].get("external", 0), "ambiguous": cov["status"].get("ambiguous", 0),
-        "unresolved": {r: n for r, n in cov["reason"].items() if r in ("local", "no-match", "unknown-receiver")},
+        "unresolved": {r: n for r, n in cov["reason"].items() if r in ("local", "no-match", "unknown-receiver", "unknown-base")},
         "rate": cov["rate"], "seconds": round(seconds, 1),
     }, run_checks(graph)
 
