@@ -105,7 +105,8 @@ def _did_you_mean(message: str, name: str, known: set[str] | list[str] | dict[st
         if same not in best or len(k) < len(best[same]):
             best[same] = k
     close = list(best.values())[:3]
-    return message + (f" Did you mean: {', '.join(close)}?" if close else "")
+    # the retry nudge: without it models ask the user back instead of trying a suggestion
+    return message + (f" Did you mean: {', '.join(close)}? Call the tool again with one of these names." if close else "")
 
 
 def _head(project: str | Path) -> str | None:

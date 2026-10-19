@@ -160,7 +160,8 @@ def table(results: list[dict]) -> str:
     groups = defaultdict(list)
     for r in results:
         groups[r["type"]].append(r)
-    groups["overall"] = results
+    if results:  # no results (--limit 0): the header alone, not a division by zero
+        groups["overall"] = results
     lines = [f"{'type':<11}{'n':>4}{'pass':>6}{'rate':>7}{'turns':>7}{'calls':>7}{'tool err':>10}{'failed':>8}{'s/q':>7}"]
     for kind, rs in groups.items():
         n = len(rs)

@@ -121,7 +121,7 @@ def test_lists_small_profile_tools(server):
                  "net.py::connect (Function) net.py:1"]),
     ("DATABASE", ['find_symbol "DATABASE": 1 match',
                   "db.py::Database (Class) db.py:1"]),
-    ("conect", ["No symbol named conect. Did you mean: connect?"]),
+    ("conect", ["No symbol named conect. Did you mean: connect? Call the tool again with one of these names."]),
     ("zzqqxx", ["No symbol named zzqqxx."]),
 ])
 def test_find_symbol(server, name, expected):
@@ -129,11 +129,11 @@ def test_find_symbol(server, name, expected):
 
 
 @pytest.mark.parametrize(("files", "name", "expected"), [
-    ({"m.py": "def variable():\n    pass\n"}, "variabel", "Did you mean: variable?"),
-    ({"m.py": "def variable():\n    pass\n"}, "m.py::varable", "Did you mean: variable?"),
+    ({"m.py": "def variable():\n    pass\n"}, "variabel", "Did you mean: variable? Call the tool again with one of these names."),
+    ({"m.py": "def variable():\n    pass\n"}, "m.py::varable", "Did you mean: variable? Call the tool again with one of these names."),
     # the bare name names two symbols, each id one: three different suggestions
     ({"m.py": "def variable():\n    pass\n", "n.py": "def variable():\n    pass\n"}, "variabel",
-     "Did you mean: variable, n.py::variable, m.py::variable?"),  # equal scores: difflib orders them
+     "Did you mean: variable, n.py::variable, m.py::variable? Call the tool again with one of these names."),  # equal scores: difflib orders them
 ])
 def test_did_you_mean_names_each_symbol_once(serve, files, name, expected):
     assert _call(serve(files), "find_symbol", name=name) == f"No symbol named {name}. {expected}"
@@ -161,7 +161,7 @@ def test_find_symbol_shows_ten_of_many(serve):
     ("callers_of", "save", ['callers_of "save": 2 definitions match. Ask again with one full name:',
                             "db.py::Database.save (Function) db.py:5",
                             "store.py::Store.save (Function) store.py:2"]),
-    ("callers_of", "conect", ["No symbol named conect. Did you mean: connect?"]),
+    ("callers_of", "conect", ["No symbol named conect. Did you mean: connect? Call the tool again with one of these names."]),
     ("callees_of", "run", ["callees_of app.py::run: 3 resolved, 3 external, 3 unresolved, 0 ambiguous",
                            "Calls:",
                            "db.py::Database  (line 7)",
@@ -208,7 +208,7 @@ def test_callers_of_cut_to_budget(serve):
         "blast_radius chain.py::base (depth 1): 1 affected, 0 possible (lower-bound: stopped at depth 1 while callers continue)",
         "Distance 1:", "chain.py::one  chain.py:6  (calls chain.py::base)"]),
     ("blast_radius", {"name": "four"}, ["blast_radius chain.py::four (depth 2): 0 affected, 0 possible (exact)"]),
-    ("blast_radius", {"name": "bse"}, ["No symbol named bse. Did you mean: base?"]),
+    ("blast_radius", {"name": "bse"}, ["No symbol named bse. Did you mean: base? Call the tool again with one of these names."]),
     ("callers_of", {"name": "BASE"}, ["callers_of chain.py::base: 1 confirmed, 0 possible (exact)",
                                       "Confirmed:", "chain.py::one  chain.py:6"]),
     ("callers_of", {"name": "ONE"}, ['callers_of "ONE": 2 definitions match. Ask again with one full name:',
@@ -262,7 +262,7 @@ def test_full_profile_lists_eight_tools(serve):
                                               "db.py::Database (Class) db.py:1",
                                               "db.py::Database.connect (Function) db.py:2",
                                               "db.py::Database.save (Function) db.py:5"]),
-    ("functions_in_file", {"path": "apps.py"}, ["functions_in_file: no file apps.py in the map. Did you mean: app.py?"]),
+    ("functions_in_file", {"path": "apps.py"}, ["functions_in_file: no file apps.py in the map. Did you mean: app.py? Call the tool again with one of these names."]),
     ("dependencies_of", {"path": "app.py"}, ["dependencies_of app.py: 1 project file, 1 outside module",
                                              "Project files:", "db.py", "Outside modules:", "os"]),
     ("dependencies_of", {"path": "hub.py"}, ["dependencies_of hub.py: 2 project files, 0 outside modules",

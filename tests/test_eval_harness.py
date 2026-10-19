@@ -59,6 +59,13 @@ def test_openai_tools():
         "name": "callers_of", "description": "List who calls a function.", "parameters": schema}}]
 
 
+def test_table():
+    rows = run_eval.table([{"type": "callers", "pass": True, "turns": 2, "tool_calls": [{}], "tool_errors": [],
+                            "failure": None, "latency_s": 1.5}]).splitlines()
+    assert [r.split()[:4] for r in rows[1:]] == [["callers", "1", "1", "100%"], ["overall", "1", "1", "100%"]]
+    assert run_eval.table([]).splitlines() == rows[:1]  # no results: the header only
+
+
 def test_src_changed(tmp_path):
     def git(*args):
         return subprocess.run(["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@t", *args],
