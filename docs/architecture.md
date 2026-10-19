@@ -155,9 +155,24 @@ then file and line, and cut to `limit` (default 50) with the full total reported
 the depth limit with callers still beyond it makes the answer `lower-bound`
 (`depth-limit`).
 
-### Layer 4: MCP server
+### Layer 4: MCP server (`src/acte/mcp_server.py`)
 
-Not implemented. Intended to expose the named queries as tools to an LLM.
+`acte serve GRAPH.ttl` loads one graph, read-only, and offers the named queries as MCP tools
+over stdio, built on the official `mcp` SDK. Queries run one at a time under a lock. The
+`small` profile (default) has `find_symbol`, `callers_of`, `callees_of` and `blast_radius`;
+`full` adds `functions_in_file`, `dependencies_of`, `orphan_functions` and `graph_info`.
+`execute_raw_sparql` is not offered: the model never writes SPARQL.
+
+Each tool takes a name or path and returns plain text built for a small model:
+
+- the first line sums up the answer, including `exact` or `lower-bound` and why;
+- every item has `file:line`;
+- answers stay under about 4,000 characters, cut at whole lines, and say what was left out;
+- a name with several definitions gets the list and a request for the full name, never a
+  pick; an unknown name gets up to 3 close spellings and a prompt to call again with one;
+- these are normal answers, not errors. Errors are kept for real malfunctions;
+- with `--project`, every answer warns when the project's git HEAD differs from the
+  commit the graph was built from.
 
 ## Identifiers
 

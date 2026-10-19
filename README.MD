@@ -16,23 +16,36 @@ functions that actually call the one you changed. ACTE is built on the second.
 | **1. Parse** | tree-sitter walks the AST and extracts files, classes, functions, and the edges between them |
 | **2. Build** | those become RDF triples in a `code:` namespace, serialisable to Turtle (`.ttl`) |
 | **3. Query** | a fixed set of named SPARQL queries answers callers, callees, dependencies, and dead code |
-| **4. Serve** | an MCP server exposing those queries as LLM tools (*not yet implemented*) |
+| **4. Serve** | an MCP server that offers those queries to an LLM as tools |
 
 Queries are hardcoded by design. The model chooses which named query to run and supplies
 arguments; it never writes SPARQL.
 
 ## Status
 
-Early. Layers 1 to 3 exist and are tested; layer 4 has not been started.
+Early, but usable end to end: build a map of a Python project, then let an LLM client ask it
+questions over MCP.
 
 | | State |
 |---|---|
 | AST extraction | Working for Python; Java, JavaScript and TypeScript extract structure only |
 | RDF graph + Turtle output | Working |
-| Named SPARQL queries | 8 implemented |
-| Cross-file call resolution | Working for Python, see Limitations |
-| Command line (`acte build`, `acte stats`) | Working |
-| MCP server | Not implemented |
+| Call resolution | Python only, see Limitations |
+| Command line (`acte build`, `acte stats`, `acte serve`) | Working |
+| Validation on real repositories | Working (rich, httpx, click, flask) |
+| MCP server | Working; tested with opencode and Claude Code |
+
+## Quickstart
+
+```bash
+pip install "acte[jedi] @ git+https://github.com/dhruv970331/Autonomous-Codebase-Topography-Engine.git"
+cd your-project
+acte build .            # writes acte-graph.ttl
+```
+
+Then connect a client: copy [`examples/opencode.json`](examples/opencode.json) or
+[`examples/mcp.json`](examples/mcp.json) (as `.mcp.json` for Claude Code) into the project
+folder. See [`examples/README.md`](examples/README.md).
 
 ## Requirements
 
@@ -68,6 +81,31 @@ name, git commit, versions) and, for any failing health check, the first rows th
 
 Both commands exit with 1 when a health check fails.
 
+### MCP server
+
+```bash
+acte serve acte-graph.ttl [--project PATH] [--profile small|full]
+```
+
+It speaks MCP over stdio. Every answer is plain text, starts with a one-line summary, gives
+`file:line` for each item, and stays under about 4,000 characters, saying what it left out.
+An unknown name gets "did you mean" suggestions; a name with several definitions gets the
+list, never a guess. With `--project`, answers warn when the project's git HEAD is not the
+commit the map was built from.
+
+| Tool | Profile | Answers |
+|---|---|---|
+| `find_symbol` | small | functions and classes matching a name, forgiving of case and typos |
+| `callers_of` | small | who calls a function or creates a class; exact or a lower bound, and why |
+| `callees_of` | small | what a function calls, plus counts of outside and unresolved calls |
+| `blast_radius` | small | everything affected by a change, grouped by distance (depth 1 to 3) |
+| `functions_in_file` | full | what one file defines |
+| `dependencies_of` | full | what one file imports |
+| `orphan_functions` | full | functions no resolved call reaches (dead code candidates) |
+| `graph_info` | full | how the map was built, its coverage and health |
+
+`small` (the default) offers the first four; `full` offers all eight.
+
 ### Python
 
 The same pipeline from Python:
@@ -89,25 +127,45 @@ engine.dependencies_of("src/app.py")
 engine.orphan_functions()
 ```
 
+## Measured
+
+- **PyCG call-graph benchmark** (`tests/test_pycg.py`): precision 1.00, with one documented
+  case excluded, and recall 0.46.
+- **Real repositories** (`tests/test_real_repos.py`, pinned releases). Coverage is the share
+  of calls into project code that are resolved, with jedi. Link precision and recall are for
+  the build without jedi, against jedi's references over 40 sampled functions; jedi's key
+  has known misses, so precision below 1.00 is not always a wrong link.
+
+  | Repo | Files | Coverage | Link precision | Link recall |
+  |---|---|---|---|---|
+  | rich 13.9.4 | 190 | 88.7% | 0.98 | 0.88 |
+  | httpx 0.28.1 | 60 | 85.5% | 0.99 | 0.90 |
+  | click 8.1.8 | 16 | 81.9% | 0.98 | 0.72 |
+  | flask 3.1.0 | 24 | 52.5% | 1.00 | 0.81 |
+
+- **A small model using the MCP tools** (`eval/`): Qwen 3.6 35B-A3B answered 41 of 41
+  questions correctly at temperature 0. The question set is small and is about ACTE's own
+  source, so treat this as a smoke test, not a benchmark.
+
 ## Limitations
 
 Stated plainly, because they affect what the results mean.
 
+- **Call resolution is Python only.** Java, JavaScript and TypeScript files give their
+  structure but no call links. Go and TSX map to file extensions but have no grammar rules,
+  so those files produce a file node and nothing else.
 - **Not every call is resolved.** A call is linked only when its target is certain. Calls
-  that could go to several places are recorded as ambiguous, and `callers_of()` and
-  `blast_radius()` label their answers `lower-bound` when such calls might reach the target.
-- **Method calls on variables resolve only when the variable's type is known**, from an
-  annotation or an assignment like `db = Database()`. Values passed around (callbacks,
-  dicts, decorators) are not followed.
-- **Dead-code detection over-reports.** Entry points, `__init__` methods, properties and
+  that could go to several places are recorded as ambiguous, and `callers_of` and
+  `blast_radius` label their answers `lower-bound` when such calls might reach the target.
+- **Values are not followed.** Method calls on variables resolve only when the variable's
+  type is known, from an annotation or an assignment like `db = Database()`. Functions
+  passed around as callbacks, stored in dicts or wrapped by decorators are not followed.
+- **Class inheritance is not extracted yet**, so a call to an inherited method is not linked.
+- **The dead-code list over-reports.** Entry points, `__init__` methods, properties and
   functions passed as values or reached only through unresolved calls show up in
-  `orphan_functions()`.
-- **Go and TSX are mapped to file extensions but have no grammar rules**, so those files
-  produce a file node and nothing else.
-- **Class inheritance is not extracted.** The `code:inherits` predicate exists but nothing
-  emits it.
-- **The graph is held in memory.** Practical ceiling is in the low thousands of files. The
-  Turtle output loads into an external triplestore if more is needed.
+  `orphan_functions`.
+- **The graph is held in memory** by rdflib. The practical ceiling is about 5,000 files; the
+  largest project measured so far is rich, 190 files in about 24 seconds.
 
 ## Design notes
 
