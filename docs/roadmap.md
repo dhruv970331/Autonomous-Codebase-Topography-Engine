@@ -20,6 +20,12 @@ exist.
 - [x] **Validation.** Health checks on every build, the PyCG benchmark, and pinned releases
       of rich, httpx, click and flask checked against recorded baselines.
 
+- [x] **Class inheritance.** Each class records its bases (`code:inherits` for project
+      bases), and `self.m()`, `cls.m()`, `C.m()`, typed `x.m()` and `super().m()` find
+      inherited methods through the C3 MRO. A base outside the project stops the lookup
+      rather than guessing past it. PyCG's `mro` category went from recall 0.31 (5 of 16)
+      to 0.88 (14 of 16), still with no wrong link.
+
 - [x] **MCP server (layer 4).** `acte serve` offers the named queries as tools, with short
       plain-text answers that report truncation and never guess. Tested with opencode and
       Claude Code, and measured with a small model in `eval/`.
@@ -27,9 +33,6 @@ exist.
 Measured results are in the README.
 
 ## Next
-
-- [ ] **Class inheritance.** Nothing records "class B inherits from A" yet, so calls to an
-      inherited method are not linked.
 
 - [ ] **Other languages.** Call resolution for Java, JavaScript and TypeScript, which now
       extract structure only, and grammar rules for Go and TSX.

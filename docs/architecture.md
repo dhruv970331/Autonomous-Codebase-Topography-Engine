@@ -27,7 +27,9 @@ per-language table of grammar node-type names.
 
 Output is a `ParseResult` per file:
 
-- `NodeInfo`: kind, name, file, line span, language, enclosing scope
+- `NodeInfo`: kind, name, file, line span, language, enclosing scope; for a Python class, its
+  bases as written (`Base`, `mod.Base`, `Generic` for `Generic[T]`; keyword arguments such as
+  `metaclass=` are not bases, and any other expression is marked unknown)
 - `EdgeInfo`: kind, source, target, file, line
 - `CallSite`: the caller, the called name, its receiver (`db` in `db.save()`), line, column
 - `ImportBinding`, `LocalBinding`: what each scope imports and binds, for the resolver
@@ -47,20 +49,37 @@ A `SymbolIndex` is built over every file's `ParseResult`: definitions by id, mod
 names per file, methods per class, module names, and what each file exports (including
 re-exports through imports and `from M import *`).
 
+It also holds each class's bases and its method resolution order (MRO). A base is looked up
+like a type name, from the scope the class statement runs in: a project class gives its id,
+anything else is `external` (`dict`, `typing.Generic`) or `unknown` (`make_base()`, a
+variable). The builtin `object` is no base, since every class has it. The MRO is computed
+with C3, as Python does, over the declared bases; each external or unknown base is an opaque
+entry of its own. A cycle or an inconsistent MRO makes the whole MRO unknown.
+
 Each `CallSite` is then looked up the way Python looks up a name: the caller's own scope,
 enclosing functions, then the module, honouring `global` and `nonlocal`. The first tier that
 matches decides:
 
 | Tier | Call shape | Finds the target through |
 |---|---|---|
-| T1 | `self.m()` / `cls.m()` | the method on the enclosing class |
+| T1 | `self.m()` / `cls.m()` / `super().m()` | the method on the enclosing class, or through its MRO |
 | T2 | `f()` | a definition in the same file or enclosing function (never a method) |
 | T3 | `f()` | an import visible from the caller's scope |
 | T3* | `f()` | a `from M import *` |
-| T4 | `C.m()` | a class defined in or imported into the file |
-| T4b | `x.m()` | the one known type of `x` (annotation or `x = C(...)`) that has method `m` |
+| T4 | `C.m()` | a class defined in or imported into the file, and its MRO |
+| T4b | `x.m()` | the one known type of `x` (annotation or `x = C(...)`) whose MRO has method `m` |
 | T5 | `mod.f()` | a module alias or dotted module path |
 | TJ | `x.m()` | jedi, optional, only for calls still unknown after T1 to T5 |
+
+**Method lookup through the MRO.** For T1, T4 and T4b (and `mod.C.m()` under T5), the class's
+own method wins. Otherwise the MRO is walked in order. A method found on a project class
+before any external or unknown base resolves to that class's method, with the same tier.
+Reaching an external or unknown base first leaves the call `unresolved` with reason
+`unknown-base`: the method may live in code ACTE cannot see. `super().m()` in a method of
+`C`, and `super(C, self).m()` where `self` is the method's first parameter, search the MRO
+after `C` (tier T1); neither applies when `super` is rebound. The MRO is the one declared
+from the class the code is written in: a subclass that overrides `m` is not seen from a call
+in the base class, and `super()` follows `C`'s MRO, not that of the object's actual class.
 
 Every call gets exactly one status:
 
@@ -68,7 +87,8 @@ Every call gets exactly one status:
 - `ambiguous`: several candidates, all recorded. Over 100 candidates, only the count is kept
   (reason `ceiling`).
 - `unresolved`, with a reason: `local` (a variable is called; values are not followed),
-  `no-match`, or `unknown-receiver` (the type of `x` in `x.m()` is unknown).
+  `no-match`, `unknown-receiver` (the type of `x` in `x.m()` is unknown), or `unknown-base`
+  (the method was not found before an external or unknown base in the MRO).
 - `external`, with a reason: `builtin`, `stdlib`, `third-party` or `jedi-external`.
 
 **The validation rule.** A tier may only produce an id that a real node owns. If it does not,
@@ -93,6 +113,7 @@ Nodes, edges and resolved calls become RDF triples in the namespace
 |---|---|
 | CONTAINS | `code:contains` |
 | IMPORTS_FROM | `code:importsFrom` the imported project File, or `code:importsExternal` its module name |
+| class bases | `code:inherits` the base Class, for project bases only |
 
 An import is looked up like a call's module (relative imports included). One project file
 gives a `code:importsFrom` arrow to that File node. No project file gives a
@@ -145,7 +166,9 @@ They return one answer per matching definition, at most 6.
 A `CallerAnswer` keeps confirmed callers (resolved calls) apart from possible callers
 (ambiguous calls that list the target as a candidate). It is labelled `exact` or
 `lower-bound`, and a lower bound says why, with counts: `ambiguous`, `unknown-receiver`
-(calls like `x.save()` that might reach a `save`), `ceiling`. Callers of `C.__init__`
+(calls like `x.save()` that might reach a `save`), `unknown-base` (calls like `self.save()`
+that stopped at a base outside the project, and might reach a project `save` after it),
+`ceiling`. Callers of `C.__init__`
 include everything that creates a `C`.
 
 A `BlastAnswer` steps outwards from the target one hop at a time in Python, up to `depth`

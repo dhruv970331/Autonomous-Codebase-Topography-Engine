@@ -160,7 +160,11 @@ Stated plainly, because they affect what the results mean.
 - **Values are not followed.** Method calls on variables resolve only when the variable's
   type is known, from an annotation or an assignment like `db = Database()`. Functions
   passed around as callbacks, stored in dicts or wrapped by decorators are not followed.
-- **Class inheritance is not extracted yet**, so a call to an inherited method is not linked.
+- **Inheritance is followed statically.** A method is looked up through the MRO of the
+  class the code declares, not the object's actual class: a call in a base class does not
+  see a subclass that overrides the method. A base outside the project, such as `dict` or a
+  library class, blocks the lookup: an inherited method not found before it stays
+  unresolved, and answers that it might reach are labelled `lower-bound`.
 - **The dead-code list over-reports.** Entry points, `__init__` methods, properties and
   functions passed as values or reached only through unresolved calls show up in
   `orphan_functions`.
