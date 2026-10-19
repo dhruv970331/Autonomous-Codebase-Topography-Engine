@@ -15,7 +15,7 @@ from pathlib import Path
 
 from acte.parser import CodeParser
 from acte.rdf_builder import KnowledgeGraphBuilder
-from acte.resolver import resolve
+from acte.resolver import _method, resolve
 
 SNIPPETS = Path(__file__).parent / "data" / "pycg" / "snippets"
 RATCHET = Path(__file__).parent / "data" / "pycg_ratchet.json"
@@ -119,10 +119,10 @@ def _actual_links(case: Path, mods: dict[str, Path]) -> set[str]:
         if r.status != "resolved" or r.recursive:
             continue
         target = r.target
-        if r.edge == "instantiates":  # PyCG lists the constructor; a class without __init__ is no link
-            if "__init__" not in resolution.index.by_class[target]:
+        if r.edge == "instantiates":  # PyCG lists the constructor: C's own __init__ or one C inherits; none is no link
+            target, _ = _method(resolution.index, target, "__init__")
+            if target is None:
                 continue
-            target = resolution.index.by_class[target]["__init__"]
         links.add(f"{pycg(r.call.caller_id)} -> {pycg(target)}")
     return links
 

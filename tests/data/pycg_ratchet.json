@@ -242,18 +242,9 @@
     "lists/slice": [
       "main -> main.func2"
     ],
-    "mro/basic_init": [
-      "main -> main.A.__init__"
-    ],
-    "mro/parents_same_superclass": [
-      "main -> main.A.__init__"
-    ],
     "mro/self_assignment": [
       "main -> main.A.func",
       "main -> main.B.func"
-    ],
-    "mro/two_parents": [
-      "main -> main.B.__init__"
     ],
     "returns/call": [
       "main -> main.return_func"
