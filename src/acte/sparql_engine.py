@@ -80,7 +80,7 @@ class CallerAnswer:
     callers: list[Caller]   # confirmed: resolved, non-recursive CallSites (calls or instantiates)
     possible: list[Caller]  # ambiguous CallSites listing target as a candidate (R19)
     completeness: str       # "exact" | "lower-bound" (R23)
-    reasons: dict[str, int]  # why lower-bound: "ambiguous", "unknown-receiver", "ceiling" counts
+    reasons: dict[str, int]  # why lower-bound: "ambiguous", "unknown-receiver", "unknown-base", "ceiling" counts
 
 
 @dataclass
@@ -378,7 +378,8 @@ SELECT ?d ?name WHERE {
                                 "FILTER NOT EXISTS { ?site code:recursive true }")
         possible = self._callers(f"VALUES ?t {{ {values} }} ?site code:candidate ?t .")
         reasons = {"ambiguous": len(possible)}
-        for status, reason in (("unresolved", "unknown-receiver"), ("ambiguous", "ceiling")):
+        # a method not found before an external or unknown base may be a project method after it in the MRO
+        for status, reason in (("unresolved", "unknown-receiver"), ("unresolved", "unknown-base"), ("ambiguous", "ceiling")):
             q = _PREFIXES + f"""
 SELECT (COUNT(?site) AS ?n) WHERE {{
     VALUES ?target_name {{ {" ".join(self._literal(n) for n in names)} }}
@@ -413,7 +414,7 @@ SELECT (COUNT(?site) AS ?n) WHERE {{
             for node in level:
                 a = answer(node)
                 possible.update({(c.id, c.line): c for c in a.possible})
-                for reason in ("unknown-receiver", "ceiling"):
+                for reason in ("unknown-receiver", "unknown-base", "ceiling"):
                     if a.reasons.get(reason):
                         reasons[reason] = reasons.get(reason, 0) + a.reasons[reason]
                 for c in a.callers:

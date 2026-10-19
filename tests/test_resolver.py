@@ -940,3 +940,18 @@ def test_bad_class_graphs_are_unknown(tmp_path):
     assert calls[("bad.py::S.go", "y")] == ("unresolved", None, None, "unknown-base")
     assert calls[("bad.py::X.go", "p")] == ("unresolved", None, None, "unknown-base")
     assert calls[("bad.py::Twice.go", "p")] == ("unresolved", None, None, "unknown-base")
+
+
+def test_builtin_object_is_no_base(tmp_path):
+    files = {
+        "o.py": (
+            "class P:\n    def p(self):\n        pass\n\n\n"
+            "class A(object):\n    def go(self):\n        self.missing()\n\n\n"
+            "class B(P, object):\n    def go(self):\n        self.p()\n"
+        ),
+    }
+    calls = _calls(tmp_path, files)
+    assert calls[("o.py::A.go", "missing")] == ("unresolved", None, None, "no-match")  # as for `class A:`
+    assert calls[("o.py::B.go", "p")] == ("resolved", "T1", "o.py::P.p", None)
+    index = resolve([CodeParser().parse_file(tmp_path / "o.py")], tmp_path, use_jedi=False).index
+    assert {k.split("::")[1]: v for k, v in index.bases.items()} == {"P": [], "A": [], "B": [f"{tmp_path}/o.py::P"]}

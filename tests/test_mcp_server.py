@@ -338,3 +338,11 @@ def test_text_cuts_whole_lines_within_budget():
 
 def test_text_uncut_has_no_showing_line():
     assert mcp_server._text("headline", [("Title:", ["a", "b"]), ("Empty:", [])], "x") == "headline\nTitle:\na\nb"
+
+
+def test_callers_of_names_unknown_bases_in_plain_words(serve):
+    server = serve({"m.py": "class Mixin:\n    def save(self):\n        pass\n\n\nclass Model(dict, Mixin):\n    def run(self):\n        self.save()\n"})
+    assert _call(server, "callers_of", name="Mixin.save") == (
+        "callers_of m.py::Mixin.save: 0 confirmed, 0 possible "
+        "(lower-bound: 1 call to methods that may be in base classes outside the project or unknown)"
+    )

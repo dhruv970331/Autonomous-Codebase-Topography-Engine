@@ -296,3 +296,24 @@ def test_coverage_matches_report_and_survives_turtle(tmp_path, use_jedi):
     assert coverage == {k: report[k] for k in ("edge", "rate", "reason", "status", "tier", "total")}
     graph.serialize(tmp_path / "g.ttl", format="turtle")
     assert SPARQLEngine.from_turtle(tmp_path / "g.ttl").coverage() == coverage
+
+
+MIXED = (
+    "class Mixin:\n    def save(self):\n        pass\n\n\n"
+    "class Model(dict, Mixin):\n    def run(self):\n        self.save()\n\n\n"  # dict comes first: save may be dict's
+    "def outer():\n    Mixin().save()\n"
+)
+
+
+def test_callers_of_unknown_base_is_lower_bound(tmp_path):
+    """A self.save() not found before an external base may still reach Mixin.save, which is after it in the MRO."""
+    engine = _engine(tmp_path, {"m.py": MIXED})
+    assert _summary(engine.callers_of("Mixin.save"), tmp_path) == [
+        ("m.py::Mixin.save", [("outer", 12)], [], "lower-bound", {"unknown-base": 1}),
+    ]
+
+
+def test_blast_radius_unknown_base_is_lower_bound(tmp_path):
+    engine = _engine(tmp_path, {"m.py": MIXED})
+    [answer] = engine.blast_radius("Mixin.save")
+    assert (answer.completeness, answer.reasons) == ("lower-bound", {"unknown-base": 1})

@@ -92,12 +92,13 @@ class SymbolIndex:
         self.exports = self._exports()
         self.mro: dict[str, list | None] = {}  # filled below; a base is looked up while it is still empty
         # class -> each base in source order: a project class id, "external" or "unknown" (H1); the last definition wins, as in by_id
-        self.bases = {n.qualified_id: [self._base(n, b) for b in n.bases] for n in nodes if n.kind == "Class" and n.bases is not None}
+        self.bases = {n.qualified_id: [r for r in (self._base(n, b) for b in n.bases) if r] for n in nodes if n.kind == "Class" and n.bases is not None}
         for cls in sorted(self.bases):
             self._linearize(cls, frozenset())
 
-    def _base(self, n: NodeInfo, base: str) -> str:
-        """Look up a base as written the way a type name is, from the scope the class statement runs in."""
+    def _base(self, n: NodeInfo, base: str) -> str | None:
+        """Look up a base as written the way a type name is, from the scope the class statement runs in.
+        None for the builtin ``object``: every class has it, so ``class A(object)`` is ``class A``."""
         if base == UNKNOWN_BASE:
             return "unknown"
         scope = f"{n.file_path}::{n.parent_name.removesuffix('.<locals>')}" if n.parent_name else n.file_path
@@ -105,6 +106,8 @@ class SymbolIndex:
         found = _resolve_call(self, CallSite(scope, name, receiver or None, n.file_path, n.line_start, 0), typed=False)
         if found.status == "resolved" and self.by_id[found.target].kind == "Class":
             return found.target
+        if base == "object" and found.reason == "builtin":
+            return None
         return "external" if found.status == "external" else "unknown"
 
     def _linearize(self, cls: str, visiting: frozenset) -> list | None:
