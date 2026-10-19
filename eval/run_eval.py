@@ -8,7 +8,8 @@ the final answers against the expected ids.
     poetry run acte build src -o acte.ttl
     poetry run python eval/run_eval.py --graph acte.ttl --base-url http://host:11500/v1 --model qwen3.6:35b-a3b
 
-The expected sets are for ACTE's own `src/` at the commit the questions were written against.
+The expected sets are for ACTE's own `src/` at questions.json's source_commit; the runner warns when
+the graph was built from another commit.
 OPENAI_API_KEY, when set, is sent as a bearer token.
 """
 
@@ -26,6 +27,7 @@ from pathlib import Path
 import anyio
 from mcp import Client, StdioServerParameters
 
+from acte.rdf_builder import CODE
 from acte.sparql_engine import SPARQLEngine
 
 MAX_TURNS = 8
@@ -99,7 +101,8 @@ async def ask(client: Client, tools: list[dict], names: set[str], args, question
     while turns < MAX_TURNS:
         turns += 1
         try:
-            reply = await anyio.to_thread.run_sync(chat, args.base_url, {"model": args.model, "messages": messages, "tools": tools})
+            body = {"model": args.model, "messages": messages, "tools": tools, "temperature": args.temperature}
+            reply = await anyio.to_thread.run_sync(chat, args.base_url, body)
             msg = reply["choices"][0]["message"]
         except Exception as exc:  # noqa: BLE001 -- one question failing must not stop the run; it is recorded
             failure = f"{type(exc).__name__}: {exc}"
@@ -107,6 +110,7 @@ async def ask(client: Client, tools: list[dict], names: set[str], args, question
         content = strip_thinking(msg.get("content"))
         if not msg.get("tool_calls"):
             answer = content
+            messages.append({"role": "assistant", "content": msg.get("content") or ""})
             if _CALL_IN_TEXT.search(content):
                 errors.append("tool call written in the answer text")
             break
@@ -156,8 +160,14 @@ def table(results: list[dict]) -> str:
 
 
 async def run(args) -> list[dict]:
-    questions = json.loads(Path(args.questions).read_text())[: args.limit]
-    ids = [s[0] for s in SPARQLEngine.from_turtle(args.graph).symbols()]
+    key = json.loads(Path(args.questions).read_text())
+    questions = key["questions"][: args.limit]
+    engine = SPARQLEngine.from_turtle(args.graph)
+    built = engine.graph.value(CODE["build"], CODE.commit)
+    if str(built) != key["source_commit"]:
+        print(f"warning: the graph was built from commit {built}, the expected answers were checked against "
+              f"{key['source_commit']}; they may not match", file=sys.stderr)
+    ids = [s[0] for s in engine.symbols()]
     tails = _tails(ids)
     stale = [e for q in questions for e in q["expected"] if "::" in e and e not in ids]
     if stale:
@@ -182,6 +192,7 @@ def main() -> None:
     p.add_argument("--base-url", required=True, help="OpenAI-style API root, such as http://host:port/v1")
     p.add_argument("--model", required=True)
     p.add_argument("--profile", default="small", choices=["small", "full"])
+    p.add_argument("--temperature", type=float, default=0.0, help="sampling temperature (default: 0)")
     p.add_argument("--limit", type=int, help="ask only the first N questions")
     p.add_argument("--questions", default=str(Path(__file__).with_name("questions.json")))
     p.add_argument("--out", help="write the results as JSON here")
@@ -189,8 +200,8 @@ def main() -> None:
     results = anyio.run(run, args)
     print(table(results))
     if args.out:
-        summary = {"model": args.model, "base_url": args.base_url, "profile": args.profile, "graph": str(args.graph),
-                   "passed": sum(r["pass"] for r in results), "total": len(results)}
+        summary = {"model": args.model, "base_url": args.base_url, "profile": args.profile, "temperature": args.temperature,
+                   "graph": str(args.graph), "passed": sum(r["pass"] for r in results), "total": len(results)}
         Path(args.out).write_text(json.dumps({"summary": summary, "results": results}, indent=2) + "\n")
 
 
