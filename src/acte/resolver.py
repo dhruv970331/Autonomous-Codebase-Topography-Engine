@@ -10,7 +10,14 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from acte.parser import CallSite, ImportBinding, LocalBinding, NodeInfo, ParseResult
+from acte.parser import (
+    UNKNOWN_BASE,
+    CallSite,
+    ImportBinding,
+    LocalBinding,
+    NodeInfo,
+    ParseResult,
+)
 
 try:
     import jedi
@@ -83,6 +90,41 @@ class SymbolIndex:
         self.imports = {s: {k: sorted(v, key=lambda b: (b.file_path, b.line, b.module, b.imported_name)) for k, v in names.items()} for s, names in imports.items()}
         self.star_imports = {s: sorted(v, key=lambda b: (b.file_path, b.line, b.module)) for s, v in stars.items()}
         self.exports = self._exports()
+        self.mro: dict[str, list | None] = {}  # filled below; a base is looked up while it is still empty
+        # class -> each base in source order: a project class id, "external" or "unknown" (H1); the last definition wins, as in by_id
+        self.bases = {n.qualified_id: [self._base(n, b) for b in n.bases] for n in nodes if n.kind == "Class" and n.bases is not None}
+        for cls in sorted(self.bases):
+            self._linearize(cls, frozenset())
+
+    def _base(self, n: NodeInfo, base: str) -> str:
+        """Look up a base as written the way a type name is, from the scope the class statement runs in."""
+        if base == UNKNOWN_BASE:
+            return "unknown"
+        scope = f"{n.file_path}::{n.parent_name.removesuffix('.<locals>')}" if n.parent_name else n.file_path
+        receiver, _, name = base.rpartition(".")
+        found = _resolve_call(self, CallSite(scope, name, receiver or None, n.file_path, n.line_start, 0), typed=False)
+        if found.status == "resolved" and self.by_id[found.target].kind == "Class":
+            return found.target
+        return "external" if found.status == "external" else "unknown"
+
+    def _linearize(self, cls: str, visiting: frozenset) -> list | None:
+        """The C3 MRO of *cls*, cached in ``self.mro``. An external or unknown base is an opaque entry ``(cls, i)``
+        of its own, since two of them may be different classes. None when the MRO is inconsistent or cyclic."""
+        if cls in self.mro or cls in visiting:
+            return self.mro.get(cls)
+        entries = [b if b in self.by_class else (cls, i) for i, b in enumerate(self.bases.get(cls, []))]
+        seqs = [self._linearize(b, visiting | {cls}) if isinstance(b, str) else [b] for b in entries]
+        mro = None if None in seqs else [cls]
+        seqs = [s for s in seqs + [entries] if s]
+        while mro is not None and seqs:
+            head = next((s[0] for s in seqs if not any(s[0] in t[1:] for t in seqs)), None)
+            if head is None:
+                mro = None
+            else:
+                mro.append(head)
+                seqs = [t for t in (s[1:] if s[0] == head else s for s in seqs) if t]
+        self.mro[cls] = mro
+        return mro
 
     def _exports(self) -> dict[str, dict[str, str]]:
         """file -> {name: id}: its module-level definitions plus the names its module-level
@@ -156,7 +198,7 @@ class CallResolution:
     recursive: bool = False  # target == caller: keep the record, emit no arrow (R11)
     candidates: list[str] = field(default_factory=list)  # sorted, ambiguous only; empty over the ceiling
     candidate_count: int = 0
-    reason: str | None = None  # "local", "no-match", "ceiling", "builtin", "stdlib", "third-party", "unknown-receiver", "jedi-external"
+    reason: str | None = None  # "local", "no-match", "ceiling", "builtin", "stdlib", "third-party", "unknown-receiver", "unknown-base", "jedi-external"
 
 
 @dataclass
@@ -263,6 +305,9 @@ def _resolve_receiver(index: SymbolIndex, call: CallSite, typed: bool = True) ->
     parts, name, file = call.receiver.split("."), call.target_name, call.file_path
     unknown = CallResolution(call, "unresolved", reason="unknown-receiver")
     if not all(p.isidentifier() for p in parts):  # a literal, call or subscript: values are not followed (N2)
+        cls = _super_class(index, call)
+        if cls:
+            return _on_class(index, call, cls, "T1", after=True)
         callee = call.receiver[:-1].split("(")[0]
         if typed and call.receiver.endswith(")") and call.receiver.count("(") == 1 and all(p.isidentifier() for p in callee.split(".")):
             return _typed(index, call, callee, False, call.caller_id)  # R24a: `C(...).m()`
@@ -271,7 +316,7 @@ def _resolve_receiver(index: SymbolIndex, call: CallSite, typed: bool = True) ->
     scope = _binding_scope(index, head, call.caller_id, file)
     cls = _self_class(index, scope, head) if scope else None
     if cls and not rest:
-        return _pick(index, call, {index.by_class[cls].get(name)} - {None}, False, "T1")
+        return _on_class(index, call, cls, "T1")
     if cls and typed and head == "self" and len(rest) == 1:  # `self.attr`: its types are looked up from C's file
         return _typed(index, call, *_one_type(index.locals.get(cls, {}).get(f"self.{rest[0]}", [])), cls.split("::")[0])
     if cls:
@@ -317,10 +362,12 @@ def _resolve_receiver(index: SymbolIndex, call: CallSite, typed: bool = True) ->
     def method(cls_id: str | None, tier: str) -> None:
         if cls_id not in index.by_class:
             misses.add("unknown-receiver")  # not a class: a function, or a path we don't follow
-        elif name not in index.by_class[cls_id]:
-            misses.add("no-match")
         else:
-            targets[index.by_class[cls_id][name]] = tier
+            target, reason = _method(index, cls_id, name)
+            if target:
+                targets[target] = tier
+            else:
+                misses.add(reason)
 
     for d in sorted(defs):
         method(None if rest else d, "T4")
@@ -343,7 +390,7 @@ def _resolve_receiver(index: SymbolIndex, call: CallSite, typed: bool = True) ->
         return _pick(index, call, set(targets), ambiguous or bool(misses or external), min(targets.values()))
     if external and not misses:
         return CallResolution(call, "external", reason="stdlib" if external == {"stdlib"} else "third-party")
-    return CallResolution(call, "unresolved", reason="no-match" if misses == {"no-match"} else "unknown-receiver")
+    return CallResolution(call, "unresolved", reason=next(iter(misses)) if len(misses) == 1 else "unknown-receiver")
 
 
 def _imported_variable(index: SymbolIndex, b: ImportBinding, file: str) -> tuple[str | None, bool, str] | None:
@@ -395,7 +442,49 @@ def _typed(index: SymbolIndex, call: CallSite, type_name: str | None, annotated:
     classes = [found.target] if found.status == "resolved" else found.candidates
     if not classes or any(index.by_id[c].kind != "Class" for c in classes):
         return CallResolution(call, "unresolved", reason="unknown-receiver")
-    return _pick(index, call, {index.by_class[c][call.target_name] for c in classes if call.target_name in index.by_class[c]}, found.status == "ambiguous", "T4b")
+    hits = [_method(index, c, call.target_name) for c in classes]
+    ids = {target for target, _ in hits if target}
+    if not ids and any(reason == "unknown-base" for _, reason in hits):
+        return CallResolution(call, "unresolved", reason="unknown-base")
+    return _pick(index, call, ids, found.status == "ambiguous", "T4b")
+
+
+def _method(index: SymbolIndex, cls: str, name: str, after: bool = False) -> tuple[str | None, str | None]:
+    """Method *name* of class *cls*, or of the classes after it in its MRO (``super()``: *after*), as (id, None).
+    Not found: (None, "no-match"), or (None, "unknown-base") once an external or unknown base, or a broken MRO, could hold it."""
+    if not after and name in index.by_class[cls]:
+        return index.by_class[cls][name], None
+    mro = index.mro.get(cls)
+    for c in mro[1:] if mro else []:
+        if not isinstance(c, str):
+            return None, "unknown-base"
+        if name in index.by_class[c]:
+            return index.by_class[c][name], None
+    return None, "no-match" if mro else "unknown-base"
+
+
+def _on_class(index: SymbolIndex, call: CallSite, cls: str, tier: str, after: bool = False) -> CallResolution:
+    target, reason = _method(index, cls, call.target_name, after)
+    return _pick(index, call, {target}, False, tier) if target else CallResolution(call, "unresolved", reason=reason)
+
+
+def _super_class(index: SymbolIndex, call: CallSite) -> str | None:
+    """The class C of ``super().m()`` in a method of C, or of ``super(C, self).m()`` where ``self`` is a method's
+    first parameter in C; None for anything else, or when ``super`` is not the builtin."""
+    receiver, caller, file = call.receiver, call.caller_id, call.file_path
+    if not (receiver.startswith("super(") and receiver.endswith(")")) or _binding_scope(index, "super", caller, file):
+        return None
+    args = receiver[6:-1].split(",") if receiver[6:-1] else []
+    if not args:  # zero-argument super() uses the method's own first parameter
+        firsts = set(index.first_params.get(caller, []))
+        return _self_class(index, caller, firsts.pop()) if len(firsts) == 1 else None
+    if len(args) != 2 or not args[1].isidentifier() or not all(p.isidentifier() for p in args[0].split(".")):
+        return None
+    scope = _binding_scope(index, args[1], caller, file)
+    cls = _self_class(index, scope, args[1]) if scope else None
+    named, _, name = args[0].rpartition(".")
+    found = _resolve_call(index, CallSite(caller, name, named or None, file, call.line, call.col), typed=False)
+    return cls if found.status == "resolved" and found.target == cls else None
 
 
 def _self_class(index: SymbolIndex, scope: str, name: str) -> str | None:

@@ -462,7 +462,7 @@ def test_self_and_cls_calls(tmp_path):
     assert calls[("order.py::Order.make", "build")] == ("resolved", "T1", "order.py::Order.build", None)
     assert calls[("order.py::Order.later.<locals>.inner", "tax")] == ("resolved", "T1", "order.py::Order.tax", None)  # closure over self
     assert calls[("order.py::Order.total", "price")] == ("unresolved", None, None, "no-match")  # N13
-    assert calls[("order.py::Order.rate", "only_base")] == ("unresolved", None, None, "no-match")  # no inheritance yet
+    assert calls[("order.py::Order.rate", "only_base")] == ("resolved", "T1", "base.py::Base.only_base", None)  # inherited
     assert calls[("order.py::Order.rate", "load")] == ("unresolved", None, None, "unknown-receiver")  # self.attr: T4b
     assert calls[("order.py::Order.swap", "tax")] == ("unresolved", None, None, "unknown-receiver")  # self rebound
     assert calls[("order.py::free", "tax")] == ("unresolved", None, None, "unknown-receiver")  # not a method
@@ -661,7 +661,7 @@ def test_typed_receivers(tmp_path):
     assert calls[("use.py::v", "connect")] == ("unresolved", None, None, "unknown-receiver")  # later untyped make()
     assert calls[("use.py::w", "get")] == ("external", None, None, "builtin")  # dict is a builtin class
     assert calls[("use.py::w", "connect")] == ("unresolved", None, None, "unknown-receiver")  # max is a builtin function
-    assert calls[("use.py::Sub.connect", "connect")] == ("unresolved", None, None, "unknown-receiver")  # super(): a project base
+    assert calls[("use.py::Sub.connect", "connect")] == ("resolved", "T1", "shop/db.py::Database.connect", None)  # super()
     assert calls[("use.py::Sub.connect", "close")] == ("unresolved", None, None, "unknown-receiver")  # type(self): a project class
     assert calls[("use.py::Svc.run", "load")] == ("resolved", "T4b", "shop/repo.py::Repo.load", None)
     assert calls[("use.py::Svc.run", "close")] == ("unresolved", None, None, "no-match")
@@ -734,7 +734,7 @@ def test_jedi_tier(tmp_path):
     assert calls[("use.py::wide", "m")] == ("resolved", "TJ", "shop/models.py::A.m", None)
     assert calls[("use.py::last", "m")] == ("resolved", "TJ", "shop/models.py::B.m", None)  # the later assignment wins
     assert calls[("use.py::maxed", "m")] == ("resolved", "TJ", "shop/models.py::A.m", None)
-    assert calls[("use.py::Sub.m", "m")] == ("resolved", "TJ", "shop/models.py::A.m", None)  # super()
+    assert calls[("use.py::Sub.m", "m")] == ("resolved", "T1", "shop/models.py::A.m", None)  # super(): the ladder, before jedi
     assert calls[("use.py::Svc.run", "m")] == ("ambiguous", None, None, None)  # self.db: A or B
     for caller, name in [("literal", "join"), ("opened", "read"), ("pathed", "read_text")]:
         assert calls[(f"use.py::{caller}", name)] == ("external", None, None, "jedi-external")
@@ -748,9 +748,10 @@ def test_without_jedi_is_the_plain_ladder(tmp_path):
     calls = _calls(tmp_path, JEDI_FILES, use_jedi=False)
     for caller, name in [
         ("union", "m"), ("untyped", "m"), ("stdlib", "decode"), ("made", "m"), ("wide", "m"), ("last", "m"), ("maxed", "m"),
-        ("literal", "join"), ("opened", "read"), ("pathed", "read_text"), ("Sub.m", "m"), ("Svc.run", "m"),
+        ("literal", "join"), ("opened", "read"), ("pathed", "read_text"), ("Svc.run", "m"),
     ]:
         assert calls[(f"use.py::{caller}", name)] == ("unresolved", None, None, "unknown-receiver")
+    assert calls[("use.py::Sub.m", "m")] == ("resolved", "T1", "shop/models.py::A.m", None)  # super()
     resolution = resolve([CodeParser().parse_file(tmp_path / rel) for rel in sorted(JEDI_FILES)], tmp_path, use_jedi=False)
     assert (resolution.jedi_version, resolution.jedi_unmapped, resolution.jedi_errors) == (None, 0, 0)
 
@@ -766,7 +767,7 @@ def test_jedi_errors_are_counted(tmp_path, monkeypatch):
     resolution = resolve([CodeParser().parse_file(tmp_path / rel) for rel in sorted(JEDI_FILES)], tmp_path)
     assert _calls(tmp_path, JEDI_FILES, use_jedi=True) == plain  # every call keeps its ladder result
     asked = sum(r.reason == "unknown-receiver" for r in resolution.calls)
-    assert resolution.report()["jedi_errors"] == asked == 12
+    assert resolution.report()["jedi_errors"] == asked == 11
 
 
 def test_jedi_definition_outside_the_parsed_files_is_external(tmp_path):
@@ -820,3 +821,122 @@ def test_stdlib_import_is_not_a_same_named_subpackage(tmp_path):
         "pkg/provider.py": "import json\n\n\ndef f(s):\n    return json.loads(s)\n",  # the stdlib's json, as in flask
     })
     assert calls[("pkg/provider.py::f", "loads")] == ("external", None, None, "stdlib")
+
+
+def test_inherited_methods(tmp_path):
+    calls = _calls(tmp_path, {
+        "shop/__init__.py": "",
+        "shop/base.py": "class Base:\n    def save(self):\n        pass\n\n    @classmethod\n    def make(cls):\n        pass\n",
+        "use.py": (
+            "import shop.base as sb\nfrom shop.base import Base\n\n\n"
+            "class Model(Base):\n"
+            "    def run(self):\n        self.save()\n        self.load()\n\n"
+            "    @classmethod\n    def build(cls):\n        cls.make()\n\n\n"
+            "class Dotted(sb.Base):\n    def save(self):\n        pass\n\n    def run(self):\n        self.save()\n        self.make()\n\n\n"
+            "def typed(m: Model):\n    m.save()\n\n\n"
+            "def assigned():\n    x = Model()\n    x.make()\n\n\n"
+            "def named():\n    Model.make()\n"
+        ),
+        "other.py": "from use import Model\n\n\ndef named():\n    Model.make()\n",
+    })
+    assert calls[("use.py::Model.run", "save")] == ("resolved", "T1", "shop/base.py::Base.save", None)
+    assert calls[("use.py::Model.run", "load")] == ("unresolved", None, None, "no-match")  # only project classes in the MRO
+    assert calls[("use.py::Model.build", "make")] == ("resolved", "T1", "shop/base.py::Base.make", None)  # cls
+    assert calls[("use.py::Dotted.run", "save")] == ("resolved", "T1", "use.py::Dotted.save", None)  # own method first
+    assert calls[("use.py::Dotted.run", "make")] == ("resolved", "T1", "shop/base.py::Base.make", None)  # `sb.Base`
+    assert calls[("use.py::typed", "save")] == ("resolved", "T4b", "shop/base.py::Base.save", None)
+    assert calls[("use.py::assigned", "make")] == ("resolved", "T4b", "shop/base.py::Base.make", None)
+    assert calls[("use.py::named", "make")] == ("resolved", "T4", "shop/base.py::Base.make", None)
+    assert calls[("other.py::named", "make")] == ("resolved", "T4", "shop/base.py::Base.make", None)  # an imported subclass
+
+
+def test_diamond_follows_c3(tmp_path):
+    calls = _calls(tmp_path, {
+        "d.py": (
+            "class A:\n    def m(self):\n        pass\n\n    def n(self):\n        pass\n\n\n"
+            "class B(A):\n    def m(self):\n        pass\n\n\n"
+            "class C(A):\n    def m(self):\n        pass\n\n    def n(self):\n        pass\n\n\n"
+            "class D(B, C):\n    def go(self):\n        self.m()\n        self.n()\n"
+        ),
+    })
+    assert calls[("d.py::D.go", "m")] == ("resolved", "T1", "d.py::B.m", None)
+    assert calls[("d.py::D.go", "n")] == ("resolved", "T1", "d.py::C.n", None)  # C before A, not depth-first
+
+
+def test_external_and_unknown_bases(tmp_path):
+    files = {
+        "e.py": (
+            "from typing import Generic, TypeVar\n\nT = TypeVar('T')\n\n\n"
+            "class Mixin:\n    def mix(self):\n        pass\n\n    def get(self):\n        pass\n\n\n"
+            "class D(dict):\n    def own(self):\n        pass\n\n    def go(self):\n        self.own()\n        self.keys()\n\n\n"
+            "class Late(dict, Mixin):\n    def go(self):\n        self.mix()\n\n\n"
+            "class Early(Mixin, dict):\n    def go(self):\n        self.get()\n        self.keys()\n\n\n"
+            "class G(Generic[T]):\n    def go(self):\n        self.mix()\n\n\n"
+            "class U(Missing, make()):\n    def go(self):\n        self.mix()\n"
+        ),
+    }
+    calls = _calls(tmp_path, files)
+    assert calls[("e.py::D.go", "own")] == ("resolved", "T1", "e.py::D.own", None)  # own methods still resolve
+    assert calls[("e.py::D.go", "keys")] == ("unresolved", None, None, "unknown-base")
+    assert calls[("e.py::Late.go", "mix")] == ("unresolved", None, None, "unknown-base")  # dict comes first in the MRO
+    assert calls[("e.py::Early.go", "get")] == ("resolved", "T1", "e.py::Mixin.get", None)  # Mixin comes before dict
+    assert calls[("e.py::Early.go", "keys")] == ("unresolved", None, None, "unknown-base")
+    assert calls[("e.py::G.go", "mix")] == ("unresolved", None, None, "unknown-base")
+    index = resolve([CodeParser().parse_file(tmp_path / "e.py")], tmp_path, use_jedi=False).index
+    bases = {k.split("::")[1]: v for k, v in index.bases.items()}
+    assert bases == {
+        "Mixin": [], "D": ["external"], "Late": ["external", f"{tmp_path}/e.py::Mixin"],
+        "Early": [f"{tmp_path}/e.py::Mixin", "external"], "G": ["external"], "U": ["unknown", "unknown"],
+    }
+
+
+def test_super_calls(tmp_path):
+    calls = _calls(tmp_path, {
+        "s.py": (
+            "class A:\n    def m(self):\n        pass\n\n\n"
+            "class B(A):\n    def m(self):\n        super().m()\n\n    def two(self):\n        super(B, self).m()\n\n"
+            "    def none(self):\n        super().n()\n\n"
+            "    @classmethod\n    def k(cls):\n        super().m()\n\n"
+            "    def nested(self):\n        def f():\n            super().m()\n        return f\n\n"
+            "    def other(self):\n        super(A, self).m()\n\n\n"
+            "class C(A, dict):\n    def m(self):\n        super().m()\n\n    def k(self):\n        super().keys()\n\n\n"
+            "def free(self):\n    super().m()\n"
+        ),
+        "t.py": "from s import A\n\n\ndef super():\n    pass\n\n\nclass B(A):\n    def m(self):\n        super().m()\n",
+    })
+    for caller in ("B.m", "B.two", "B.k", "C.m"):
+        assert calls[(f"s.py::{caller}", "m")] == ("resolved", "T1", "s.py::A.m", None), caller
+    assert calls[("s.py::B.none", "n")] == ("unresolved", None, None, "no-match")
+    assert calls[("s.py::C.k", "keys")] == ("unresolved", None, None, "unknown-base")
+    for caller in ("B.nested.<locals>.f", "B.other", "free"):  # zero-argument super() in a nested function; super(A, self) in B; no class
+        assert calls[(f"s.py::{caller}", "m")] == ("unresolved", None, None, "unknown-receiver"), caller
+    assert calls[("t.py::B.m", "m")] == ("unresolved", None, None, "unknown-receiver")  # super is not the builtin
+
+
+def test_super_with_explicit_class_in_a_closure(tmp_path):
+    calls = _calls(tmp_path, {
+        "s.py": (
+            "class A:\n    def m(self):\n        pass\n\n\n"
+            "class B(A):\n    def m(self):\n        def f():\n            super(B, self).m()\n        return f\n"
+        ),
+    })
+    assert calls[("s.py::B.m.<locals>.f", "m")] == ("resolved", "T1", "s.py::A.m", None)
+
+
+def test_bad_class_graphs_are_unknown(tmp_path):
+    calls = _calls(tmp_path, {
+        "bad.py": (
+            "class A(B):\n    def go(self):\n        self.x()\n        self.go()\n\n\n"
+            "class B(A):\n    def x(self):\n        pass\n\n\n"
+            "class S(S):\n    def go(self):\n        self.y()\n\n\n"
+            "class P:\n    def p(self):\n        pass\n\n\n"
+            "class Q(P):\n    pass\n\n\n"
+            "class X(P, Q):\n    def go(self):\n        self.p()\n\n\n"  # no consistent MRO: P must come before and after Q
+            "class Twice(P, P):\n    def go(self):\n        self.p()\n"
+        ),
+    })
+    assert calls[("bad.py::A.go", "x")] == ("unresolved", None, None, "unknown-base")  # A and B inherit from each other
+    assert calls[("bad.py::A.go", "go")] == ("resolved", "T1", "bad.py::A.go", None)
+    assert calls[("bad.py::S.go", "y")] == ("unresolved", None, None, "unknown-base")
+    assert calls[("bad.py::X.go", "p")] == ("unresolved", None, None, "unknown-base")
+    assert calls[("bad.py::Twice.go", "p")] == ("unresolved", None, None, "unknown-base")

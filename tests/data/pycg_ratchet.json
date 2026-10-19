@@ -59,7 +59,6 @@
       "main -> main.A.B.bfunc"
     ],
     "classes/base_class_calls_child": [
-      "main -> main.A.func",
       "main.A.func -> main.B.func2",
       "main.A.func -> main.C.func2"
     ],
@@ -243,27 +242,17 @@
     "lists/slice": [
       "main -> main.func2"
     ],
-    "mro/basic": [
-      "main -> main.A.func"
-    ],
     "mro/basic_init": [
       "main -> main.A.__init__"
     ],
     "mro/parents_same_superclass": [
-      "main -> main.A.__init__",
-      "main -> main.C.func"
+      "main -> main.A.__init__"
     ],
     "mro/self_assignment": [
       "main -> main.A.func",
-      "main -> main.B.func",
-      "main -> main.B.funcb"
-    ],
-    "mro/super_call": [
-      "main.B.__init__ -> main.A.__init__",
-      "main.C.__init__ -> main.B.__init__"
+      "main -> main.B.func"
     ],
     "mro/two_parents": [
-      "main -> main.A.func",
       "main -> main.B.__init__"
     ],
     "returns/call": [

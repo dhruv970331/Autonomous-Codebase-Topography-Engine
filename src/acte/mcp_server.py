@@ -26,6 +26,7 @@ _MAX_DEPTH = 3  # blast_radius hops
 _NARROW = "Narrow with a fuller name, such as Class.method."
 _REASONS = {  # why a call is not known for sure, in plain words: "2 calls on objects of unknown type"
     "unknown-receiver": "on objects of unknown type",
+    "unknown-base": "to methods that may be in base classes outside the project or unknown",
     "local": "through local variables",
     "no-match": "to names not found",
     "ceiling": "with too many candidates",
