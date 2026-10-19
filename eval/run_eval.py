@@ -8,8 +8,8 @@ the final answers against the expected ids.
     poetry run acte build src -o acte.ttl
     poetry run python eval/run_eval.py --graph acte.ttl --base-url http://host:11500/v1 --model qwen3.6:35b-a3b
 
-The expected sets are for ACTE's own `src/` at questions.json's source_commit; the runner warns when
-the graph was built from another commit.
+The expected sets are for ACTE's own `src/` tree at questions.json's source_tree; run inside the repo,
+the runner warns when the graph was built from a commit whose `src/` differs.
 OPENAI_API_KEY, when set, is sent as a bearer token.
 """
 
@@ -17,6 +17,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 import urllib.error
@@ -74,6 +75,17 @@ def grade(question: dict, answer: str, tails: dict[str, set[str]]) -> dict:
     missing = [e for e in question["expected"] if not mentions(e, answer, tails)]
     found = [f for f in question.get("forbidden", []) if mentions(f, answer, tails)]
     return {"pass": not missing and not found, "missing": missing, "forbidden_found": found}
+
+
+def src_changed(repo: Path, commit: str | None, tree: str) -> bool:
+    """Whether `src/` at *commit* in the git repo at *repo* is not *tree*; False when commit is None or git fails."""
+    if not commit:
+        return False
+    try:
+        r = subprocess.run(["git", "-C", str(repo), "rev-parse", f"{commit}:src"], check=False, capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return r.returncode == 0 and r.stdout.strip() != tree
 
 
 def chat(base_url: str, body: dict) -> dict:
@@ -164,9 +176,9 @@ async def run(args) -> list[dict]:
     questions = key["questions"][: args.limit]
     engine = SPARQLEngine.from_turtle(args.graph)
     built = engine.graph.value(CODE["build"], CODE.commit)
-    if str(built) != key["source_commit"]:
-        print(f"warning: the graph was built from commit {built}, the expected answers were checked against "
-              f"{key['source_commit']}; they may not match", file=sys.stderr)
+    if src_changed(Path(__file__).parent, built and str(built), key["source_tree"]):
+        print(f"warning: src/ at the graph's commit {built} is not the src/ tree {key['source_tree']} the expected "
+              "answers were checked against; they may not match", file=sys.stderr)
     ids = [s[0] for s in engine.symbols()]
     tails = _tails(ids)
     stale = [e for q in questions for e in q["expected"] if "::" in e and e not in ids]

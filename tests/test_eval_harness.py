@@ -1,6 +1,7 @@
 """The eval runner's grader and tool conversion (eval/run_eval.py); no network, no model."""
 
 import importlib.util
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -56,3 +57,26 @@ def test_openai_tools():
     tool = Tool(name="callers_of", description="List who calls a function.", input_schema=schema)
     assert run_eval.openai_tools([tool]) == [{"type": "function", "function": {
         "name": "callers_of", "description": "List who calls a function.", "parameters": schema}}]
+
+
+def test_src_changed(tmp_path):
+    def git(*args):
+        return subprocess.run(["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                              check=True, capture_output=True, text=True).stdout.strip()
+    git("init", "-q")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.py").write_text("x = 1\n")
+    git("add", ".")
+    git("commit", "-q", "-m", "one")
+    first, tree = git("rev-parse", "HEAD"), git("rev-parse", "HEAD:src")
+    (tmp_path / "README").write_text("docs\n")
+    git("add", ".")
+    git("commit", "-q", "-m", "docs only")
+    assert not run_eval.src_changed(tmp_path, git("rev-parse", "HEAD"), tree)  # a commit outside src/ is not noise
+    (tmp_path / "src" / "a.py").write_text("x = 2\n")
+    git("commit", "-q", "-am", "code")
+    assert run_eval.src_changed(tmp_path, git("rev-parse", "HEAD"), tree)
+    assert not run_eval.src_changed(tmp_path, first, tree)
+    assert not run_eval.src_changed(tmp_path, None, tree)
+    assert not run_eval.src_changed(tmp_path, "0" * 40, tree)  # unknown commit: git fails, no warning
+    assert not run_eval.src_changed(tmp_path / "missing", first, tree)  # not a repo
