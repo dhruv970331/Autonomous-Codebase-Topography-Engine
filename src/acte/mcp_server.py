@@ -31,6 +31,7 @@ _REASONS = {  # why a call is not known for sure, in plain words: "2 calls on ob
     "no-match": "to names not found",
     "ceiling": "with too many candidates",
     "ambiguous": "that could go to several functions",
+    "override": "to the base-class version that may run this override",
     "builtin": "to builtins",
     "stdlib": "to the standard library",
     "third-party": "to third-party packages",
@@ -197,7 +198,9 @@ def create_server(graph_path: str | Path, project: str | Path | None = None, pro
         headline = f"callers_of {a.target}: {len(a.callers)} confirmed, {len(a.possible)} possible ({label})"
         return _text(headline, [
             ("Confirmed:", [f"{c.id}  {c.file_path}:{c.line}" for c in a.callers]),
-            ("Possible (could not tell which function is called):", [f"{c.id}  {c.file_path}:{c.line}" for c in a.possible]),
+            ("Possible (could not tell which function is called):", [f"{c.id}  {c.file_path}:{c.line}" for c in a.possible if c.reason == "ambiguous"]),
+            ("Possible (call the base-class version, which may run this override):",
+             [f"{c.id}  {c.file_path}:{c.line}" for c in a.possible if c.reason == "override"]),
         ])  # one definition already, so no advice: a fuller name would give the same list
 
     @tool(

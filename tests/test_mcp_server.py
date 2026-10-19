@@ -343,3 +343,20 @@ def test_callers_of_names_unknown_bases_in_plain_words(serve):
         "callers_of m.py::Mixin.save: 0 confirmed, 0 possible "
         "(lower-bound: 1 call to methods that may be in base classes outside the project or unknown)"
     )
+
+
+def test_callers_of_override_in_plain_words(serve):
+    server = serve({"o.py": ("class Base:\n    def m(self):\n        pass\n\n    def run(self):\n        self.m()\n\n\n"
+                             "class Sub(Base):\n    def m(self):\n        pass\n")})
+    assert _call(server, "callers_of", name="Sub.m") == (
+        "callers_of o.py::Sub.m: 0 confirmed, 1 possible "
+        "(lower-bound: 1 call to the base-class version that may run this override)\n"
+        "Possible (call the base-class version, which may run this override):\n"
+        "o.py::Base.run  o.py:6"
+    )
+    assert _call(server, "blast_radius", name="Sub.m") == (
+        "blast_radius o.py::Sub.m (depth 2): 0 affected, 1 possible "
+        "(lower-bound: 1 call to the base-class version that may run this override)\n"
+        "Possible:\n"
+        "o.py::Base.run  o.py:6"
+    )

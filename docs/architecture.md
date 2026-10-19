@@ -163,9 +163,12 @@ A fixed set of named queries over the graph:
 `Database.connect`, or a bare name, which matches every function and class with that name.
 They return one answer per matching definition, at most 6.
 
-A `CallerAnswer` keeps confirmed callers (resolved calls) apart from possible callers
-(ambiguous calls that list the target as a candidate). It is labelled `exact` or
-`lower-bound`, and a lower bound says why, with counts: `ambiguous`, `unknown-receiver`
+A `CallerAnswer` keeps confirmed callers (resolved calls) apart from possible callers:
+ambiguous calls that list the target as a candidate, and, for a method `Sub.m` that
+overrides `Base.m` of a project base class, calls resolved to `Base.m` through `self`/`cls`
+(T1, not `super()`) or a variable typed as the base (T4b), which may run `Sub.m` at runtime.
+It is labelled `exact` or `lower-bound`, and a lower bound says why, with counts:
+`ambiguous`, `override`, `unknown-receiver`
 (calls like `x.save()` that might reach a `save`), `unknown-base` (calls like `self.save()`
 that stopped at a base outside the project, and might reach a project `save` after it),
 `ceiling`. Callers of `C.__init__`

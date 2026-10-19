@@ -72,15 +72,16 @@ class Caller:
     name: str
     file_path: str
     line: int  # the call's line, not the caller's definition
+    reason: str | None = None  # a possible caller's: "ambiguous" or "override" (A8)
 
 
 @dataclass
 class CallerAnswer:
     target: str             # qualified id of the definition asked about
     callers: list[Caller]   # confirmed: resolved, non-recursive CallSites (calls or instantiates)
-    possible: list[Caller]  # ambiguous CallSites listing target as a candidate (R19)
+    possible: list[Caller]  # ambiguous CallSites listing target as a candidate (R19), and calls to a method target overrides (A8)
     completeness: str       # "exact" | "lower-bound" (R23)
-    reasons: dict[str, int]  # why lower-bound: "ambiguous", "unknown-receiver", "unknown-base", "ceiling" counts
+    reasons: dict[str, int]  # why lower-bound: "ambiguous", "override", "unknown-receiver", "unknown-base", "ceiling" counts
 
 
 @dataclass
@@ -376,8 +377,21 @@ SELECT ?d ?name WHERE {
         values = " ".join(self._uri(t) for t in reached)
         callers = self._callers(f"VALUES ?t {{ {values} }} ?site code:resolvedTo ?t . "
                                 "FILTER NOT EXISTS { ?site code:recursive true }")
-        possible = self._callers(f"VALUES ?t {{ {values} }} ?site code:candidate ?t .")
-        reasons = {"ambiguous": len(possible)}
+        possible = self._callers(f"VALUES ?t {{ {values} }} ?site code:candidate ?t .", "ambiguous")
+        # A8: a call resolved to a method target overrides, through self / cls or a variable typed as that class,
+        # may run target when the object is of target's class
+        override = self._callers(f"""
+    {self._uri(target)} ^code:contains ?sub ; code:name ?m .
+    ?sub a code:Class ; code:inherits+ ?base .
+    ?base code:contains ?t .
+    ?t a code:Function ; code:name ?m .
+    FILTER(?t != {self._uri(target)})
+    {{ ?site code:resolvedTo ?t ; code:tier {self._literal("T4b")} . }}
+    UNION
+    {{ ?site code:resolvedTo ?t ; code:tier {self._literal("T1")} ; code:receiver ?r .
+       VALUES ?r {{ {self._literal("self")} {self._literal("cls")} }} }}""", "override")
+        possible = sorted(possible + override, key=lambda c: (c.file_path, c.line, c.id))
+        reasons = {"ambiguous": len(possible) - len(override), "override": len(override)}
         # a method not found before an external or unknown base may be a project method after it in the MRO
         for status, reason in (("unresolved", "unknown-receiver"), ("unresolved", "unknown-base"), ("ambiguous", "ceiling")):
             q = _PREFIXES + f"""
@@ -424,8 +438,8 @@ SELECT (COUNT(?site) AS ?n) WHERE {{
                         new.append(found[c.id])
             line_start |= self._line_starts([i.id for i in new])
             level = [i.id for i in sorted(new, key=rank) if "::" in i.id]  # File nodes are not expanded
-        if possible:
-            reasons["ambiguous"] = len(possible)
+        for reason, n in sorted(Counter(c.reason for c in possible.values()).items()):
+            reasons[reason] = n
         cut = sum(1 for n in level if answer(n).possible or answer(n).reasons
                   or any(c.id != target and c.id not in found for c in answer(n).callers))
         if cut:
@@ -446,8 +460,8 @@ SELECT ?n ?start WHERE {{
 """
         return {self._id(r.n): int(r.start) for r in self.graph.query(q)}
 
-    def _callers(self, site_pattern: str) -> list[Caller]:
-        """One Caller per CallSite matching *site_pattern* (which binds ?site), by file and line."""
+    def _callers(self, site_pattern: str, reason: str | None = None) -> list[Caller]:
+        """One Caller per CallSite matching *site_pattern* (which binds ?site), by file and line, each with *reason*."""
         q = _PREFIXES + f"""
 SELECT ?caller ?name ?file ?line WHERE {{
     {site_pattern}
@@ -459,7 +473,7 @@ SELECT ?caller ?name ?file ?line WHERE {{
 ORDER BY ?file ?line ?caller
 """
         return [
-            Caller(self._id(r.caller), str(r.name), str(r.file), int(r.line))
+            Caller(self._id(r.caller), str(r.name), str(r.file), int(r.line), reason)
             for r in self.graph.query(q)
         ]
 

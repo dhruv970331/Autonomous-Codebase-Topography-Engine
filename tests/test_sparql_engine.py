@@ -317,3 +317,32 @@ def test_blast_radius_unknown_base_is_lower_bound(tmp_path):
     engine = _engine(tmp_path, {"m.py": MIXED})
     [answer] = engine.blast_radius("Mixin.save")
     assert (answer.completeness, answer.reasons) == ("lower-bound", {"unknown-base": 1})
+
+
+OVERRIDE = (
+    "class Base:\n    def m(self):\n        pass\n\n    def run(self):\n        self.m()\n\n\n"  # lines 1-6
+    "class Mid(Base):\n    pass\n\n\n"
+    "class Sub(Mid):\n    def m(self):\n        super().m()\n\n\n"  # lines 13-15
+    "def typed(b: Base):\n    b.m()\n\n\n"  # line 19
+    "def direct():\n    Base.m(Sub())\n    Sub().m()\n"  # lines 23-24
+)
+
+
+def test_callers_of_override_lists_calls_to_the_base_version_as_possible(tmp_path):
+    """A8: self.m() in Base.run and a b.m() on a Base may run Sub.m; Base.m(...) and super().m() never do."""
+    engine = _engine(tmp_path, {"o.py": OVERRIDE})
+    assert _summary(engine.callers_of("Sub.m"), tmp_path) == [
+        ("o.py::Sub.m", [("direct", 24)], ["run", "typed"], "lower-bound", {"override": 2}),
+    ]
+    assert [c.reason for a in engine.callers_of("Sub.m") for c in a.possible] == ["override", "override"]
+    assert _summary(engine.callers_of("Base.m"), tmp_path) == [  # the base version itself stays exact
+        ("o.py::Base.m", [("run", 6), ("m", 15), ("typed", 19), ("direct", 23)], [], "exact", {}),
+    ]
+
+
+def test_blast_radius_override_is_lower_bound(tmp_path):
+    engine = _engine(tmp_path, {"o.py": OVERRIDE})
+    [answer] = engine.blast_radius("Sub.m")
+    assert [i.name for i in answer.affected] == ["direct"]
+    assert [(c.name, c.line, c.reason) for c in answer.possible] == [("run", 6, "override"), ("typed", 19, "override")]
+    assert (answer.completeness, answer.reasons) == ("lower-bound", {"override": 2})

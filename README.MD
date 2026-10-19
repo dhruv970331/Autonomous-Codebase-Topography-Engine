@@ -161,10 +161,11 @@ Stated plainly, because they affect what the results mean.
   type is known, from an annotation or an assignment like `db = Database()`. Functions
   passed around as callbacks, stored in dicts or wrapped by decorators are not followed.
 - **Inheritance is followed statically.** A method is looked up through the MRO of the
-  class the code declares, not the object's actual class: a call in a base class does not
-  see a subclass that overrides the method. A base outside the project, such as `dict` or a
-  library class, blocks the lookup: an inherited method not found before it stays
-  unresolved, and answers that it might reach are labelled `lower-bound`.
+  class the code declares, not the object's actual class. Calls to a base-class method
+  through `self`, `cls` or a variable typed as the base are listed as possible callers of
+  each project override, and make the answer `lower-bound`. A base outside the project,
+  such as `dict` or a library class, blocks the lookup: an inherited method not found
+  before it stays unresolved, and answers that it might reach are labelled `lower-bound`.
 - **The dead-code list over-reports.** Entry points, `__init__` methods, properties and
   functions passed as values or reached only through unresolved calls show up in
   `orphan_functions`.
