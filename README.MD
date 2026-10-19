@@ -130,7 +130,7 @@ engine.orphan_functions()
 ## Measured
 
 - **PyCG call-graph benchmark** (`tests/test_pycg.py`): precision 1.00, with one documented
-  case excluded, and recall 0.46.
+  case excluded, and recall 0.50 (117 of 233 expected links).
 - **Real repositories** (`tests/test_real_repos.py`, pinned releases). Coverage is the share
   of calls into project code that are resolved, with jedi. Link precision and recall are for
   the build without jedi, against jedi's references over 40 sampled functions; jedi's key
@@ -138,10 +138,10 @@ engine.orphan_functions()
 
   | Repo | Files | Coverage | Link precision | Link recall |
   |---|---|---|---|---|
-  | rich 13.9.4 | 190 | 88.7% | 0.98 | 0.88 |
-  | httpx 0.28.1 | 60 | 85.5% | 0.99 | 0.90 |
-  | click 8.1.8 | 16 | 81.9% | 0.98 | 0.72 |
-  | flask 3.1.0 | 24 | 52.5% | 1.00 | 0.81 |
+  | rich 13.9.4 | 190 | 88.9% | 0.98 | 0.94 |
+  | httpx 0.28.1 | 60 | 87.4% | 0.99 | 0.96 |
+  | click 8.1.8 | 16 | 84.2% | 0.98 | 0.76 |
+  | flask 3.1.0 | 24 | 58.5% | 1.00 | 0.86 |
 
 - **A small model using the MCP tools** (`eval/`): Qwen 3.6 35B-A3B answered 41 of 41
   questions correctly at temperature 0. The question set is small and is about ACTE's own
