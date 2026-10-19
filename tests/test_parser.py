@@ -627,3 +627,23 @@ def test_function_return_type(parser, tmp_path):
     assert [(n.name, n.return_type) for n in result.nodes if n.kind != "File"] == [
         ("a", "Database"), ("b", "m.Database"), ("c", "X"), ("d", None), ("K", None), ("e", "m.Repo"),
     ]
+
+def test_class_bases(parser, tmp_path):
+    code = (
+        "class A:\n    pass\n"
+        "class B():\n    pass\n"
+        "class C(A, m.B, Generic[T], typing.List[int], f(), *bs, (A), metaclass=M, **kw):\n    pass\n"
+        "class D[T](\n    A,  # first\n    pkg.mod.B,\n):\n    def m(self):\n        class E(D):\n            pass\n"
+    )
+    p = tmp_path / "a.py"
+    p.write_text(code)
+    result = parser.parse_file(p)
+    assert [(n.name, n.bases) for n in result.nodes if n.kind != "File"] == [
+        ("A", []), ("B", []), ("C", ["A", "m.B", "Generic", "typing.List", "?", "?", "?"]),
+        ("D", ["A", "pkg.mod.B"]), ("m", None), ("E", ["D"]),
+    ]
+
+def test_class_bases_python_only(parser, tmp_path):
+    p = tmp_path / "a.ts"
+    p.write_text("class A extends B {}\n")
+    assert [n.bases for n in parser.parse_file(p).nodes if n.kind == "Class"] == [None]

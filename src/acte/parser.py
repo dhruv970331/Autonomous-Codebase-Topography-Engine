@@ -27,6 +27,7 @@ class NodeInfo:
     parent_name: str | None = None
     params: str | None = None
     return_type: str | None = None
+    bases: list[str] | None = None  # a Python class's bases as written (UNKNOWN_BASE for any other expression); None otherwise
     is_test: bool = False
     extra: dict = field(default_factory=dict)
 
@@ -142,6 +143,8 @@ _BINDING_TYPES = {
 _TARGET_SEQUENCES = {"pattern_list", "tuple_pattern", "list_pattern", "tuple", "list"}
 _VALUE_SEQUENCES = {"expression_list", "tuple", "list"}
 _PUNCTUATION = {"(", ")", "[", "]", ","}
+# A class base that is not a plain or dotted name (`f()`, `*bases`): never a name, so it never resolves.
+UNKNOWN_BASE = "?"
 
 # Kept whole by _compact_text: whitespace inside a literal is part of its value.
 _ATOMIC_TYPES = {"string", "template_string"}
@@ -448,7 +451,8 @@ class CodeParser:
                     types = [_get_type(c) for c in parts]
                     # R24b: `-> Database`, as written; the resolver decides what it names
                     returns = self._annotation_type(parts[types.index("->") + 1], source) if language == "python" and is_func and "->" in types else None
-                    nodes.append(NodeInfo("Function" if is_func else "Class", name, file_path, _get_start_line(child), _get_end_line(child), language, parent, return_type=returns))
+                    bases = self._class_bases(parts, source) if language == "python" and not is_func else None
+                    nodes.append(NodeInfo("Function" if is_func else "Class", name, file_path, _get_start_line(child), _get_end_line(child), language, parent, return_type=returns, bases=bases))
                     edges.append(EdgeInfo("CONTAINS", container, f"{file_path}::{qualname}", file_path, _get_start_line(child)))
                     if language == "python":  # R17: the name is bound in the enclosing scope
                         local_bindings.append(LocalBinding(container, name, "def" if is_func else "class", None, file_path, _get_start_line(name_node)))
@@ -684,6 +688,19 @@ class CodeParser:
         if all(p.isidentifier() and not keyword.iskeyword(p) for p in text.split(".")):
             return text
         return None
+
+    def _class_bases(self, parts, source: bytes) -> list[str]:
+        """The bases of a Python class as written: a plain or dotted name, the name before ``[`` of a
+        subscript (``Generic[T]``), else UNKNOWN_BASE. Keyword arguments (``metaclass=M``, ``**kw``) are not bases."""
+        bases = []
+        for c in _get_children(next((p for p in parts if _get_type(p) == "argument_list"), None)):
+            t = _get_type(c)
+            if t in _PUNCTUATION or t in _SKIP_TYPES or t in ("keyword_argument", "dictionary_splat"):
+                continue
+            if t == "subscript":
+                c = _get_children(c)[0]
+            bases.append(_compact_text(c, source) if self._is_dotted(c) else UNKNOWN_BASE)
+        return bases
 
     def _is_dotted(self, node) -> bool:
         t = _get_type(node)
