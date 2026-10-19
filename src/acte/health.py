@@ -34,6 +34,13 @@ SELECT ?s ?o WHERE {
 }
 ORDER BY ?s ?o
 """,
+    "dangling-inherits-arrows": """
+SELECT ?s ?o WHERE {
+    ?s code:inherits ?o .
+    FILTER NOT EXISTS { ?o a code:Class }
+}
+ORDER BY ?s ?o
+""",
     # a recursive call keeps its CallSite but draws no arrow to itself
     "self-call-arrows": """
 SELECT ?s ?p WHERE {

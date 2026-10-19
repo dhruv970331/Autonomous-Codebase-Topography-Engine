@@ -60,6 +60,11 @@ code:importsExternal a rdf:Property ;
     rdfs:domain code:File ;
     rdfs:range xsd:string .
 
+code:inherits a rdf:Property ;
+    rdfs:comment "A class lists the target project class among its bases." ;
+    rdfs:domain code:Class ;
+    rdfs:range code:Class .
+
 code:calls a rdf:Property ;
     rdfs:comment "A function, or a file's module-level code, has a resolved call to the target function." ;
     rdfs:range code:Function .

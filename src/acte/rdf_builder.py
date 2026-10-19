@@ -47,7 +47,7 @@ class KnowledgeGraphBuilder:
     def build(self, nodes: list[NodeInfo], edges: list[EdgeInfo], resolution: Resolution | None = None) -> Graph:
         """Translate NodeInfo / EdgeInfo objects, and the CallSites of *resolution* if given, into RDF triples.
 
-        Imports need the index of *resolution* to find the imported file; without it they are left out.
+        Imports and inheritance need the index of *resolution*; without it they are left out.
 
         Triples are *accumulated* into self.graph across repeated calls so that
         an entire repository can be ingested file-by-file. Call reset() first
@@ -57,6 +57,10 @@ class KnowledgeGraphBuilder:
             self._add_node(node)
         for edge in edges:
             self._add_edge(edge, resolution.index if resolution else None)
+        for cls, bases in sorted(resolution.index.bases.items()) if resolution else []:
+            for base in bases:
+                if base in resolution.index.by_class:  # project bases only; "external" and "unknown" draw no arrow
+                    self.graph.add((self._make_uri(cls), CODE.inherits, self._make_uri(base)))
         for call in resolution.calls if resolution else []:
             self._add_call(call)
         return self.graph

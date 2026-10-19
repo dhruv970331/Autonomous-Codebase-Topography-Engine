@@ -47,11 +47,12 @@ NOWHERE = URIRef(CODE["nowhere"])
 MUTATIONS = {
     "dangling-call-arrows": lambda g, run, app: g.add((run, CODE.calls, NOWHERE)),
     "dangling-import-arrows": lambda g, run, app: g.add((app, CODE.importsFrom, NOWHERE)),
+    "dangling-inherits-arrows": lambda g, run, app: g.add((run, CODE.inherits, NOWHERE)),
     "self-call-arrows": lambda g, run, app: g.add((run, CODE.calls, run)),
     "callsite-status": lambda g, run, app: g.remove((_site(g, "external"), CODE.status, None)),
     "resolved-without-target": lambda g, run, app: g.remove((_site(g, "resolved"), CODE.resolvedTo, None)),
     "callsite-without-caller": lambda g, run, app: g.remove((_site(g, "external"), CODE.inFunction, None)),
-    "undeclared-terms": lambda g, run, app: g.add((run, CODE.inherits, app)),
+    "undeclared-terms": lambda g, run, app: g.add((run, CODE.undeclared, app)),
 }
 
 

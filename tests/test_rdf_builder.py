@@ -261,3 +261,16 @@ def test_imports_in_own_source_reach_typed_files():
     imported = set(graph.objects(None, CODE.importsFrom))
     assert imported
     assert all((f, RDF.type, CODE.File) in graph for f in imported)
+
+
+def test_inherits_points_at_project_classes_only(tmp_path):
+    files = {
+        "base.py": "class Base:\n    pass\n",
+        "app.py": "from base import Base\n\n\nclass A(Base, dict):\n    pass\n\n\nclass B(A, make()):\n    pass\n",
+    }
+    for rel, code in files.items():
+        (tmp_path / rel).write_text(code)
+    graph = build_graph(sorted(tmp_path / rel for rel in files), tmp_path, use_jedi=False)
+    uri = KnowledgeGraphBuilder()._make_uri
+    a, b, base = (uri(f"{tmp_path}/{i}") for i in ("app.py::A", "app.py::B", "base.py::Base"))
+    assert set(graph.subject_objects(CODE.inherits)) == {(a, base), (b, a)}
