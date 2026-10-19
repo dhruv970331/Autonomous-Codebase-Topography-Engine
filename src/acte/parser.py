@@ -3,6 +3,7 @@ Multi-language codebase parser using Tree-sitter.
 Extracts structural nodes (classes, functions) and edges (calls,contains, inheritance).
 """
 
+import functools
 import keyword
 import logging
 from dataclasses import dataclass, field
@@ -537,27 +538,9 @@ class CodeParser:
         """LocalBinding records for one binding node (Python). *method_id* owns ``self.X`` targets."""
         t = _get_type(node)
         children = _get_children(node)
-
-        def bind(target, value, kind, type_name=None):
-            tt = _get_type(target)
-            if tt == "identifier":
-                type_name = type_name or self._callee_type(value, source)
-                local_bindings.append(LocalBinding(scope_id, _safe_text(target, source), kind, type_name, file_path, _get_start_line(target)))
-            elif tt == "attribute" and method_id:
-                parts = _get_children(target)
-                if len(parts) == 3 and _get_type(parts[0]) == "identifier" and _safe_text(parts[0], source) == "self":
-                    type_name = type_name or self._callee_type(value, source)
-                    local_bindings.append(LocalBinding(method_id, "self." + _safe_text(parts[2], source), "attr", type_name, file_path, _get_start_line(target)))
-            elif tt == "list_splat_pattern":  # *rest is a list: never the paired value's type
-                for c in _get_children(target):
-                    bind(c, None, kind)
-            elif tt in _TARGET_SEQUENCES:
-                targets = [c for c in _get_children(target) if _get_type(c) not in _PUNCTUATION]
-                values = [c for c in _get_children(value) if _get_type(c) not in _PUNCTUATION] if _get_type(value) in _VALUE_SEQUENCES else []
-                # R24c: pair element-wise only when both sides are plain sequences of equal length
-                paired = len(values) == len(targets) and not any("splat" in _get_type(c) for c in targets + values)
-                for i, c in enumerate(targets):
-                    bind(c, values[i] if paired else None, kind)
+        # methods and a partial, not nested recursive defs: those form a reference cycle per call that keeps
+        # self, and its native tree-sitter parsers, alive until the GC runs, possibly on another thread
+        bind = functools.partial(self._bind, source, file_path, scope_id, method_id, local_bindings)
 
         if t in ("parameters", "lambda_parameters"):
             # A lambda is not a scope in our ids, so its parameters land in the enclosing scope:
@@ -626,18 +609,44 @@ class CodeParser:
                 if _get_type(c) == "identifier":
                     bind(c, None, t.split("_")[0])
         elif t == "delete_statement":
-            def unbind(n):  # only plain names: `del obj.x` and `del a[i]` bind nothing
-                if _get_type(n) == "identifier":
-                    bind(n, None, "del")
-                elif _get_type(n) in ("expression_list", "tuple", "list", "parenthesized_expression"):
-                    for c in _get_children(n):
-                        unbind(c)
             for c in children[1:]:
-                unbind(c)
+                self._unbind(c, bind)
         elif t == "case_clause":
             for c in children:
                 if _get_type(c) == "case_pattern":
                     self._match_captures(c, source, lambda n, type_name: bind(n, None, "match", type_name))
+
+    def _bind(self, source: bytes, file_path: str, scope_id: str, method_id: str | None, local_bindings: list[LocalBinding],
+              target, value, kind, type_name=None) -> None:
+        """LocalBinding records for the names *target* binds to *value* (see _extract_bindings)."""
+        bind = functools.partial(self._bind, source, file_path, scope_id, method_id, local_bindings)
+        tt = _get_type(target)
+        if tt == "identifier":
+            type_name = type_name or self._callee_type(value, source)
+            local_bindings.append(LocalBinding(scope_id, _safe_text(target, source), kind, type_name, file_path, _get_start_line(target)))
+        elif tt == "attribute" and method_id:
+            parts = _get_children(target)
+            if len(parts) == 3 and _get_type(parts[0]) == "identifier" and _safe_text(parts[0], source) == "self":
+                type_name = type_name or self._callee_type(value, source)
+                local_bindings.append(LocalBinding(method_id, "self." + _safe_text(parts[2], source), "attr", type_name, file_path, _get_start_line(target)))
+        elif tt == "list_splat_pattern":  # *rest is a list: never the paired value's type
+            for c in _get_children(target):
+                bind(c, None, kind)
+        elif tt in _TARGET_SEQUENCES:
+            targets = [c for c in _get_children(target) if _get_type(c) not in _PUNCTUATION]
+            values = [c for c in _get_children(value) if _get_type(c) not in _PUNCTUATION] if _get_type(value) in _VALUE_SEQUENCES else []
+            # R24c: pair element-wise only when both sides are plain sequences of equal length
+            paired = len(values) == len(targets) and not any("splat" in _get_type(c) for c in targets + values)
+            for i, c in enumerate(targets):
+                bind(c, values[i] if paired else None, kind)
+
+    def _unbind(self, n, bind) -> None:
+        """``del`` targets: only plain names; ``del obj.x`` and ``del a[i]`` bind nothing."""
+        if _get_type(n) == "identifier":
+            bind(n, None, "del")
+        elif _get_type(n) in ("expression_list", "tuple", "list", "parenthesized_expression"):
+            for c in _get_children(n):
+                self._unbind(c, bind)
 
     def _match_captures(self, node, source: bytes, emit) -> None:
         """Call *emit(identifier, type_name)* for every name a match pattern captures."""

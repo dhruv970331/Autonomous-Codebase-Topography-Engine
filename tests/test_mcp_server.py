@@ -1,4 +1,3 @@
-import gc
 import json
 import subprocess
 from importlib.metadata import version
@@ -55,8 +54,6 @@ def _write(root, files):
 
 def _build(root, graph):
     build(root, use_jedi=False).serialize(destination=graph, format="turtle")
-    # the build's cyclic garbage holds tree-sitter parsers, which must not be freed on a tool's worker thread
-    gc.collect()
 
 
 def _git(root, *args):
