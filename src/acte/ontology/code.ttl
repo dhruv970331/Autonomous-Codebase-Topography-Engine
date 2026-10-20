@@ -1,0 +1,165 @@
+# The ACTE code ontology: every class and property rdf_builder.py and cli.py emit.
+# tests/test_ontology.py checks this file and the built graph agree both ways.
+
+@prefix code: <http://acte.local/code#> .
+@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+
+# Classes
+
+code:File a rdfs:Class ;
+    rdfs:comment "A source file." .
+
+code:Class a rdfs:Class ;
+    rdfs:comment "A class definition." .
+
+code:Function a rdfs:Class ;
+    rdfs:comment "A function or method definition." .
+
+code:CallSite a rdfs:Class ;
+    rdfs:comment "One call in the source, with how it was resolved." .
+
+code:Build a rdfs:Class ;
+    rdfs:comment "The run of acte build that made the graph." .
+
+# Properties of File, Class and Function
+
+code:name a rdf:Property ;
+    rdfs:comment "The short name of a class or function, or the path of a file." ;
+    rdfs:range xsd:string .
+
+code:filePath a rdf:Property ;
+    rdfs:comment "The path of the file the node is in." ;
+    rdfs:range xsd:string .
+
+code:lineStart a rdf:Property ;
+    rdfs:comment "The first line of the node, counted from 1." ;
+    rdfs:range xsd:integer .
+
+code:lineEnd a rdf:Property ;
+    rdfs:comment "The last line of the node, counted from 1." ;
+    rdfs:range xsd:integer .
+
+code:language a rdf:Property ;
+    rdfs:comment "The programming language of the file the node is in." ;
+    rdfs:range xsd:string .
+
+# Edges between nodes
+
+code:contains a rdf:Property ;
+    rdfs:comment "A file, class or function directly defines the target." .
+
+code:importsFrom a rdf:Property ;
+    rdfs:comment "A Python file imports the project module that is the target file." ;
+    rdfs:domain code:File ;
+    rdfs:range code:File .
+
+code:importsExternal a rdf:Property ;
+    rdfs:comment "A Python file imports a module that is not in the project, named as the import writes it." ;
+    rdfs:domain code:File ;
+    rdfs:range xsd:string .
+
+code:inherits a rdf:Property ;
+    rdfs:comment "A class lists the target project class among its bases." ;
+    rdfs:domain code:Class ;
+    rdfs:range code:Class .
+
+code:calls a rdf:Property ;
+    rdfs:comment "A function, or a file's module-level code, has a resolved call to the target function." ;
+    rdfs:range code:Function .
+
+code:instantiates a rdf:Property ;
+    rdfs:comment "A function, or a file's module-level code, has a resolved call that creates an instance of the target class." ;
+    rdfs:range code:Class .
+
+# Properties of CallSite
+
+code:inFunction a rdf:Property ;
+    rdfs:comment "The function, or the file for module-level code, that makes the call." ;
+    rdfs:domain code:CallSite .
+
+code:line a rdf:Property ;
+    rdfs:comment "The line of the call, counted from 1." ;
+    rdfs:domain code:CallSite ;
+    rdfs:range xsd:integer .
+
+code:column a rdf:Property ;
+    rdfs:comment "The column of the call in UTF-8 bytes, counted from 0." ;
+    rdfs:domain code:CallSite ;
+    rdfs:range xsd:integer .
+
+code:targetName a rdf:Property ;
+    rdfs:comment "The name being called, such as save in db.save()." ;
+    rdfs:domain code:CallSite ;
+    rdfs:range xsd:string .
+
+code:receiver a rdf:Property ;
+    rdfs:comment "The source text before the called name, such as db in db.save()." ;
+    rdfs:domain code:CallSite ;
+    rdfs:range xsd:string .
+
+code:status a rdf:Property ;
+    rdfs:comment "How the call was decided: resolved, ambiguous, unresolved or external." ;
+    rdfs:domain code:CallSite ;
+    rdfs:range xsd:string .
+
+code:reason a rdf:Property ;
+    rdfs:comment "Why a call is unresolved or external, or ceiling when an ambiguous call has too many candidates to list." ;
+    rdfs:domain code:CallSite ;
+    rdfs:range xsd:string .
+
+code:tier a rdf:Property ;
+    rdfs:comment "The resolution tier that found the target of a resolved call." ;
+    rdfs:domain code:CallSite ;
+    rdfs:range xsd:string .
+
+code:resolvedTo a rdf:Property ;
+    rdfs:comment "The function or class a resolved call reaches." ;
+    rdfs:domain code:CallSite .
+
+code:recursive a rdf:Property ;
+    rdfs:comment "True when a resolved call reaches the function that makes it." ;
+    rdfs:domain code:CallSite ;
+    rdfs:range xsd:boolean .
+
+code:initTarget a rdf:Property ;
+    rdfs:comment "The __init__ method a resolved call that creates an instance runs: the class's own, or the first one in its method resolution order." ;
+    rdfs:domain code:CallSite ;
+    rdfs:range code:Function .
+
+code:initUnknown a rdf:Property ;
+    rdfs:comment "True when a resolved call creates an instance of a class whose method resolution order reaches a base outside the project, or an unknown one, before any __init__." ;
+    rdfs:domain code:CallSite ;
+    rdfs:range xsd:boolean .
+
+code:candidate a rdf:Property ;
+    rdfs:comment "One of the definitions an ambiguous call might reach." ;
+    rdfs:domain code:CallSite .
+
+code:candidateCount a rdf:Property ;
+    rdfs:comment "How many definitions an ambiguous call might reach." ;
+    rdfs:domain code:CallSite ;
+    rdfs:range xsd:integer .
+
+# Properties of Build
+
+code:root a rdf:Property ;
+    rdfs:comment "The name of the project root directory; every path in the graph is relative to that directory." ;
+    rdfs:domain code:Build ;
+    rdfs:range xsd:string .
+
+code:commit a rdf:Property ;
+    rdfs:comment "The git HEAD commit of the project when the graph was built, when it is a git work tree with a commit." ;
+    rdfs:domain code:Build ;
+    rdfs:range xsd:string .
+
+code:acteVersion a rdf:Property ;
+    rdfs:comment "The ACTE version that built the graph." ;
+    rdfs:domain code:Build ;
+    rdfs:range xsd:string .
+
+code:jediVersion a rdf:Property ;
+    rdfs:comment "The jedi version that ran the jedi resolution tier, when it ran." ;
+    rdfs:domain code:Build ;
+    rdfs:range xsd:string .

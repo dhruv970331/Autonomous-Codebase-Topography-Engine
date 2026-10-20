@@ -3,48 +3,49 @@
 Planned work, roughly in dependency order. Each item is more useful once the ones above it
 exist.
 
+## Done
+
+- [x] **Cross-file call resolution.** Every call site is resolved against an index of all
+      definitions, following Python's scope rules and imports (including re-exports and
+      `import *`). Ambiguous sites are recorded with their candidates rather than guessed
+      at, and `blast_radius()` now follows calls across files, hop by hop.
+
+- [x] **Receiver type inference.** `x.connect()` resolves when `x` has one known project
+      type, from an annotation or an assignment like `x = Database()` (tier T4b). jedi, if
+      installed, handles more receivers (tier TJ).
+
+- [x] **Command line.** `acte build` walks a project (honouring `.gitignore` in a git repo)
+      and writes one Turtle graph; `acte stats` summarises a saved graph.
+
+- [x] **Validation.** Health checks on every build, the PyCG benchmark, and pinned releases
+      of rich, httpx, click and flask checked against recorded baselines.
+
+- [x] **Class inheritance.** Each class records its bases (`code:inherits` for project
+      bases), and `self.m()`, `cls.m()`, `C.m()`, typed `x.m()` and `super().m()` find
+      inherited methods through the C3 MRO. A base outside the project stops the lookup
+      rather than guessing past it. PyCG's `mro` category went from recall 0.31 (5 of 16)
+      to 0.88 (14 of 16), still with no wrong link.
+
+- [x] **MCP server (layer 4).** `acte serve` offers the named queries as tools, with short
+      plain-text answers that report truncation and never guess. Tested with opencode and
+      Claude Code, and measured with a small model in `eval/`.
+
+Measured results are in the README.
+
 ## Next
 
-- [ ] **Cross-file call resolution.** Call targets are stored as bare names, so a `CALLS`
-      edge does not connect to the node defining that function. Multi-hop traversal stops
-      after one step and `blast_radius()` returns only direct callers. The fix is a
-      resolution pass that indexes every definition, then resolves each call site against
-      that index. Ambiguous sites are recorded with their candidates rather than guessed at.
-      Everything below depends on this.
+- [ ] **Other languages.** Call resolution for Java, JavaScript and TypeScript, which now
+      extract structure only, and grammar rules for Go and TSX.
 
-- [ ] **Repository ingestion and CLI.** A file walker that honours `.gitignore`, plus a
-      command-line entry point that ingests a directory and writes a `.ttl` artifact. There
-      is currently no way to point ACTE at a repository.
+- [ ] **Change impact from a git diff.** Map a diff to the definitions it touches and report
+      their blast radius, for review and CI.
 
-- [ ] **Validation against real repositories.** Run the full pipeline over well-known
-      open-source Python projects pinned to fixed commits, asserting on resolution rate,
-      graph size, and query correctness. Intended for CI so regressions surface immediately.
+- [ ] **Faster store.** rdflib in memory is fine to about 5,000 files; beyond that, load the
+      Turtle output into a dedicated triplestore.
 
-## After that
-
-- [ ] **MCP server (layer 4).** Expose the named queries as tools over the Model Context
-      Protocol so an LLM can query the graph directly. Small tool surface, human-readable
-      arguments, single-call answers, bounded responses that report truncation.
-
-- [ ] **Language coverage.** Go and TSX map to file extensions but have no grammar rules, so
-      they currently extract nothing. Java, JavaScript and TypeScript extract structure but
-      have no call resolution. Extraction and resolution will be documented as separate tiers
-      per language.
-
-- [ ] **Receiver type inference.** Resolving `db.connect()` needs the type of `db`. Tracking
-      simple assignments and annotations covers a useful fraction of real code. Worth
-      building or not will be decided from the measured resolution rate.
-
-- [ ] **Class inheritance.** The `code:inherits` predicate is declared but nothing emits it.
+- [ ] **Incremental builds.** Skip files whose content has not changed since the last build.
 
 ## Later
 
 - [ ] **Graph analysis.** Centrality ranking for the most depended-upon functions, community
       detection for subsystems, and cycle detection for circular dependencies.
-
-- [ ] **Performance.** Content-hash caching so unchanged files are skipped on re-runs. The
-      in-memory graph tops out in the low thousands of files; the Turtle output loads into an
-      external triplestore beyond that.
-
-- [ ] **Change impact analysis.** Map a git diff to the nodes it touches and report the
-      downstream impact. This is the intended use of the blast-radius query in CI.
