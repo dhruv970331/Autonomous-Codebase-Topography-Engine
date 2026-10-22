@@ -2,18 +2,18 @@
 
 ## Why a graph
 
-Retrieval-augmented generation answers "what code is relevant to this question" with vector
-similarity. That works well for prose and poorly for structure: similarity cannot tell you
-that changing `verify_token` breaks four callers two hops away. Relational facts have to be
-traversed, not approximated.
+Most code assistants find code with vector search: they look for text that is similar to
+the question. That is good for finding where something is described. It cannot tell you
+that changing `verify_token` breaks four callers two steps away. For that you have to follow
+the calls one by one.
 
-ACTE extracts those facts once, stores them as a graph, and answers structural questions by
-querying it. Results are derived from the parse, so they are reproducible and checkable.
+ACTE finds those calls once, stores them in a graph, and answers questions by querying the
+graph. The answers come straight from the parsed code, so the same query always gives the
+same result, and each result can be checked.
 
-RDF was chosen over a dedicated graph database for two reasons. It needs no server, since the
-graph lives in memory and serialises to a single text file. And the output is a W3C
-standard, so a `.ttl` artifact loads into an external triplestore unchanged if the project
-ever outgrows in-memory processing.
+ACTE uses RDF instead of a graph database for two reasons. It needs no server: the graph
+lives in memory and is saved as one text file. And RDF is a W3C standard, so the `.ttl` file
+can be loaded into a triplestore as it is, if a project ever gets too big for memory.
 
 ## Pipeline
 
@@ -40,8 +40,8 @@ Extracted edges: `CONTAINS`, `IMPORTS_FROM`. Calls are not edges at this stage; 
 
 The tree-sitter helper functions each try the standard `tree_sitter` attribute and then the
 `tree_sitter_language_pack` equivalent. The two libraries expose different APIs for the same
-data (`node.type` versus `node.kind()`, `start_point` versus `start_position()`) and the
-fallbacks absorb that difference rather than pinning to one library's shape.
+data (`node.type` versus `node.kind()`, `start_point` versus `start_position()`). The
+fallbacks let ACTE work with either library.
 
 ### Layer 1.5: Call resolution (`src/acte/resolver.py`)
 
@@ -71,7 +71,9 @@ matches decides:
 | T5 | `mod.f()` | a module alias or dotted module path |
 | TJ | `x.m()` | jedi, optional, only for calls still unknown after T1 to T5 |
 
-**Method lookup through the MRO.** For T1, T4 and T4b (and `mod.C.m()` under T5), the class's
+#### Method lookup through the MRO
+
+For T1, T4 and T4b (and `mod.C.m()` under T5), the class's
 own method wins. Otherwise the MRO is walked in order. A method found on a project class
 before any external or unknown base resolves to that class's method, with the same tier.
 Reaching an external or unknown base first leaves the call `unresolved` with reason
@@ -79,7 +81,8 @@ Reaching an external or unknown base first leaves the call `unresolved` with rea
 `C`, and `super(C, self).m()` where `self` is the method's first parameter, search the MRO
 after `C` (tier T1); neither applies when `super` is rebound. The MRO is the one declared
 from the class the code is written in: a subclass that overrides `m` is not seen from a call
-in the base class, and `super()` follows `C`'s MRO, not that of the object's actual class.
+in the base class, and `super()` follows `C`'s MRO. The class of the object at run time is
+not known.
 
 Every call gets exactly one status:
 
@@ -91,11 +94,13 @@ Every call gets exactly one status:
   (the method was not found before an external or unknown base in the MRO).
 - `external`, with a reason: `builtin`, `stdlib`, `third-party` or `jedi-external`.
 
-**The validation rule.** A tier may only produce an id that a real node owns. If it does not,
-that tier did not match. So a fallible heuristic can produce no edge, never a wrong one.
+#### The validation rule
 
-There is no project-wide "only function with that name" matching: it is what produces
-plausible wrong links. Files in other languages are parsed, but their calls stay
+A tier may only produce an id that belongs to a real node. If it produces any other id, the
+tier counts as not matching. So when a tier gets it wrong, the call gets no link at all.
+
+ACTE does not link a call to a function just because it is the only one in the project with
+that name. That shortcut is a common source of wrong links. Files in other languages are parsed, but their calls stay
 `unresolved`.
 
 ### Layer 2: Graph construction (`src/acte/rdf_builder.py`)
@@ -200,9 +205,10 @@ Each tool takes a name or path and returns plain text built for a small model:
 - the first line sums up the answer, including `exact` or `lower-bound` and why;
 - every item has `file:line`;
 - answers stay under about 4,000 characters, cut at whole lines, and say what was left out;
-- a name with several definitions gets the list and a request for the full name, never a
-  pick; an unknown name gets up to 3 close spellings and a prompt to call again with one;
-- these are normal answers, not errors. Errors are kept for real malfunctions;
+- a name with several definitions gets the list and a request for the full name. The
+  server does not pick one;
+- an unknown name gets up to 3 close spellings and a prompt to call again with one;
+- both of these are normal answers. Errors are only returned when something actually fails;
 - with `--project`, every answer warns when the project's git HEAD differs from the
   commit the graph was built from.
 
@@ -226,23 +232,28 @@ bytes, as tree-sitter and Python's `ast` count it.
 Identifiers are percent-encoded and appended to the `code:` namespace to form the node's
 URI. `#` is encoded too, so the namespace's `#` stays the only one in the IRI.
 
-**Node URIs and edge endpoints must be the same identifier.** An edge whose target does not
+Node URIs and edge endpoints must use the same identifier. An edge whose target does not
 match a node's id connects to nothing, and multi-hop traversal silently stops there. The
 validation rule above is what keeps call arrows on real nodes.
 
 ## Design choices
 
-**Named queries are hardcoded.** The model selects a query by name and supplies arguments;
-it never authors SPARQL. A generated query can be subtly wrong in ways that are hard to
-detect, and the failure mode of a confident answer from a malformed query is precisely what
-this project exists to avoid. `execute_raw_sparql` remains available for exploration.
+### Named queries are hardcoded
 
-**Resolution does not guess.** When a call target cannot be determined unambiguously (say
-two imported modules both define it) the call is recorded as ambiguous with its candidates
-rather than resolved to one. A graph containing a plausible-looking wrong edge is worse than
-one with a documented gap, because nothing downstream can tell the difference. Answers built
-on such gaps say so: they are labelled `lower-bound`.
+The model picks a query by name and gives it arguments. It does not write SPARQL. A
+generated query can be wrong in ways that are hard to spot, and the model would then give a
+confident answer based on bad data. `execute_raw_sparql` is still there for exploring the
+graph by hand.
 
-**Coverage is measurable.** Every call site is recorded with its status, so the proportion
-resolved is a number that is reported and regression-tested. Call links are also graded
-against PyCG's benchmark (`tests/test_pycg.py`), where no wrong link is allowed.
+### Resolution does not guess
+
+If a call could go to more than one target (for example, two imported modules both define
+the function), it is stored as ambiguous with all its candidates. A wrong link that looks
+right is worse than a known gap, because nothing later on can tell that it is wrong. Answers
+that depend on such gaps are marked `lower-bound`.
+
+### Coverage is measured
+
+Every call site is stored with its status, so the share of resolved calls is a number. It is
+shown on every build and checked by the tests. Call links are also checked against PyCG's
+benchmark (`tests/test_pycg.py`), where no wrong link is allowed.

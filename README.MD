@@ -5,7 +5,24 @@ which function calls which. The graph is stored as RDF and queried with SPARQL. 
 then ask questions like "who calls this function?" and get an answer from the graph, with
 file and line for each result.
 
-![Architecture](ACTE_arch_flowchart.png)
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant L as LLM client
+    participant S as acte serve
+    participant G as acte-graph.ttl
+    participant B as acte build
+
+    B->>G: 1. Parse files, resolve calls, save the graph
+    L->>S: 2. Start the server and list its tools
+    S-->>L: 3. find_symbol, callers_of, callees_of, blast_radius
+    U->>L: 4. "What breaks if I change Database.connect?"
+    L->>S: 5. blast_radius("Database.connect")
+    S->>G: 6. Run the named SPARQL query, one step at a time
+    G-->>S: 7. Callers, with file and line
+    S-->>L: 8. Plain-text answer, marked exact or lower-bound
+    L-->>U: 9. Answer that points to file:line
+```
 
 ## How it works
 
