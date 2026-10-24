@@ -3,12 +3,15 @@ Command line.
 `acte build PATH` parses a project into one Turtle graph, with ids relative to PATH.
 `acte stats GRAPH.ttl` summarises a graph written by build.
 `acte serve GRAPH.ttl` answers questions about a graph as an MCP server over stdio.
+`acte analyze GRAPH.ttl` ranks definitions and finds import cycles and subsystems.
 """
 
 import argparse
 import contextlib
+import json
 import os
 import subprocess
+from dataclasses import asdict
 from importlib.metadata import version
 from pathlib import Path
 
@@ -16,6 +19,7 @@ from rdflib import Graph, Literal
 from rdflib.namespace import RDF, XSD
 
 from acte import resolver
+from acte.analysis import import_cycles, rank, subsystems
 from acte.health import run_checks
 from acte.mcp_server import create_server
 from acte.parser import EXTENSION_TO_LANGUAGE
@@ -110,6 +114,31 @@ def _stats(graph: Graph) -> int:
     return 1 if failing else 0
 
 
+def _analyze(graph: Graph, top: int, fmt: str) -> None:
+    """Print the ranking, import cycles and subsystems of *graph*, as text or as one JSON object."""
+    ranking, cycles, groups = rank(graph, top), import_cycles(graph), subsystems(graph)
+    if fmt == "json":
+        print(json.dumps({"rank": asdict(ranking), "import_cycles": [asdict(c) for c in cycles],
+                          "subsystems": [asdict(s) for s in groups]}, indent=2))
+        return
+    print(f"most depended on: top {len(ranking.top)} of {ranking.total} functions and classes, by PageRank")
+    if not ranking.converged:
+        print("  PageRank did not settle in 100 rounds, so the scores are approximate")
+    for i, r in enumerate(ranking.top, 1):
+        print(f"  {i}. {r.file_path}:{r.line} {r.id.split('::', 1)[1]} (score {r.score:.4f}, {r.callers} direct callers)")
+    print(f"import cycles: {len(cycles) or 'none'}")
+    for c in cycles:
+        print(f"  {len(c.files)} files: {', '.join(c.files)}")
+    # shortcut: a subsystem of one file is taken to be a file with no links; Louvain could in theory leave a linked file alone
+    linked = [s for s in groups if s.size > 1]
+    print(f"subsystems: {len(linked) or 'none'}")
+    for s in linked:
+        more = f", and {s.size - len(s.files)} more" if s.size > len(s.files) else ""
+        print(f"  {s.hub}: {s.size} files in {s.folder}: {', '.join(s.files)}{more}")
+    if lone := len(groups) - len(linked):
+        print(f"{lone} file{'s' if lone > 1 else ''} with no links to other files")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="acte")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -123,6 +152,10 @@ def main(argv: list[str] | None = None) -> int:
     sv.add_argument("graph", help="the Turtle file")
     sv.add_argument("--project", help="the project root the graph was built from")
     sv.add_argument("--profile", choices=["small", "full"], default="small", help="which tools to offer (default: small)")
+    an = sub.add_parser("analyze", help="rank functions and classes, find import cycles and subsystems")
+    an.add_argument("graph", help="the Turtle file")
+    an.add_argument("--top", type=int, default=10, help="how many ranked functions and classes to show (default: 10)")
+    an.add_argument("--format", choices=["text", "json"], default="text", help="output format (default: text)")
     args = parser.parse_args(argv)
 
     if args.command == "serve":
@@ -133,12 +166,17 @@ def main(argv: list[str] | None = None) -> int:
         server.run("stdio")
         return 0
 
-    if args.command == "stats":
+    if args.command in ("stats", "analyze"):
+        if args.command == "analyze" and args.top < 1:
+            parser.error("--top must be at least 1")
         try:
             graph = Graph().parse(args.graph, format="turtle")
         except (OSError, SyntaxError, UnicodeDecodeError) as exc:  # rdflib's turtle BadSyntax is a SyntaxError
             parser.error(f"cannot read {args.graph}: {exc}")
-        return _stats(graph)
+        if args.command == "stats":
+            return _stats(graph)
+        _analyze(graph, args.top, args.format)
+        return 0
 
     root = Path(args.path)
     if not root.is_dir():
