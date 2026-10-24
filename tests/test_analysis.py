@@ -4,7 +4,14 @@ import networkx as nx
 import pytest
 
 import acte
-from acte.analysis import ImportCycle, _pagerank, import_cycles, rank
+from acte.analysis import (
+    ImportCycle,
+    Subsystem,
+    _pagerank,
+    import_cycles,
+    rank,
+    subsystems,
+)
 from acte.cli import build
 from acte.rdf_builder import CODE
 from acte.sparql_engine import SPARQLEngine
@@ -14,6 +21,20 @@ HUB = {
     "a.py": "from util import hub\n\n\ndef f1():\n    hub()\n\n\ndef f2():\n    hub()\n\n\nhub()\n",
     "b.py": "from util import hub, leaf\n\n\ndef g():\n    hub()\n    hub()\n    leaf()\n",
 }
+
+
+def _package(name):
+    """Four files of package *name*, all linked to its core.py, none to anything outside it."""
+    return {
+        f"{name}/core.py": "def base():\n    pass\n",
+        f"{name}/x.py": f"from {name}.core import base\n\n\ndef x():\n    base()\n",
+        f"{name}/y.py": f"from {name}.core import base\nfrom {name}.x import x\n\n\ndef y():\n    base()\n    x()\n",
+        f"{name}/z.py": f"from {name}.core import base\n\n\ndef z():\n    base()\n",
+    }
+
+
+# core.py has weight 6 (a call and an import from each of x, y, z), x.py and y.py 4, z.py 2; lone.py links to nothing
+PACKAGES = _package("alpha") | _package("beta") | {"lone.py": "def alone():\n    return alone()\n"}
 
 
 @pytest.fixture(autouse=True)
@@ -80,6 +101,16 @@ def test_pagerank_matches_networkx(tmp_path):
         for r in ranking.top:
             assert abs(r.score - expected[r.id]) < 1e-9, r.id
     assert ("a.py", "util.py::hub") in arrows.edges
+
+
+def test_separate_packages_are_separate_subsystems(tmp_path):
+    found = subsystems(_graph(tmp_path, PACKAGES))
+    # the exact split may differ between networkx versions, so only the structure is checked
+    for name in ("alpha", "beta"):
+        group = next(s for s in found if f"{name}/core.py" in s.files)
+        assert group == Subsystem(f"{name}/core.py", name, 4, [f"{name}/{f}.py" for f in ("core", "x", "y", "z")])
+    assert found[-1] == Subsystem("lone.py", ".", 1, ["lone.py"])  # a recursive call inside one file is no link
+    assert [s.size for s in found] == [4, 4, 1]
 
 
 def test_pagerank_not_converged_returns_last_iterate():

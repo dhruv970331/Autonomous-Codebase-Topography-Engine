@@ -1,10 +1,12 @@
 """
 Graph analysis.
-Reads a graph written by build and finds which definitions the most code depends on, and
-where file imports loop. The graph is only read; no result is added to it. Every result
-is sorted, so it is the same on every run.
+Reads a graph written by build and finds which definitions the most code depends on, where
+file imports loop, and how the files group into subsystems. The graph is only read; no
+result is added to it. Every result is sorted, so it is the same on every run.
 """
 
+import posixpath
+from collections import Counter
 from dataclasses import dataclass
 
 import networkx as nx
@@ -32,6 +34,14 @@ class Ranking:
 @dataclass
 class ImportCycle:
     files: list[str]  # sorted paths of the files that import each other in a loop
+
+
+@dataclass
+class Subsystem:
+    hub: str          # its label: the file with the most link weight inside the subsystem, ties by path
+    folder: str       # the common folder of its files, "." for the project root
+    size: int
+    files: list[str]  # up to 10: most link weight inside the subsystem first, then by path
 
 
 def _pagerank(nodes: list[str], edges: list[tuple[str, str]], alpha: float = 0.85,
@@ -76,6 +86,46 @@ def rank(graph: Graph, top: int = 10) -> Ranking:
 
 def import_cycles(graph: Graph) -> list[ImportCycle]:
     """Strongly connected components of 2 or more files over code:importsFrom, largest first, then by files."""
+    imports = nx.DiGraph(sorted(_imports(graph)))
+    cycles = [sorted(c) for c in nx.strongly_connected_components(imports) if len(c) > 1]
+    return [ImportCycle(c) for c in sorted(cycles, key=lambda c: (-len(c), c))]
+
+
+def subsystems(graph: Graph) -> list[Subsystem]:
+    """Louvain communities (seed 0) of the undirected file graph, largest first, then by files.
+
+    The weight between two files is the number of resolved calls from one to the other, plus 1 if
+    either imports the other. Calls inside one file and self-imports add nothing. A file with no
+    link to another file is a subsystem of its own.
+    """
+    engine = SPARQLEngine(graph=graph)
+    q = _PREFIXES + f"""
+SELECT ?a ?b WHERE {{
+    ?site code:status {engine._literal("resolved")} ;
+          code:inFunction/code:filePath ?a ;
+          code:resolvedTo/code:filePath ?b .
+}}
+"""
+    weight = Counter(tuple(sorted((str(r.a), str(r.b)))) for r in graph.query(q))  # one row per call site
+    for pair in {tuple(sorted(p)) for p in _imports(graph)}:
+        weight[pair] += 1
+    files = nx.Graph()
+    files.add_nodes_from(engine.files())
+    files.add_weighted_edges_from((a, b, n) for (a, b), n in sorted(weight.items()) if a != b)
+    # seeded and fed in sorted order, so fixed for one networkx install; another networkx version may split differently
+    groups = sorted((sorted(c) for c in nx.community.louvain_communities(files, weight="weight", seed=0)),
+                    key=lambda c: (-len(c), c))
+    result = []
+    for group in groups:
+        inside = files.subgraph(group)
+        order = sorted(group, key=lambda f: (-inside.degree(f, weight="weight"), f))
+        folder = posixpath.commonpath([posixpath.dirname(f) for f in group]) or "."
+        result.append(Subsystem(order[0], folder, len(group), order[:10]))
+    return result
+
+
+def _imports(graph: Graph) -> list[tuple[str, str]]:
+    """(importer, imported) file paths of every code:importsFrom arrow."""
     q = _PREFIXES + """
 SELECT ?a ?b WHERE {
     ?f code:importsFrom ?t .
@@ -83,6 +133,4 @@ SELECT ?a ?b WHERE {
     ?t code:filePath ?b .
 }
 """
-    imports = nx.DiGraph(sorted((str(r.a), str(r.b)) for r in graph.query(q)))
-    cycles = [sorted(c) for c in nx.strongly_connected_components(imports) if len(c) > 1]
-    return [ImportCycle(c) for c in sorted(cycles, key=lambda c: (-len(c), c))]
+    return [(str(r.a), str(r.b)) for r in graph.query(q)]
