@@ -432,6 +432,7 @@ def test_report(tmp_path):
         "jedi_errors": 0,
         "jedi_unmapped": 0,
         "jedi_version": None,
+        "no_resolver": 0,
         "rate": 4 / 6,
         "reason": {"builtin": 1, "local": 1, "no-match": 1, "stdlib": 1},
         "status": {"external": 2, "resolved": 4, "unresolved": 2},

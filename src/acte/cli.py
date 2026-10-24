@@ -84,6 +84,8 @@ def _summary(graph: Graph) -> tuple[dict, dict[str, list[dict]]]:
     print(f"functions: {len(set(graph.subjects(RDF.type, CODE.Function)))}")
     print(f"classes: {len(set(graph.subjects(RDF.type, CODE.Class)))}")
     print(f"call sites: {cov['total']}")
+    if cov["no_resolver"]:
+        print(f"call sites in languages without call resolution: {cov['no_resolver']}")
     rate = cov["rate"]
     print(f"coverage: {'n/a' if rate is None else f'{rate:.1%}'}")
     return cov, run_checks(graph)

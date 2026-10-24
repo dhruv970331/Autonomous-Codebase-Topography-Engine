@@ -215,20 +215,23 @@ class Resolution:
     jedi_errors: int = 0  # goto calls that raised; those calls stay unknown-receiver
 
     def report(self) -> dict:
-        """Counts per status, tier (resolved only), reason and edge kind, plus rate = resolved / (total - external)."""
+        """Counts per status, tier (resolved only), reason and edge kind, plus rate = resolved / (calls - external),
+        over the calls in languages with call resolution; no_resolver counts the others, total all of them."""
         def count(values):
             return dict(sorted(Counter(v for v in values if v is not None).items()))
-        status = count(c.status for c in self.calls)
-        measured = len(self.calls) - status.get("external", 0)
+        calls = [c for c in self.calls if c.call.file_path.endswith(".py")]  # as _resolve_call: only Python is resolved
+        status = count(c.status for c in calls)
+        measured = len(calls) - status.get("external", 0)
         return {
-            "edge": count(c.edge for c in self.calls),
+            "edge": count(c.edge for c in calls),
             "jedi_errors": self.jedi_errors,
             "jedi_unmapped": self.jedi_unmapped,
             "jedi_version": self.jedi_version,
+            "no_resolver": len(self.calls) - len(calls),
             "rate": status.get("resolved", 0) / measured if measured else None,
-            "reason": count(c.reason for c in self.calls),
+            "reason": count(c.reason for c in calls),
             "status": status,
-            "tier": count(c.tier for c in self.calls),
+            "tier": count(c.tier for c in calls),
             "total": len(self.calls),
         }
 

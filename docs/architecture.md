@@ -261,5 +261,7 @@ that depend on such gaps are marked `lower-bound`.
 ### Coverage is measured
 
 Every call site is stored with its status, so the share of resolved calls is a number. It is
-shown on every build and checked by the tests. Call links are also checked against PyCG's
+shown on every build and checked by the tests. Only calls in Python files count towards it,
+since Python is the only language with call resolution. Calls in other languages are
+counted apart. Call links are also checked against PyCG's
 benchmark (`tests/test_pycg.py`), where no wrong link is allowed.

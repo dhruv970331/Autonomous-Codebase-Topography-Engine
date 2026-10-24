@@ -293,7 +293,7 @@ def test_coverage_matches_report_and_survives_turtle(tmp_path, use_jedi):
     report = resolution.report()
     graph = KnowledgeGraphBuilder().build([n for r in results for n in r.nodes], [e for r in results for e in r.edges], resolution)
     coverage = SPARQLEngine(graph=graph).coverage()
-    assert coverage == {k: report[k] for k in ("edge", "rate", "reason", "status", "tier", "total")}
+    assert coverage == {k: report[k] for k in ("edge", "no_resolver", "rate", "reason", "status", "tier", "total")}
     graph.serialize(tmp_path / "g.ttl", format="turtle")
     assert SPARQLEngine.from_turtle(tmp_path / "g.ttl").coverage() == coverage
 

@@ -89,6 +89,8 @@ git tracks, so anything in `.gitignore` is left out. Outside git it skips folder
 example `shop/db.py::Database.connect`, so moving the project does not change the graph.
 Use `--no-jedi` to skip the jedi step. When it finishes, it prints the number of files,
 functions, classes and calls, how many calls it resolved, and the health check results.
+Calls in languages without call resolution, such as Go, are counted on a line of their
+own and left out of the coverage.
 
 `acte stats GRAPH` prints the same summary for a saved graph. It also shows how the graph was
 built (folder name, git commit, versions), and the first problem rows for any failed health
