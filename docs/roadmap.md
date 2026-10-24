@@ -47,5 +47,5 @@ Measured results are in the README.
 
 ## Later
 
-- [ ] Graph analysis. Centrality ranking for the most depended-upon functions, community
+- [x] Graph analysis. Centrality ranking for the most depended-upon functions, community
       detection for subsystems, and cycle detection for circular dependencies.
