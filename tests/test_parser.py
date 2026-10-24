@@ -1,4 +1,6 @@
 
+from pathlib import Path
+
 import pytest
 
 from acte.parser import CodeParser
@@ -647,3 +649,69 @@ def test_class_bases_python_only(parser, tmp_path):
     p = tmp_path / "a.ts"
     p.write_text("class A extends B {}\n")
     assert [n.bases for n in parser.parse_file(p).nodes if n.kind == "Class"] == [None]
+
+
+TSX_APP = """\
+import React, { useState } from "react";
+import type { Props } from './types';
+import * as utils from "../utils";
+import "./styles.css";
+
+interface ButtonProps {
+  label: string;
+}
+
+export function Button({ label }: ButtonProps) {
+  const [n, setN] = useState(0);
+  return <button>{label}</button>;
+}
+
+class Counter extends React.Component<Props> {
+  render() {
+    return <Button label={String(this.count)} />;
+  }
+}
+
+export default function App() {
+  return (
+    <main>
+      <Counter />
+    </main>
+  );
+}
+"""
+
+
+def _structure(result):
+    """(kind, id, first line, last line) of each Class and Function, and every edge."""
+    defs = [(n.kind, n.qualified_id, n.line_start, n.line_end) for n in result.nodes if n.kind != "File"]
+    edges = [(e.kind, e.source, e.target, e.line) for e in result.edges]
+    return defs, edges
+
+
+def test_tsx_structure_and_imports(parser, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    Path("app.tsx").write_text(TSX_APP)
+    result = parser.parse_file(Path("app.tsx"))
+
+    assert (result.nodes[0].kind, result.nodes[0].language) == ("File", "tsx")
+    defs, edges = _structure(result)
+    assert defs == [
+        ("Function", "app.tsx::Button", 10, 13),
+        ("Class", "app.tsx::Counter", 15, 19),
+        ("Function", "app.tsx::Counter.render", 16, 18),
+        ("Function", "app.tsx::App", 21, 27),
+    ]
+    assert edges == [
+        ("IMPORTS_FROM", "app.tsx", "react", 1),
+        ("IMPORTS_FROM", "app.tsx", "./types", 2),
+        ("IMPORTS_FROM", "app.tsx", "../utils", 3),
+        ("IMPORTS_FROM", "app.tsx", "./styles.css", 4),
+        ("CONTAINS", "app.tsx", "app.tsx::Button", 10),
+        ("CONTAINS", "app.tsx", "app.tsx::Counter", 15),
+        ("CONTAINS", "app.tsx::Counter", "app.tsx::Counter.render", 16),
+        ("CONTAINS", "app.tsx", "app.tsx::App", 21),
+    ]
+    assert [(c.caller_id, c.target_name, c.receiver) for c in result.call_sites] == [
+        ("app.tsx::Button", "useState", None), ("app.tsx::Counter.render", "String", None),
+    ]
