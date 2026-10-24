@@ -117,9 +117,9 @@ _CLASS_TYPES: dict[str, list[str]] = {
 
 _FUNCTION_TYPES: dict[str, list[str]] = {
     "python": ["function_definition"],
-    "javascript": ["function_declaration", "method_definition", "arrow_function"],
-    "typescript": ["function_declaration", "method_definition", "arrow_function"],
-    "tsx": ["function_declaration", "method_definition", "arrow_function"],
+    "javascript": ["function_declaration", "method_definition"],
+    "typescript": ["function_declaration", "method_definition"],
+    "tsx": ["function_declaration", "method_definition"],
     "java": ["method_declaration", "constructor_declaration"],
     "go": ["function_declaration", "method_declaration"],
 }
@@ -448,11 +448,14 @@ class CodeParser:
         for child in _get_children(root):
             node_type = _get_type(child)
 
-            if node_type in class_types or node_type in func_types:
+            # `const f = () => ...`: a Function named f. Any other arrow function or function
+            # expression is no definition; the walk below goes through its body, as for a lambda.
+            fn_var = language in ("javascript", "typescript", "tsx") and self._is_function_variable(child)
+            if node_type in class_types or node_type in func_types or fn_var:
                 name_node = self._get_name_node(child)
                 name = _safe_text(name_node, source) if name_node else None
                 if name:
-                    is_func = node_type in func_types
+                    is_func = node_type in func_types or fn_var
                     parent = f"{scope}.<locals>" if in_func else scope
                     if language == "go" and node_type == "method_declaration":
                         # `Recv.Method`, contained by the File: the type may be declared in another file of the package
@@ -504,6 +507,15 @@ class CodeParser:
             if t in ("identifier", "name", "type_identifier", "property_identifier", "field_identifier"):
                 return child
         return None
+
+    def _is_function_variable(self, node) -> bool:
+        """``const f = () => ...`` or ``let f = function () {}``: a declarator of one plain name
+        whose value is an arrow function or function expression."""
+        if _get_type(node) != "variable_declarator":
+            return False
+        parts = _get_children(node)
+        return (len(parts) >= 3 and _get_type(parts[0]) == "identifier" and _get_type(parts[-2]) == "="
+                and _get_type(parts[-1]) in ("arrow_function", "function_expression"))
 
     def _go_receiver_type(self, method, source: bytes) -> str | None:
         """The receiver type name of a Go method, pointer ``*`` and type arguments removed:

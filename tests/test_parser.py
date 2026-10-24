@@ -717,6 +717,46 @@ def test_tsx_structure_and_imports(parser, tmp_path, monkeypatch):
     ]
 
 
+FUNCTION_VALUES = """\
+const Card = (props) => {
+  return format(props);
+};
+let load = function () {
+  items.forEach((x) => save(x));
+  const helper = async () => fetch();
+};
+[1].map(y => track(y));
+const { a } = () => pick();
+const handlers = { click: () => onClick() };
+"""
+
+
+@pytest.mark.parametrize("suffix", [".js", ".ts", ".tsx"])
+def test_function_values_and_their_calls(parser, tmp_path, monkeypatch, suffix):
+    monkeypatch.chdir(tmp_path)
+    f = f"f{suffix}"
+    Path(f).write_text(FUNCTION_VALUES)
+    defs, edges = _structure(parser.parse_file(Path(f)))
+
+    # a function value named by a plain variable is a Function; a parameter (`y => ...`) never names one
+    assert defs == [
+        ("Function", f"{f}::Card", 1, 3),
+        ("Function", f"{f}::load", 4, 7),
+        ("Function", f"{f}::load.<locals>.helper", 6, 6),
+    ]
+    assert edges == [
+        ("CONTAINS", f, f"{f}::Card", 1),
+        ("CONTAINS", f, f"{f}::load", 4),
+        ("CONTAINS", f"{f}::load", f"{f}::load.<locals>.helper", 6),
+    ]
+    # calls inside any other function value count for the enclosing function, or the File
+    assert [(c.caller_id, c.target_name) for c in parser.parse_file(Path(f)).call_sites] == [
+        (f"{f}::Card", "format"),
+        (f"{f}::load", "forEach"), (f"{f}::load", "save"), (f"{f}::load.<locals>.helper", "fetch"),
+        (f, "map"), (f, "track"), (f, "pick"), (f, "onClick"),
+    ]
+
+
 GO_SHAPES = """\
 package shapes
 
