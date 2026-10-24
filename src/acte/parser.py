@@ -112,6 +112,7 @@ _CLASS_TYPES: dict[str, list[str]] = {
     "typescript": ["class_declaration", "class"],
     "tsx": ["class_declaration", "class"],
     "java": ["class_declaration", "interface_declaration", "enum_declaration"],
+    "go": ["type_spec"],  # every named type: struct, interface, `type UUID [16]byte`; not `type A = B`
 }
 
 _FUNCTION_TYPES: dict[str, list[str]] = {
@@ -120,6 +121,7 @@ _FUNCTION_TYPES: dict[str, list[str]] = {
     "typescript": ["function_declaration", "method_definition", "arrow_function"],
     "tsx": ["function_declaration", "method_definition", "arrow_function"],
     "java": ["method_declaration", "constructor_declaration"],
+    "go": ["function_declaration", "method_declaration"],
 }
 
 _CALL_TYPES: dict[str, list[str]] = {
@@ -128,6 +130,7 @@ _CALL_TYPES: dict[str, list[str]] = {
     "typescript": ["call_expression", "new_expression"],
     "tsx": ["call_expression", "new_expression"],
     "java": ["method_invocation", "object_creation_expression"],
+    "go": ["call_expression"],
 }
 
 _IMPORT_TYPES: dict[str, list[str]] = {
@@ -136,6 +139,7 @@ _IMPORT_TYPES: dict[str, list[str]] = {
     "typescript": ["import_statement"],
     "tsx": ["import_statement"],
     "java": ["import_declaration"],
+    "go": ["import_spec"],
 }
 
 # Python nodes that bind local names (_extract_bindings).
@@ -450,6 +454,11 @@ class CodeParser:
                 if name:
                     is_func = node_type in func_types
                     parent = f"{scope}.<locals>" if in_func else scope
+                    if language == "go" and node_type == "method_declaration":
+                        # `Recv.Method`, contained by the File: the type may be declared in another file of the package
+                        parent = self._go_receiver_type(child, source)
+                        if parent is None:  # a receiver shape not handled, such as `(p (*Point))`: no id for it
+                            continue
                     qualname = f"{parent}.{name}" if parent else name
                     container = f"{file_path}::{scope}" if scope else file_path
                     parts = _get_children(child)
@@ -496,6 +505,20 @@ class CodeParser:
                 return child
         return None
 
+    def _go_receiver_type(self, method, source: bytes) -> str | None:
+        """The receiver type name of a Go method, pointer ``*`` and type arguments removed:
+        ``Point`` for ``(p *Point)`` or ``(p (*Point))``, ``Pair`` for ``(p *Pair[T])``. None for any other receiver shape."""
+        receiver = next((c for c in _get_children(method) if _get_type(c) == "parameter_list"), None)
+        decl = next((c for c in _get_children(receiver) if _get_type(c) == "parameter_declaration"), None)
+        t = _get_children(decl)[-1] if decl else None  # the type comes last, after the optional name
+        while _get_type(t) == "parenthesized_type":  # `(p (*Point))`
+            t = _get_children(t)[1]
+        if _get_type(t) == "pointer_type":
+            t = _get_children(t)[-1]
+        if _get_type(t) == "generic_type":
+            t = _get_children(t)[0]
+        return _safe_text(t, source) if _get_type(t) == "type_identifier" else None
+
     def _get_call_name(self, node, source: bytes) -> str | None:
         name_node = self._get_call_name_node(node)
         return _safe_text(name_node, source) if name_node else None
@@ -510,9 +533,9 @@ class CodeParser:
         t = _get_type(first)
         if t in ("identifier", "simple_identifier"):
             return first
-        if t in ("attribute", "member_expression"):
+        if t in ("attribute", "member_expression", "selector_expression"):
             for child in reversed(_get_children(first)):
-                if _get_type(child) in ("identifier", "property_identifier"):
+                if _get_type(child) in ("identifier", "property_identifier", "field_identifier"):
                     return child
         return None
 
@@ -526,7 +549,7 @@ class CodeParser:
         t = _get_type(first)
         if t in ("identifier", "simple_identifier"):
             return None
-        if t in ("attribute", "member_expression"):
+        if t in ("attribute", "member_expression", "selector_expression"):
             # `return *o.m(), x` parses with the star on `o`; it belongs to the result, not the receiver
             full_text = _compact_text(first, source).lstrip("*")
             if "." not in full_text:
@@ -747,6 +770,11 @@ class CodeParser:
             for child in _get_children(node):
                 if _get_type(child) == "string":
                     val = _safe_text(child, source).strip("'\"")
+                    edges.append(EdgeInfo("IMPORTS_FROM", file_path, val, file_path, _get_start_line(node)))
+        elif language == "go":  # one import_spec: its path, without the alias
+            for child in _get_children(node):
+                if _get_type(child) in ("interpreted_string_literal", "raw_string_literal"):
+                    val = _safe_text(child, source).strip('"`')
                     edges.append(EdgeInfo("IMPORTS_FROM", file_path, val, file_path, _get_start_line(node)))
 
     def _extract_import_bindings(self, node, source: bytes, file_path: str, line: int, import_bindings: list[ImportBinding], scope_id: str) -> None:

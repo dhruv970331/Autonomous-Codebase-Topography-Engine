@@ -715,3 +715,103 @@ def test_tsx_structure_and_imports(parser, tmp_path, monkeypatch):
     assert [(c.caller_id, c.target_name, c.receiver) for c in result.call_sites] == [
         ("app.tsx::Button", "useState", None), ("app.tsx::Counter.render", "String", None),
     ]
+
+
+GO_SHAPES = """\
+package shapes
+
+import "fmt"
+
+import (
+\t"math"
+\tstr "strings"
+)
+
+type Point struct {
+\tX, Y float64
+}
+
+type Shape interface {
+\tArea() float64
+}
+
+type Celsius float64
+
+func (p *Point) Scale(f float64) {
+\tp.X = p.X * math.Abs(f)
+}
+
+func (p Point) String() string {
+\treturn fmt.Sprintf("%v", str.TrimSpace("x"))
+}
+
+func (c Celsius) String() string {
+\treturn format(c)
+}
+
+func New(x float64) *Point {
+\treturn &Point{X: x}
+}
+
+type Alias = Point
+
+type Pair[T any] struct {
+\tA, B T
+}
+
+func (p *Pair[T]) Swap() {
+\tp.A, p.B = swap(p.B, p.A)
+}
+"""
+
+
+def test_go_structure_and_imports(parser, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    Path("shapes.go").write_text(GO_SHAPES)
+    Path("area.go").write_text("package shapes\n\nfunc (p Point) Area() float64 {\n\treturn 0\n}\n\n"
+                               "func (p ((*Point))) Draw() {\n\tdraw(p)\n}\n")
+    result = parser.parse_file(Path("shapes.go"))
+
+    assert (result.nodes[0].kind, result.nodes[0].language) == ("File", "go")
+    defs, edges = _structure(result)
+    # every named type is a Class, `type Celsius float64` too; the alias `type Alias = Point` is not
+    assert defs == [
+        ("Class", "shapes.go::Point", 10, 12),
+        ("Class", "shapes.go::Shape", 14, 16),
+        ("Class", "shapes.go::Celsius", 18, 18),
+        ("Function", "shapes.go::Point.Scale", 20, 22),
+        ("Function", "shapes.go::Point.String", 24, 26),
+        ("Function", "shapes.go::Celsius.String", 28, 30),
+        ("Function", "shapes.go::New", 32, 34),
+        ("Class", "shapes.go::Pair", 38, 40),
+        ("Function", "shapes.go::Pair.Swap", 42, 44),
+    ]
+    assert edges == [
+        ("IMPORTS_FROM", "shapes.go", "fmt", 3),
+        ("IMPORTS_FROM", "shapes.go", "math", 6),
+        ("IMPORTS_FROM", "shapes.go", "strings", 7),
+        ("CONTAINS", "shapes.go", "shapes.go::Point", 10),
+        ("CONTAINS", "shapes.go", "shapes.go::Shape", 14),
+        ("CONTAINS", "shapes.go", "shapes.go::Celsius", 18),
+        ("CONTAINS", "shapes.go", "shapes.go::Point.Scale", 20),
+        ("CONTAINS", "shapes.go", "shapes.go::Point.String", 24),
+        ("CONTAINS", "shapes.go", "shapes.go::Celsius.String", 28),
+        ("CONTAINS", "shapes.go", "shapes.go::New", 32),
+        ("CONTAINS", "shapes.go", "shapes.go::Pair", 38),
+        ("CONTAINS", "shapes.go", "shapes.go::Pair.Swap", 42),
+    ]
+    assert [(c.caller_id, c.target_name, c.receiver, c.line) for c in result.call_sites] == [
+        ("shapes.go::Point.Scale", "Abs", "math", 21),
+        ("shapes.go::Point.String", "Sprintf", "fmt", 25),
+        ("shapes.go::Point.String", "TrimSpace", "str", 25),
+        ("shapes.go::Celsius.String", "format", None, 29),
+        ("shapes.go::Pair.Swap", "swap", None, 43),  # a generic receiver loses its type arguments
+    ]
+
+    # a method on a type declared in another file of the package is contained by its own File
+    # a parenthesized receiver type is unwrapped: `((*Point))` is `Point`
+    area = parser.parse_file(Path("area.go"))
+    defs, edges = _structure(area)
+    assert defs == [("Function", "area.go::Point.Area", 3, 5), ("Function", "area.go::Point.Draw", 7, 9)]
+    assert edges == [("CONTAINS", "area.go", "area.go::Point.Area", 3), ("CONTAINS", "area.go", "area.go::Point.Draw", 7)]
+    assert [(c.caller_id, c.target_name) for c in area.call_sites] == [("area.go::Point.Draw", "draw")]
