@@ -42,7 +42,7 @@ is still young.
 
 | Part | State |
 |---|---|
-| Parsing | Python. Java, JavaScript and TypeScript give structure only |
+| Parsing | Python. Java, JavaScript, TypeScript, TSX and Go give structure only |
 | RDF graph and Turtle output | Working |
 | Call resolution | Python only (see Limitations) |
 | Command line (`acte build`, `acte stats`, `acte serve`) | Working |
@@ -169,9 +169,10 @@ so this is a quick sanity check and too small to count as a benchmark.
 
 ## Limitations
 
-- Call resolution only works for Python. Java, JavaScript and TypeScript files get their
-  structure but no call links. Go and TSX files are recognised but have no parsing rules
-  yet, so they only produce a file entry.
+- Call resolution only works for Python. Java, JavaScript, TypeScript, TSX and Go files get
+  their structure but no call links. Their imports are read but not yet kept in the graph.
+  In JavaScript, TypeScript and TSX, a function written as `const f = () => ...` is not
+  read yet, and neither are the calls inside it.
 - Some calls stay unresolved. ACTE only links a call when it is sure of the target. If a
   call could go to more than one place, it is stored as ambiguous. `callers_of` and
   `blast_radius` then mark their answer as `lower-bound`, meaning there may be more callers.
