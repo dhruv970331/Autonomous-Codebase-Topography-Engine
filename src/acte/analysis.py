@@ -85,8 +85,9 @@ def rank(graph: Graph, top: int = 10) -> Ranking:
 
 
 def import_cycles(graph: Graph) -> list[ImportCycle]:
-    """Strongly connected components of 2 or more files over their imports, largest first, then by files."""
-    imports = nx.DiGraph(sorted(_imports(graph)))
+    """Strongly connected components of 2 or more files over code:importsFrom, largest first, then by files.
+    Type-only, in-function and main-block imports are left out: they do not run when the module loads, so they make no loop."""
+    imports = nx.DiGraph(sorted(_imports(graph, "code:importsFrom")))
     cycles = [sorted(c) for c in nx.strongly_connected_components(imports) if len(c) > 1]
     return [ImportCycle(c) for c in sorted(cycles, key=lambda c: (-len(c), c))]
 
@@ -124,11 +125,11 @@ SELECT ?a ?b WHERE {{
     return result
 
 
-def _imports(graph: Graph) -> list[tuple[str, str]]:
-    """(importer, imported) file paths of every import arrow between project files, of any kind."""
+def _imports(graph: Graph, path: str = _IMPORTS) -> list[tuple[str, str]]:
+    """(importer, imported) file paths of every import arrow between project files over the predicate *path*."""
     q = _PREFIXES + f"""
 SELECT DISTINCT ?a ?b WHERE {{
-    ?f {_IMPORTS} ?t .
+    ?f {path} ?t .
     ?f code:filePath ?a .
     ?t code:filePath ?b .
 }}
