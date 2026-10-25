@@ -12,7 +12,7 @@ from dataclasses import dataclass
 import networkx as nx
 from rdflib import Graph
 
-from acte.sparql_engine import _PREFIXES, SPARQLEngine
+from acte.sparql_engine import _IMPORTS, _PREFIXES, SPARQLEngine
 
 
 @dataclass
@@ -85,7 +85,7 @@ def rank(graph: Graph, top: int = 10) -> Ranking:
 
 
 def import_cycles(graph: Graph) -> list[ImportCycle]:
-    """Strongly connected components of 2 or more files over code:importsFrom, largest first, then by files."""
+    """Strongly connected components of 2 or more files over their imports, largest first, then by files."""
     imports = nx.DiGraph(sorted(_imports(graph)))
     cycles = [sorted(c) for c in nx.strongly_connected_components(imports) if len(c) > 1]
     return [ImportCycle(c) for c in sorted(cycles, key=lambda c: (-len(c), c))]
@@ -125,12 +125,12 @@ SELECT ?a ?b WHERE {{
 
 
 def _imports(graph: Graph) -> list[tuple[str, str]]:
-    """(importer, imported) file paths of every code:importsFrom arrow."""
-    q = _PREFIXES + """
-SELECT ?a ?b WHERE {
-    ?f code:importsFrom ?t .
+    """(importer, imported) file paths of every import arrow between project files, of any kind."""
+    q = _PREFIXES + f"""
+SELECT DISTINCT ?a ?b WHERE {{
+    ?f {_IMPORTS} ?t .
     ?f code:filePath ?a .
     ?t code:filePath ?b .
-}
+}}
 """
     return [(str(r.a), str(r.b)) for r in graph.query(q)]

@@ -21,6 +21,7 @@ from acte.rdf_builder import CODE
 from acte.sparql_engine import BlastAnswer, SPARQLEngine
 
 _HUNK = re.compile(r"^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+_IMPORTS = (CODE.importsFrom, CODE.importsTypeOnly, CODE.importsInFunction, CODE.importsInMainBlock)  # every kind of import of a project file
 _HEADER = ("def ", "async def ", "class ", "@")  # a removed Python line starting so began a definition
 
 
@@ -156,7 +157,7 @@ def impact(root: Path, graph: Graph, new: dict[str, set[int]], deleted: dict[str
                                dataclasses.replace(a, affected=a.affected[:limit], truncated=a.total > limit)))
     modules = []
     for f in sorted(module_files):
-        importers = sorted(str(graph.value(s, CODE.filePath)) for s in graph.subjects(CODE.importsFrom, _file(graph, f)))
+        importers = sorted({str(graph.value(s, CODE.filePath)) for p in _IMPORTS for s in graph.subjects(p, _file(graph, f))})
         seen |= set(importers)
         modules.append(ModuleChange(f, importers[:limit], len(importers)))
     return Report(base, results, modules, len(seen - set(hit) - module_files), "lower-bound" if lower else "exact")

@@ -31,6 +31,9 @@ _PREFIXES = (
     f"PREFIX code: <{_CODE_NS}>\n"
     "PREFIX xsd:  <http://www.w3.org/2001/XMLSchema#>\n"
 )
+# every kind of import of a project file, and of an outside module (ontology/code.ttl)
+_IMPORTS = "code:importsFrom|code:importsTypeOnly|code:importsInFunction|code:importsInMainBlock"
+_IMPORTS_EXTERNAL = "code:importsExternal|code:importsTypeOnlyExternal|code:importsInFunctionExternal|code:importsInMainBlockExternal"
 _MAX_ANSWERS = 6  # R23: per-definition answers for an ambiguous name
 _MAX_DEPTH = 10  # D3: hard ceiling on blast_radius hops
 
@@ -241,9 +244,9 @@ ORDER BY ?start
         file_uri = self._uri(file_path)
         q = _PREFIXES + f"""
 SELECT DISTINCT ?dep WHERE {{
-    {{ {file_uri} code:importsFrom/code:filePath ?dep }}
+    {{ {file_uri} ({_IMPORTS})/code:filePath ?dep }}
     UNION
-    {{ {file_uri} code:importsExternal ?dep }}
+    {{ {file_uri} {_IMPORTS_EXTERNAL} ?dep }}
 }}
 ORDER BY ?dep
 """
