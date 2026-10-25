@@ -2,6 +2,7 @@
 Command line.
 `acte build PATH` parses a project into one Turtle graph, with ids relative to PATH.
 `acte stats GRAPH.ttl` summarises a graph written by build, as text or JSON.
+`acte impact PATH` lists what the uncommitted changes (or those since --base) may break.
 `acte serve GRAPH.ttl` answers questions about a graph as an MCP server over stdio.
 """
 
@@ -137,6 +138,17 @@ def main(argv: list[str] | None = None) -> int:
     st = sub.add_parser("stats", help="summarise a Turtle graph written by build")
     st.add_argument("graph", help="the Turtle file")
     st.add_argument("--format", choices=["text", "json"], default="text", help="output format (default: text)")
+    im = sub.add_parser(
+        "impact", help="list what a git diff may break",
+        description="Map each line the diff of the work tree against BASE changes to the function or class that holds it, "
+                    "and list what calls those. Definitions the change deleted are not detected: they are not in the new graph.")
+    im.add_argument("path", nargs="?", default=".", help="the project root, as for build (default: .)")
+    im.add_argument("--base", default="HEAD", help="the git revision to diff against (default: HEAD, so uncommitted work)")
+    im.add_argument("--graph", help="a Turtle file written by build, used instead of building the work tree afresh")
+    im.add_argument("--depth", type=int, default=2, help="hops of callers to follow, 1 to 10 (default: 2)")
+    im.add_argument("--limit", type=int, default=50, help="most affected entries listed per change (default: 50)")
+    im.add_argument("--format", choices=["text", "json"], default="text", help="output format (default: text)")
+    im.add_argument("--no-jedi", action="store_true", help="skip the jedi resolution tier when building")
     sv = sub.add_parser("serve", help="serve a Turtle graph as an MCP server over stdio")
     sv.add_argument("graph", help="the Turtle file")
     sv.add_argument("--project", help="the project root the graph was built from")
@@ -161,6 +173,11 @@ def main(argv: list[str] | None = None) -> int:
     root = Path(args.path)
     if not root.is_dir():
         parser.error(f"{args.path} is not a directory")
+    if args.command == "impact":
+        if args.limit < 1:
+            parser.error("--limit must be at least 1")
+        from acte.impact import run  # imported here: impact imports this module
+        return run(root, args.base, args.graph, args.depth, args.limit, args.format, not args.no_jedi)
     graph = build(root, not args.no_jedi)
     graph.serialize(destination=args.output, format="turtle")
     print(f"wrote {args.output}")
