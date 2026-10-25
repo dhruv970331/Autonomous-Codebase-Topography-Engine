@@ -106,6 +106,8 @@ class KnowledgeGraphBuilder:
         self.graph.add((uri, CODE.filePath,  Literal(node.file_path, datatype=XSD.string)))
         self.graph.add((uri, CODE.lineStart, Literal(node.line_start, datatype=XSD.integer)))
         self.graph.add((uri, CODE.lineEnd,   Literal(node.line_end,   datatype=XSD.integer)))
+        if node.decorator_line is not None:
+            self.graph.add((uri, CODE.decoratorLine, Literal(node.decorator_line, datatype=XSD.integer)))
 
         if node.language:
             self.graph.add((uri, CODE.language, Literal(node.language, datatype=XSD.string)))

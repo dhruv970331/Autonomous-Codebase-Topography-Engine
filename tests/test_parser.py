@@ -647,3 +647,41 @@ def test_class_bases_python_only(parser, tmp_path):
     p = tmp_path / "a.ts"
     p.write_text("class A extends B {}\n")
     assert [n.bases for n in parser.parse_file(p).nodes if n.kind == "Class"] == [None]
+
+DECORATED = (
+    "import functools\n"                 # 1
+    "\n"
+    "@functools.cache\n"                 # 3
+    "def f():\n"
+    "    def inner():\n"                 # 5: not decorated itself
+    "        pass\n"
+    "\n"
+    "@dataclass\n"                       # 8
+    "# a comment between the decorators\n"
+    "@total_ordering(\n"
+    "    key=1,\n"
+    ")\n"
+    "class C:\n"                         # 13
+    "    @property\n"                    # 14
+    "    @abstractmethod\n"
+    "    def p(self):\n"                 # 16
+    "        return 1\n"
+    "\n"
+    "    def q(self):\n"                 # 19
+    "        pass\n"
+)
+
+
+def test_decorator_line(parser, tmp_path):
+    p = tmp_path / "a.py"
+    p.write_text(DECORATED)
+    result = parser.parse_file(p)
+    assert [(n.qualified_id.split("::")[1], n.line_start, n.line_end, n.decorator_line) for n in result.nodes if n.kind != "File"] == [
+        ("f", 4, 6, 3), ("f.<locals>.inner", 5, 6, None), ("C", 13, 20, 8), ("C.p", 16, 17, 14), ("C.q", 19, 20, None),
+    ]
+
+
+def test_decorator_line_python_only(parser, tmp_path):
+    p = tmp_path / "a.ts"
+    p.write_text("@Component\nclass A {\n  @Input()\n  m() {}\n}\n")
+    assert all(n.decorator_line is None for n in parser.parse_file(p).nodes)

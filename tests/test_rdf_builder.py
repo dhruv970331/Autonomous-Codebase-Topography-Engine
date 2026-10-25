@@ -274,3 +274,11 @@ def test_inherits_points_at_project_classes_only(tmp_path):
     uri = KnowledgeGraphBuilder()._make_uri
     a, b, base = (uri(f"{tmp_path}/{i}") for i in ("app.py::A", "app.py::B", "base.py::Base"))
     assert set(graph.subject_objects(CODE.inherits)) == {(a, base), (b, a)}
+
+
+def test_decorator_line_only_when_decorated(tmp_path):
+    (tmp_path / "a.py").write_text("@deco\ndef f():\n    pass\n\n\ndef g():\n    pass\n")
+    g = build_graph([tmp_path / "a.py"], tmp_path, use_jedi=False)
+    f, plain = (URIRef(CODE[f"{tmp_path}/a.py::{n}"]) for n in ("f", "g"))
+    assert (g.value(f, CODE.lineStart), g.value(f, CODE.decoratorLine)) == (Literal(2, datatype=XSD.integer), Literal(1, datatype=XSD.integer))
+    assert g.value(plain, CODE.decoratorLine) is None
