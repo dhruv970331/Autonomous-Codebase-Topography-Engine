@@ -61,6 +61,15 @@ def test_two_file_import_cycle(tmp_path):
     assert import_cycles(graph) == [ImportCycle(["a.py", "b.py"])]
 
 
+def test_cycle_needs_a_module_level_import_both_ways(tmp_path):
+    files = {"a.py": "import b\n", "b.py": "from a import x\n"}
+    assert import_cycles(_graph(tmp_path / "module", files)) == [ImportCycle(["a.py", "b.py"])]
+    for kind, b in (("in-function", "def f():\n    from a import x\n"),
+                    ("type-only", "from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    from a import x\n"),
+                    ("main-block", "if __name__ == '__main__':\n    from a import x\n")):
+        assert import_cycles(_graph(tmp_path / kind, files | {"b.py": b})) == [], kind
+
+
 def test_largest_cycle_first(tmp_path):
     graph = _graph(tmp_path, {
         "p.py": "import q\n", "q.py": "import p\n",

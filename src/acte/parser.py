@@ -156,6 +156,11 @@ _PUNCTUATION = {"(", ")", "[", "]", ","}
 # A class base that is not a plain or dotted name (`f()`, `*bases`): never a name, so it never resolves.
 UNKNOWN_BASE = "?"
 
+# The conditions of an `if` whose first block holds imports of their own kind, as _compact_text writes them:
+# it runs only for a type checker, or only when the file is run as a script (at module level).
+_TYPE_CHECKING = {"TYPE_CHECKING", "typing.TYPE_CHECKING"}
+_MAIN = {'__name__=="__main__"', "__name__=='__main__'", '"__main__"==__name__', "'__main__'==__name__"}
+
 # Kept whole by _compact_text: whitespace inside a literal is part of its value.
 _ATOMIC_TYPES = {"string", "template_string"}
 # Dropped by _compact_text: they carry no code.
@@ -429,7 +434,7 @@ class CodeParser:
         import_bindings = [b for b in import_bindings if b.local_name != "*"]
         return ParseResult(nodes=nodes, edges=edges, call_sites=call_sites, import_bindings=import_bindings, local_bindings=local_bindings, star_imports=star_imports)
 
-    def _extract_from_tree(self, root, source, language, file_path, nodes, edges, call_sites, import_bindings, local_bindings, scope=None, in_func=False, func=None, method_of=None, _depth=0):
+    def _extract_from_tree(self, root, source, language, file_path, nodes, edges, call_sites, import_bindings, local_bindings, scope=None, in_func=False, func=None, method_of=None, _depth=0, block=None):
         """Walk *root*, giving definitions ids shaped like Python's ``__qualname__``.
 
         *scope* is the qualname of the innermost enclosing class or function (None at
@@ -437,6 +442,8 @@ class CodeParser:
         inside it get ``<locals>``: ``outer.<locals>.helper``, but ``A.B`` for a class in a class.
         *func* is the qualname of the innermost enclosing function, the caller of any call.
         *method_of* is the class qualname when that scope is a method, the owner of ``self.X``.
+        *block* is "type-only" inside the first block of an ``if TYPE_CHECKING:``, "main-block" inside that of a
+        module-level ``if __name__ == "__main__":``, else None. The innermost such block counts.
         """
         if _depth > 180 or not root:
             return
@@ -445,6 +452,10 @@ class CodeParser:
         func_types = set(_FUNCTION_TYPES.get(language, []))
         call_types = set(_CALL_TYPES.get(language, []))
         import_types = set(_IMPORT_TYPES.get(language, []))
+        # only its first block runs for a type checker; elif and else run as usual
+        parts = _get_children(root) if language == "python" and _get_type(root) == "if_statement" else []
+        condition = _compact_text(parts[1], source) if len(parts) > 1 else ""
+        opens = "type-only" if condition in _TYPE_CHECKING else "main-block" if condition in _MAIN and not scope else None
 
         for child in _get_children(root):
             node_type = _get_type(child)
@@ -477,7 +488,7 @@ class CodeParser:
                     edges.append(EdgeInfo("CONTAINS", container, f"{file_path}::{qualname}", file_path, _get_start_line(child)))
                     if language == "python":  # R17: the name is bound in the enclosing scope
                         local_bindings.append(LocalBinding(container, name, "def" if is_func else "class", None, file_path, _get_start_line(name_node)))
-                    self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, import_bindings, local_bindings, qualname, is_func, qualname if is_func else func, scope if is_func and scope and not in_func else None, _depth + 1)
+                    self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, import_bindings, local_bindings, qualname, is_func, qualname if is_func else func, scope if is_func and scope and not in_func else None, _depth + 1, block)
                 continue
 
             if node_type in call_types:
@@ -488,13 +499,14 @@ class CodeParser:
                     caller = f"{file_path}::{func}" if func else file_path
                     receiver = self._get_call_receiver(child, source)
                     call_sites.append(CallSite(caller, call_name, receiver, file_path, _get_start_line(name_node), _get_start_col(name_node)))
-                self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, import_bindings, local_bindings, scope, in_func, func, method_of, _depth + 1)
+                self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, import_bindings, local_bindings, scope, in_func, func, method_of, _depth + 1, block)
                 continue
 
             if node_type in import_types:
                 # Innermost scope, class included: a class-body import is visible only in that body.
                 scope_id = f"{file_path}::{scope}" if scope else file_path
-                self._extract_imports(child, language, source, file_path, edges, import_bindings, scope_id)
+                kind = block or ("in-function" if func else "module")
+                self._extract_imports(child, language, source, file_path, edges, import_bindings, scope_id, kind)
                 continue
 
             if language == "python" and node_type in _BINDING_TYPES:
@@ -503,7 +515,8 @@ class CodeParser:
                 self._extract_bindings(child, source, file_path, scope_id, method_id, local_bindings)
                 # no continue: values and default arguments still hold calls
 
-            self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, import_bindings, local_bindings, scope, in_func, func, method_of, _depth + 1)
+            self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, import_bindings, local_bindings, scope, in_func, func, method_of, _depth + 1,
+                                    opens if opens and node_type == "block" else block)
 
     def _get_name_node(self, node):
         for child in _get_children(node):
@@ -763,7 +776,10 @@ class CodeParser:
             return len(parts) == 3 and self._is_dotted(parts[0]) and _get_type(parts[2]) == "identifier"
         return False
 
-    def _extract_imports(self, node, language: str, source: bytes, file_path: str, edges: list[EdgeInfo], import_bindings: list[ImportBinding], scope_id: str) -> None:
+    def _extract_imports(self, node, language: str, source: bytes, file_path: str, edges: list[EdgeInfo], import_bindings: list[ImportBinding], scope_id: str, kind: str = "module") -> None:
+        """IMPORTS_FROM edges and bindings. A Python edge's extra["import_kind"] is *kind*:
+        "module", "type-only" (under ``if TYPE_CHECKING:``), "main-block" (under a module-level
+        ``if __name__ == "__main__":``) or "in-function" (in a function body)."""
         if language == "python":
             node_type = _get_type(node)
             line = _get_start_line(node)
@@ -773,14 +789,14 @@ class CodeParser:
                     # it the loop skips past the module and matches an imported name instead.
                     if _get_type(child) in ("dotted_name", "relative_import"):
                         target = _safe_text(child, source)
-                        edges.append(EdgeInfo("IMPORTS_FROM", file_path, target, file_path, line))
+                        edges.append(EdgeInfo("IMPORTS_FROM", file_path, target, file_path, line, {"import_kind": kind}))
                         break
                 self._extract_import_from_bindings(node, source, file_path, line, import_bindings, scope_id)
             else:
                 for child in _get_children(node):
                     if _get_type(child) == "dotted_name":
                         target = _safe_text(child, source)
-                        edges.append(EdgeInfo("IMPORTS_FROM", file_path, target, file_path, line))
+                        edges.append(EdgeInfo("IMPORTS_FROM", file_path, target, file_path, line, {"import_kind": kind}))
                 self._extract_import_bindings(node, source, file_path, line, import_bindings, scope_id)
         elif language in ("javascript", "typescript", "tsx"):
             for child in _get_children(node):

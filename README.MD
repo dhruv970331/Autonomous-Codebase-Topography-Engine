@@ -112,8 +112,10 @@ commenting out a line counts as removing it. Removed code counts for the definit
 removed from. If a whole method was removed, its class counts as changed. For
 each changed definition it lists everything that calls it, grouped by distance (2 steps by
 default, set with `--depth`). A changed line outside any definition counts as a change to the
-whole file, and the command lists the project files that import it. New files that git does
-not track yet count as fully added. `--no-jedi` skips the jedi step, which makes the build
+whole file, and the command lists the project files that import it. An importer that imports
+it only inside a function, under `if TYPE_CHECKING:` or under `if __name__ == "__main__":` is
+marked so, for example `cli.py (in function)`. In JSON these are in `importer_kinds`. New files
+that git does not track yet count as fully added. `--no-jedi` skips the jedi step, which makes the build
 faster in CI.
 
 The first line sums it up: how many definitions changed, how many others are affected, and
@@ -141,8 +143,9 @@ PageRank over the resolved calls. Each one comes with `file:line`, its score, an
 places call it directly. `--top` sets how many are shown (default 10).
 
 Second, import cycles: groups of files that import each other in a loop, largest first.
-Imports inside `if TYPE_CHECKING:` and inside functions count too, so a cycle may never
-happen when the code runs.
+Only imports that run when a file loads count. Imports inside `if TYPE_CHECKING:`, inside
+`if __name__ == "__main__":` and inside functions are left out, because they cannot make a
+loop at load time.
 
 Third, subsystems: groups of files that call and import each other a lot, found with the
 Louvain method. Each group is named after its hub, the file with the most links inside the

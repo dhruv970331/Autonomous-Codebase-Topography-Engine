@@ -256,6 +256,122 @@ def test_imports_point_at_file_nodes_or_name_external_modules(tmp_path):
     assert set(graph.objects(a, CODE.importsExternal)) == {Literal("os.path", datatype=XSD.string), Literal("util", datatype=XSD.string)}
 
 
+def test_import_kinds(tmp_path):
+    files = {
+        "lib.py": "def f():\n    pass\n",
+        "other.py": "",
+        "app.py": (
+            "import typing\n"
+            "from typing import TYPE_CHECKING\n"
+            "\n"
+            "try:\n"
+            "    import lib\n"
+            "except ImportError:\n"
+            "    lib = None\n"
+            "\n"
+            "if TYPE_CHECKING:\n"
+            "    import json\n"
+            "    if lib:\n"
+            "        import other\n"
+            "elif lib:\n"
+            "    import csv\n"
+            "else:\n"
+            "    import re\n"
+            "\n"
+            "if typing.TYPE_CHECKING:\n"
+            "    from collections import abc\n"
+            "\n"
+            "\n"
+            "def run():\n"
+            "    import lib\n"
+            "    import os\n"
+            "    import os\n"
+            "    if TYPE_CHECKING:\n"
+            "        import decimal\n"
+            "\n"
+            "    def inner():\n"
+            "        import string\n"
+            "\n"
+            "\n"
+            "class C:\n"
+            "    import enum\n"
+            "\n"
+            "    def m(self):\n"
+            "        import fractions\n"
+        ),
+    }
+    for rel, code in files.items():
+        (tmp_path / rel).write_text(code)
+    graph = build_graph(sorted(tmp_path / rel for rel in files), tmp_path, use_jedi=False)
+    uri = KnowledgeGraphBuilder()._make_uri
+    app, lib, other = (uri(f"{tmp_path}/{f}") for f in ("app.py", "lib.py", "other.py"))
+
+    def objects(p):
+        return {str(o).rsplit("/", 1)[-1] if isinstance(o, URIRef) else str(o) for o in graph.objects(app, p)}
+
+    # elif, else and class bodies run at import time; a TYPE_CHECKING block in a function is type-only
+    assert objects(CODE.importsFrom) == {"lib.py"}  # inside a module-level try
+    assert objects(CODE.importsExternal) == {"typing", "csv", "re", "enum"}
+    assert objects(CODE.importsTypeOnly) == {"other.py"}
+    assert objects(CODE.importsTypeOnlyExternal) == {"json", "collections", "decimal"}
+    assert objects(CODE.importsInFunction) == {"lib.py"}  # lib.py in two kinds: once in each
+    assert objects(CODE.importsInFunctionExternal) == {"os", "string", "fractions"}
+    assert {(app, CODE.importsFrom, lib), (app, CODE.importsInFunction, lib), (app, CODE.importsTypeOnly, other)} <= set(graph)
+    assert not any(run_checks(graph).values())
+    deps = SPARQLEngine(graph=graph).dependencies_of(f"{tmp_path}/app.py")
+    assert deps.dependencies == sorted([
+        f"{tmp_path}/lib.py", f"{tmp_path}/other.py", "typing", "csv", "re", "enum", "json", "collections", "decimal",
+        "os", "string", "fractions"])  # every kind
+    # lib.py is imported at module level too, so it has no kinds
+    assert deps.kinds == {f"{tmp_path}/other.py": ["type-only"], "json": ["type-only"], "collections": ["type-only"],
+                          "decimal": ["type-only"], "os": ["in-function"], "string": ["in-function"], "fractions": ["in-function"]}
+
+
+def test_main_block_imports(tmp_path):
+    files = {
+        "lib.py": "def f():\n    pass\n",
+        "app.py": (
+            'if __name__ == "__main__":\n'
+            "    import lib\n"
+            "    import argparse\n"
+            "\n"
+            "    def cli():\n"
+            "        import pdb\n"
+            "\n"
+            "    if TYPE_CHECKING:\n"
+            "        import decimal\n"
+            "\n"
+            "if '__main__' == __name__:\n"
+            "    import glob\n"
+            "else:\n"
+            "    import shutil\n"
+            "\n"
+            "\n"
+            "def run():\n"
+            '    if __name__ == "__main__":\n'
+            "        import timeit\n"
+        ),
+    }
+    for rel, code in files.items():
+        (tmp_path / rel).write_text(code)
+    graph = build_graph(sorted(tmp_path / rel for rel in files), tmp_path, use_jedi=False)
+    app = KnowledgeGraphBuilder()._make_uri(f"{tmp_path}/app.py")
+
+    def objects(p):
+        return {str(o).rsplit("/", 1)[-1] if isinstance(o, URIRef) else str(o) for o in graph.objects(app, p)}
+
+    # both operand orders and quote styles; a function in the block is in it too; else runs as usual;
+    # only a module-level guard counts, so one in a function is an in-function import; the innermost block decides
+    assert objects(CODE.importsInMainBlock) == {"lib.py"}
+    assert objects(CODE.importsInMainBlockExternal) == {"argparse", "pdb", "glob"}
+    assert objects(CODE.importsExternal) == {"shutil"}
+    assert objects(CODE.importsInFunctionExternal) == {"timeit"}
+    assert objects(CODE.importsTypeOnlyExternal) == {"decimal"}
+    assert objects(CODE.importsFrom) == set()
+    assert SPARQLEngine(graph=graph).dependencies_of(f"{tmp_path}/app.py").kinds[f"{tmp_path}/lib.py"] == ["main-block"]
+    assert not any(run_checks(graph).values())
+
+
 def test_imports_in_own_source_reach_typed_files():
     src = Path(__file__).resolve().parents[1] / "src"
     graph = build_graph(sorted(src.rglob("*.py")), src, use_jedi=False)

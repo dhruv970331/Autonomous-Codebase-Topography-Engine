@@ -12,8 +12,10 @@ SRC = Path(__file__).parent.parent / "src" / "acte"
 
 # One file per CallSite shape: resolved, ambiguous with candidates, external with
 # reason, recursive, instantiates (an __init__ found, and one behind an outside base), and a
-# receiver; and a class inheriting a project class.
+# receiver; and a class inheriting a project class. kinds.py has the import kinds ACTE's own src lacks.
 PROJECT = {
+    "kinds.py": "if TYPE_CHECKING:\n    import app\n    import json\n\ndef load():\n    import csv\n\n"
+                "if __name__ == '__main__':\n    import app\n    import pprint\n",
     "x/util.py": "def build():\n    pass\n",
     "y/util.py": "def build():\n    pass\n",
     "app.py": (

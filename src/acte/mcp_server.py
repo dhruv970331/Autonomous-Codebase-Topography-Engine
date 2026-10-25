@@ -75,6 +75,11 @@ def _count(n: int, one: str, many: str) -> str:
     return f"{n} {one if n == 1 else many}"
 
 
+def _kinds(kinds: list[str]) -> str:
+    """The label of an import that is only of *kinds*: ``["in-function"]`` as " (in function)"; "" for none."""
+    return f" ({', '.join(k.replace('-', ' ') for k in kinds)})" if kinds else ""
+
+
 def _calls(reasons: dict[str, int], words: dict[str, str] = _REASONS) -> str:
     """``{"local": 2}`` as "2 calls through local variables"."""
     return ", ".join(f"{n} call{'' if n == 1 else 's'} {words.get(r, r)}" for r, n in reasons.items() if n)
@@ -280,9 +285,10 @@ def create_server(graph_path: str | Path, project: str | Path | None = None, pro
             if answer:
                 return answer
             files = set(engine.files())
-            deps = engine.dependencies_of(path)
-        project = [d for d in deps if d in files]
-        outside = [d for d in deps if d not in files]
+            answer = engine.dependencies_of(path)
+        deps, kinds = answer.dependencies, answer.kinds
+        project = [d + _kinds(kinds.get(d, [])) for d in deps if d in files]
+        outside = [d + _kinds(kinds.get(d, [])) for d in deps if d not in files]
         headline = (f"dependencies_of {path}: {_count(len(project), 'project file', 'project files')}, "
                     f"{_count(len(outside), 'outside module', 'outside modules')}")
         return _text(headline, [("Project files:", project), ("Outside modules:", outside)])

@@ -274,6 +274,21 @@ def test_full_profile_tools(serve, tool, arguments, expected):
     assert _call(serve(CALLS, profile="full"), tool, **arguments) == "\n".join(expected)
 
 
+def test_dependencies_of_labels_imports_not_at_module_level(serve):
+    files = {
+        "a.py": "",
+        "lib.py": "",
+        "app.py": ("import lib\nfrom typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    import a\n    import json\n\n\n"
+                   "def f():\n    import a\n    import csv\n    import lib\n\n\nif __name__ == '__main__':\n    import argparse\n"),
+    }
+    expected = [
+        "dependencies_of app.py: 2 project files, 4 outside modules",
+        "Project files:", "a.py (type only, in function)", "lib.py",
+        "Outside modules:", "argparse (main block)", "csv (in function)", "json (type only)", "typing",
+    ]
+    assert _call(serve(files, profile="full"), "dependencies_of", path="app.py") == "\n".join(expected)
+
+
 def test_graph_info(serve):
     lines = _call(serve(CALLS, profile="full"), "graph_info").splitlines()
     assert lines[0].startswith("graph_info: proj")

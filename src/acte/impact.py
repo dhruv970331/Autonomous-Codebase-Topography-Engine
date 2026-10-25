@@ -12,15 +12,16 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from rdflib import Graph
+from rdflib import Graph, URIRef
 from rdflib.namespace import RDF
 
 from acte.cli import _git, build
-from acte.mcp_server import _calls, _count, _head, stale_warning
+from acte.mcp_server import _calls, _count, _head, _kinds, stale_warning
 from acte.rdf_builder import CODE
-from acte.sparql_engine import BlastAnswer, SPARQLEngine
+from acte.sparql_engine import IMPORT_KINDS, KIND_ORDER, BlastAnswer, SPARQLEngine
 
 _HUNK = re.compile(r"^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+_IMPORTS = {URIRef(p): kind for p, kind in IMPORT_KINDS.items() if not p.endswith("External")}  # of a project file, by kind
 _HEADER = ("def ", "async def ", "class ", "@")  # a removed Python line starting so began a definition
 
 
@@ -39,6 +40,7 @@ class ModuleChange:
     file_path: str
     importers: list[str]  # project files that import it, sorted, cut at the limit
     total: int            # importers before the cut
+    importer_kinds: dict[str, list[str]]  # a listed importer with no module-level import of it: its kinds, in KIND_ORDER
 
 
 @dataclass
@@ -156,9 +158,15 @@ def impact(root: Path, graph: Graph, new: dict[str, set[int]], deleted: dict[str
                                dataclasses.replace(a, affected=a.affected[:limit], truncated=a.total > limit)))
     modules = []
     for f in sorted(module_files):
-        importers = sorted(str(graph.value(s, CODE.filePath)) for s in graph.subjects(CODE.importsFrom, _file(graph, f)))
+        kinds: dict[str, set[str]] = {}
+        for p, kind in _IMPORTS.items():
+            for s in graph.subjects(p, _file(graph, f)):
+                kinds.setdefault(str(graph.value(s, CODE.filePath)), set()).add(kind)
+        importers = sorted(kinds)
         seen |= set(importers)
-        modules.append(ModuleChange(f, importers[:limit], len(importers)))
+        listed = importers[:limit]
+        modules.append(ModuleChange(f, listed, len(importers),
+                                    {i: [k for k in KIND_ORDER if k in kinds[i]] for i in listed if "module" not in kinds[i]}))
     return Report(base, results, modules, len(seen - set(hit) - module_files), "lower-bound" if lower else "exact")
 
 
@@ -188,7 +196,7 @@ def text(report: Report) -> str:
             lines.append(f"  Showing {len(a.affected)} of {a.total}.")
     for m in report.modules:
         lines.append(f"module-level {m.file_path}: imported by {_count(m.total, 'project file', 'project files')}")
-        lines += [f"    {f}" for f in m.importers]
+        lines += [f"    {f}{_kinds(m.importer_kinds.get(f, []))}" for f in m.importers]
         if len(m.importers) < m.total:
             lines.append(f"  Showing {len(m.importers)} of {m.total}.")
     return "\n".join(lines)
