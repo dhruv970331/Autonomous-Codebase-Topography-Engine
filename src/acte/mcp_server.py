@@ -317,6 +317,8 @@ def create_server(graph_path: str | Path, project: str | Path | None = None, pro
             + (f" with jedi {jedi}" if jedi else " without jedi"),
             f"Size: {counts['File']} files, {counts['Function']} functions, {counts['Class']} classes, {cov['total']} calls",
             f"Coverage: {rate} of calls resolved (calls to outside code not counted)",
+            *([f"Calls in languages without call resolution: {cov['no_resolver']} (not counted in coverage or status)"]
+              if cov["no_resolver"] else []),
             f"Status: {', '.join(f'{n} {k}' for k, n in cov['status'].items()) or 'no calls'}",
             f"Resolved: {_calls(cov['tier'], _TIERS) or 'none'}",
             f"Not resolved to project code: {_calls(cov['reason']) or 'none'}",

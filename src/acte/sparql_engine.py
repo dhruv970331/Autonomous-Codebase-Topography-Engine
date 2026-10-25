@@ -300,20 +300,23 @@ ORDER BY ?path
 
     def coverage(self) -> dict:
         """Counts per status, tier (resolved only), reason and edge kind, plus total and
-        rate = resolved / (total - external): ``Resolution.report()`` from the graph alone,
+        rate = resolved / (calls - external): ``Resolution.report()`` from the graph alone,
         without the jedi fields only the resolver knows. A call's edge kind is the type
-        of its target, so a recursive call counts too, as in ``report()``."""
+        of its target, so a recursive call counts too, as in ``report()``. Only calls in
+        languages with call resolution are measured; no_resolver counts the others, total all."""
         q = _PREFIXES + """
-SELECT ?site ?status ?tier ?reason ?kind WHERE {
+SELECT ?site ?status ?tier ?reason ?kind ?path WHERE {
     ?site a code:CallSite ;
           code:status ?status .
     OPTIONAL { ?site code:tier ?tier }
     OPTIONAL { ?site code:reason ?reason }
     OPTIONAL { ?site code:resolvedTo/a ?kind }
+    OPTIONAL { ?site code:inFunction/code:filePath ?path }
 }
 """
         edges = {f"{_CODE_NS}Function": "calls", f"{_CODE_NS}Class": "instantiates"}
-        rows = list(self.graph.query(q))
+        everything = list(self.graph.query(q))
+        rows = [r for r in everything if str(r.path).endswith(".py")]  # as the resolver: only Python is resolved
 
         def count(values):
             return dict(sorted(Counter(str(v) for v in values if v is not None).items()))
@@ -321,11 +324,12 @@ SELECT ?site ?status ?tier ?reason ?kind WHERE {
         measured = len(rows) - status.get("external", 0)
         return {
             "edge": count(edges.get(str(r.kind)) for r in rows),
+            "no_resolver": len(everything) - len(rows),
             "rate": status.get("resolved", 0) / measured if measured else None,
             "reason": count(r.reason for r in rows),
             "status": status,
             "tier": count(r.tier for r in rows),
-            "total": len(rows),
+            "total": len(everything),
         }
 
     def execute_raw_sparql(self, query: str) -> list[dict[str, Any]]:

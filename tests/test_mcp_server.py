@@ -290,6 +290,17 @@ def test_graph_info(serve):
     ]
 
 
+def test_graph_info_counts_other_languages_apart(serve):
+    lines = _call(serve(CALLS | {"svc/main.go": "package main\n\nfunc main() {\n\tfmt.Println(run())\n}\n"},
+                        profile="full"), "graph_info").splitlines()
+    assert lines[1:4] == [
+        "Size: 7 files, 9 functions, 2 classes, 13 calls",
+        "Coverage: 50.0% of calls resolved (calls to outside code not counted)",
+        "Calls in languages without call resolution: 2 (not counted in coverage or status)",
+    ]
+    assert lines[4:] == _call(serve(CALLS, profile="full"), "graph_info").splitlines()[3:]
+
+
 CALLS_EACH_TOOL = [("find_symbol", {"name": "connect"}), ("callers_of", {"name": "zz"}), ("callees_of", {"name": "run"}),
                    ("blast_radius", {"name": "helper"}), ("functions_in_file", {"path": "db.py"}),
                    ("dependencies_of", {"path": "app.py"}), ("orphan_functions", {}), ("graph_info", {})]

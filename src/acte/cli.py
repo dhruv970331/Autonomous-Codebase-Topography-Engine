@@ -91,6 +91,8 @@ def _summary(graph: Graph) -> tuple[dict, dict[str, list[dict]]]:
     counts, cov = _counts(graph)
     for label, key in (("files parsed", "files"), ("functions", "functions"), ("classes", "classes"), ("call sites", "call_sites")):
         print(f"{label}: {counts[key]}")
+    if cov["no_resolver"]:
+        print(f"call sites in languages without call resolution: {cov['no_resolver']}")
     rate = cov["rate"]
     print(f"coverage: {'n/a' if rate is None else f'{rate:.1%}'}")
     return cov, run_checks(graph)

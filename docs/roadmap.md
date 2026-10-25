@@ -34,8 +34,8 @@ Measured results are in the README.
 
 ## Next
 
-- [ ] Other languages. Call resolution for Java, JavaScript and TypeScript, which now
-      extract structure only, and grammar rules for Go and TSX.
+- [ ] Other languages. Call resolution for Java, JavaScript, TypeScript, TSX and Go, which
+      now extract structure only.
 
 - [ ] Change impact from a git diff. Map a diff to the definitions it touches and report
       their blast radius, for review and CI.

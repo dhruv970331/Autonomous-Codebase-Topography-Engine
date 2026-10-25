@@ -1,4 +1,6 @@
 
+from pathlib import Path
+
 import pytest
 
 from acte.parser import CodeParser
@@ -685,3 +687,209 @@ def test_decorator_line_python_only(parser, tmp_path):
     p = tmp_path / "a.ts"
     p.write_text("@Component\nclass A {\n  @Input()\n  m() {}\n}\n")
     assert all(n.decorator_line is None for n in parser.parse_file(p).nodes)
+
+
+TSX_APP = """\
+import React, { useState } from "react";
+import type { Props } from './types';
+import * as utils from "../utils";
+import "./styles.css";
+
+interface ButtonProps {
+  label: string;
+}
+
+export function Button({ label }: ButtonProps) {
+  const [n, setN] = useState(0);
+  return <button>{label}</button>;
+}
+
+class Counter extends React.Component<Props> {
+  render() {
+    return <Button label={String(this.count)} />;
+  }
+}
+
+export default function App() {
+  return (
+    <main>
+      <Counter />
+    </main>
+  );
+}
+"""
+
+
+def _structure(result):
+    """(kind, id, first line, last line) of each Class and Function, and every edge."""
+    defs = [(n.kind, n.qualified_id, n.line_start, n.line_end) for n in result.nodes if n.kind != "File"]
+    edges = [(e.kind, e.source, e.target, e.line) for e in result.edges]
+    return defs, edges
+
+
+def test_tsx_structure_and_imports(parser, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    Path("app.tsx").write_text(TSX_APP)
+    result = parser.parse_file(Path("app.tsx"))
+
+    assert (result.nodes[0].kind, result.nodes[0].language) == ("File", "tsx")
+    defs, edges = _structure(result)
+    assert defs == [
+        ("Function", "app.tsx::Button", 10, 13),
+        ("Class", "app.tsx::Counter", 15, 19),
+        ("Function", "app.tsx::Counter.render", 16, 18),
+        ("Function", "app.tsx::App", 21, 27),
+    ]
+    assert edges == [
+        ("IMPORTS_FROM", "app.tsx", "react", 1),
+        ("IMPORTS_FROM", "app.tsx", "./types", 2),
+        ("IMPORTS_FROM", "app.tsx", "../utils", 3),
+        ("IMPORTS_FROM", "app.tsx", "./styles.css", 4),
+        ("CONTAINS", "app.tsx", "app.tsx::Button", 10),
+        ("CONTAINS", "app.tsx", "app.tsx::Counter", 15),
+        ("CONTAINS", "app.tsx::Counter", "app.tsx::Counter.render", 16),
+        ("CONTAINS", "app.tsx", "app.tsx::App", 21),
+    ]
+    assert [(c.caller_id, c.target_name, c.receiver) for c in result.call_sites] == [
+        ("app.tsx::Button", "useState", None), ("app.tsx::Counter.render", "String", None),
+    ]
+
+
+FUNCTION_VALUES = """\
+const Card = (props) => {
+  return format(props);
+};
+let load = function () {
+  items.forEach((x) => save(x));
+  const helper = async () => fetch();
+};
+[1].map(y => track(y));
+const { a } = () => pick();
+const handlers = { click: () => onClick() };
+"""
+
+
+@pytest.mark.parametrize("suffix", [".js", ".ts", ".tsx"])
+def test_function_values_and_their_calls(parser, tmp_path, monkeypatch, suffix):
+    monkeypatch.chdir(tmp_path)
+    f = f"f{suffix}"
+    Path(f).write_text(FUNCTION_VALUES)
+    defs, edges = _structure(parser.parse_file(Path(f)))
+
+    # a function value named by a plain variable is a Function; a parameter (`y => ...`) never names one
+    assert defs == [
+        ("Function", f"{f}::Card", 1, 3),
+        ("Function", f"{f}::load", 4, 7),
+        ("Function", f"{f}::load.<locals>.helper", 6, 6),
+    ]
+    assert edges == [
+        ("CONTAINS", f, f"{f}::Card", 1),
+        ("CONTAINS", f, f"{f}::load", 4),
+        ("CONTAINS", f"{f}::load", f"{f}::load.<locals>.helper", 6),
+    ]
+    # calls inside any other function value count for the enclosing function, or the File
+    assert [(c.caller_id, c.target_name) for c in parser.parse_file(Path(f)).call_sites] == [
+        (f"{f}::Card", "format"),
+        (f"{f}::load", "forEach"), (f"{f}::load", "save"), (f"{f}::load.<locals>.helper", "fetch"),
+        (f, "map"), (f, "track"), (f, "pick"), (f, "onClick"),
+    ]
+
+
+GO_SHAPES = """\
+package shapes
+
+import "fmt"
+
+import (
+\t"math"
+\tstr "strings"
+)
+
+type Point struct {
+\tX, Y float64
+}
+
+type Shape interface {
+\tArea() float64
+}
+
+type Celsius float64
+
+func (p *Point) Scale(f float64) {
+\tp.X = p.X * math.Abs(f)
+}
+
+func (p Point) String() string {
+\treturn fmt.Sprintf("%v", str.TrimSpace("x"))
+}
+
+func (c Celsius) String() string {
+\treturn format(c)
+}
+
+func New(x float64) *Point {
+\treturn &Point{X: x}
+}
+
+type Alias = Point
+
+type Pair[T any] struct {
+\tA, B T
+}
+
+func (p *Pair[T]) Swap() {
+\tp.A, p.B = swap(p.B, p.A)
+}
+"""
+
+
+def test_go_structure_and_imports(parser, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    Path("shapes.go").write_text(GO_SHAPES)
+    Path("area.go").write_text("package shapes\n\nfunc (p Point) Area() float64 {\n\treturn 0\n}\n\n"
+                               "func (p ((*Point))) Draw() {\n\tdraw(p)\n}\n")
+    result = parser.parse_file(Path("shapes.go"))
+
+    assert (result.nodes[0].kind, result.nodes[0].language) == ("File", "go")
+    defs, edges = _structure(result)
+    # every named type is a Class, `type Celsius float64` too; the alias `type Alias = Point` is not
+    assert defs == [
+        ("Class", "shapes.go::Point", 10, 12),
+        ("Class", "shapes.go::Shape", 14, 16),
+        ("Class", "shapes.go::Celsius", 18, 18),
+        ("Function", "shapes.go::Point.Scale", 20, 22),
+        ("Function", "shapes.go::Point.String", 24, 26),
+        ("Function", "shapes.go::Celsius.String", 28, 30),
+        ("Function", "shapes.go::New", 32, 34),
+        ("Class", "shapes.go::Pair", 38, 40),
+        ("Function", "shapes.go::Pair.Swap", 42, 44),
+    ]
+    assert edges == [
+        ("IMPORTS_FROM", "shapes.go", "fmt", 3),
+        ("IMPORTS_FROM", "shapes.go", "math", 6),
+        ("IMPORTS_FROM", "shapes.go", "strings", 7),
+        ("CONTAINS", "shapes.go", "shapes.go::Point", 10),
+        ("CONTAINS", "shapes.go", "shapes.go::Shape", 14),
+        ("CONTAINS", "shapes.go", "shapes.go::Celsius", 18),
+        ("CONTAINS", "shapes.go", "shapes.go::Point.Scale", 20),
+        ("CONTAINS", "shapes.go", "shapes.go::Point.String", 24),
+        ("CONTAINS", "shapes.go", "shapes.go::Celsius.String", 28),
+        ("CONTAINS", "shapes.go", "shapes.go::New", 32),
+        ("CONTAINS", "shapes.go", "shapes.go::Pair", 38),
+        ("CONTAINS", "shapes.go", "shapes.go::Pair.Swap", 42),
+    ]
+    assert [(c.caller_id, c.target_name, c.receiver, c.line) for c in result.call_sites] == [
+        ("shapes.go::Point.Scale", "Abs", "math", 21),
+        ("shapes.go::Point.String", "Sprintf", "fmt", 25),
+        ("shapes.go::Point.String", "TrimSpace", "str", 25),
+        ("shapes.go::Celsius.String", "format", None, 29),
+        ("shapes.go::Pair.Swap", "swap", None, 43),  # a generic receiver loses its type arguments
+    ]
+
+    # a method on a type declared in another file of the package is contained by its own File
+    # a parenthesized receiver type is unwrapped: `((*Point))` is `Point`
+    area = parser.parse_file(Path("area.go"))
+    defs, edges = _structure(area)
+    assert defs == [("Function", "area.go::Point.Area", 3, 5), ("Function", "area.go::Point.Draw", 7, 9)]
+    assert edges == [("CONTAINS", "area.go", "area.go::Point.Area", 3), ("CONTAINS", "area.go", "area.go::Point.Draw", 7)]
+    assert [(c.caller_id, c.target_name) for c in area.call_sites] == [("area.go::Point.Draw", "draw")]

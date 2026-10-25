@@ -5,6 +5,7 @@ from rdflib import Literal, URIRef
 from rdflib.compare import isomorphic
 from rdflib.namespace import RDF, XSD
 
+from acte.health import run_checks
 from acte.parser import CodeParser, EdgeInfo, NodeInfo
 from acte.rdf_builder import CODE, KnowledgeGraphBuilder, build_graph
 from acte.sparql_engine import SPARQLEngine
@@ -282,3 +283,33 @@ def test_decorator_line_only_when_decorated(tmp_path):
     f, plain = (URIRef(CODE[f"{tmp_path}/a.py::{n}"]) for n in ("f", "g"))
     assert (g.value(f, CODE.lineStart), g.value(f, CODE.decoratorLine)) == (Literal(2, datatype=XSD.integer), Literal(1, datatype=XSD.integer))
     assert g.value(plain, CODE.decoratorLine) is None
+
+def test_go_and_tsx_give_structure_and_unresolved_calls(tmp_path):
+    files = {
+        "shapes.go": "package shapes\n\nimport \"fmt\"\n\ntype Point struct{}\n\n"
+                     "func (p *Point) String() string {\n\treturn fmt.Sprint(New())\n}\n\nfunc New() *Point {\n\treturn nil\n}\n",
+        "app.tsx": "import { x } from './lib';\n\nexport function App() {\n  return <div>{helper()}</div>;\n}\n\n"
+                   "function helper() {\n  return 1;\n}\n",
+        "main.py": "def New():\n    pass\n\nNew()\n",
+    }
+    for rel, code in files.items():
+        (tmp_path / rel).write_text(code)
+    graph = build_graph(sorted(tmp_path / rel for rel in files), tmp_path, use_jedi=False)
+    uri = KnowledgeGraphBuilder()._make_uri
+    go, tsx, py = (uri(f"{tmp_path}/{f}") for f in ("shapes.go", "app.tsx", "main.py"))
+
+    assert set(graph.objects(go, CODE.contains)) == {uri(f"{tmp_path}/shapes.go::{n}") for n in ("Point", "Point.String", "New")}
+    assert set(graph.objects(tsx, CODE.contains)) == {uri(f"{tmp_path}/app.tsx::{n}") for n in ("App", "helper")}
+    assert (uri(f"{tmp_path}/shapes.go::Point"), RDF.type, CODE.Class) in graph
+    assert (uri(f"{tmp_path}/shapes.go::Point.String"), RDF.type, CODE.Function) in graph
+    # only Python imports are kept in the graph, as for TypeScript
+    assert not {o for f in (go, tsx) for p in (CODE.importsFrom, CODE.importsExternal) for o in graph.objects(f, p)}
+
+    status = {
+        (str(graph.value(s, CODE.targetName)), str(graph.value(s, CODE.status)), str(graph.value(s, CODE.reason)))
+        for s in graph.subjects(RDF.type, CODE.CallSite) if "main.py" not in str(graph.value(s, CODE.inFunction))
+    }
+    assert status == {("Sprint", "unresolved", "unknown-receiver"), ("New", "unresolved", "no-match"), ("helper", "unresolved", "no-match")}
+    # the Python call resolves to the Python New, never to the Go one
+    assert set(graph.subject_objects(CODE.calls)) == {(py, uri(f"{tmp_path}/main.py::New"))}
+    assert all(rows == [] for rows in run_checks(graph).values())

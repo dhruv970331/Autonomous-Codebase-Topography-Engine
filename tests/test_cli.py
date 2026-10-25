@@ -90,6 +90,28 @@ def test_plain_dir_without_jedi(tmp_path, capsys):
     assert out[1:] == [*SUMMARY, "coverage: 66.7%", "health: ok"]
 
 
+def test_calls_in_other_languages_are_counted_apart(tmp_path, capsys):
+    root = tmp_path / "proj"
+    _write(root, PROJECT | {"svc/main.go": "package main\n\nfunc main() {\n\tfmt.Println(run())\n}\n",
+                            "web/app.tsx": "export const App = () => <div>{load()}</div>;\n"})
+
+    _, out = _build(capsys, root, tmp_path / "g.ttl", "--no-jedi")
+
+    # the Python numbers are those of PROJECT alone; the Go and TSX calls are counted apart
+    assert out[1:] == ["files parsed: 5", "functions: 5", "classes: 1", "call sites: 6",
+                       "call sites in languages without call resolution: 3", "coverage: 66.7%", "health: ok"]
+    # and `stats` gives the breakdown of the same Python project built alone
+    _write(tmp_path / "py", PROJECT)
+    _build(capsys, tmp_path / "py", tmp_path / "py.ttl", "--no-jedi")
+    stats = {}
+    for name in ("g", "py"):
+        assert main(["stats", str(tmp_path / f"{name}.ttl")]) == 0
+        lines = capsys.readouterr().out.splitlines()
+        stats[name] = lines[lines.index("coverage: 66.7%"):]
+    assert stats["g"] == stats["py"]
+    assert stats["g"][1].startswith("status: resolved")
+
+
 def test_failing_health_check_exits_1(tmp_path, monkeypatch, capsys):
     _write(tmp_path / "proj", PROJECT)
     monkeypatch.setattr("acte.cli.run_checks", lambda graph: {"self-call-arrows": [{"s": "x"}], "callsite-status": []})
@@ -147,7 +169,7 @@ def test_stats_as_json(tmp_path, capsys):
     assert stats == {
         "build": {"root": "proj", "acteVersion": version("acte")},
         "files": 3, "functions": 3, "classes": 1, "call_sites": 3,
-        "coverage": {"edge": {"calls": 1, "instantiates": 1}, "rate": 2 / 3, "reason": {"unknown-receiver": 1},
+        "coverage": {"edge": {"calls": 1, "instantiates": 1}, "no_resolver": 0, "rate": 2 / 3, "reason": {"unknown-receiver": 1},
                      "status": {"resolved": 2, "unresolved": 1}, "tier": {"T2": 1, "T3": 1}, "total": 3},
         "health": "ok", "failing": {},
     }

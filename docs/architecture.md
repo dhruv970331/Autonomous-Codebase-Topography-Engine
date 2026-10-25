@@ -225,7 +225,13 @@ src/app.py::AuthManager.login         a method
 src/app.py::main                      a module-level function
 src/app.py::outer.<locals>.helper     a function defined inside outer
 src/app.py::main@L12c8                a call site in main
+shapes/point.go::Point.Scale          a Go method on Point or *Point
 ```
+
+A Go method is scoped by its receiver type, without the pointer `*` or type arguments
+(`Pair` for `*Pair[T]`). Its File contains it, since the type may be declared in another
+file of the package. Every Go named type is a Class, such as `type Point struct` or
+`type UUID [16]byte`. A type alias (`type A = B`) is not.
 
 A call site's id is its caller's id plus line and column. The column is counted in UTF-8
 bytes, as tree-sitter and Python's `ast` count it.
@@ -256,5 +262,7 @@ that depend on such gaps are marked `lower-bound`.
 ### Coverage is measured
 
 Every call site is stored with its status, so the share of resolved calls is a number. It is
-shown on every build and checked by the tests. Call links are also checked against PyCG's
+shown on every build and checked by the tests. Only calls in Python files count towards it,
+since Python is the only language with call resolution. Calls in other languages are
+counted apart. Call links are also checked against PyCG's
 benchmark (`tests/test_pycg.py`), where no wrong link is allowed.

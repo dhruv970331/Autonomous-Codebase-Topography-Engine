@@ -42,7 +42,7 @@ is still young.
 
 | Part | State |
 |---|---|
-| Parsing | Python. Java, JavaScript and TypeScript give structure only |
+| Parsing | Python. Java, JavaScript, TypeScript, TSX and Go give structure only |
 | RDF graph and Turtle output | Working |
 | Call resolution | Python only (see Limitations) |
 | Command line (`acte build`, `acte stats`, `acte serve`) | Working |
@@ -89,6 +89,8 @@ git tracks, so anything in `.gitignore` is left out. Outside git it skips folder
 example `shop/db.py::Database.connect`, so moving the project does not change the graph.
 Use `--no-jedi` to skip the jedi step. When it finishes, it prints the number of files,
 functions, classes and calls, how many calls it resolved, and the health check results.
+Calls in languages without call resolution, such as Go, are counted on a line of their
+own and left out of the coverage.
 
 `acte stats GRAPH` prints the same summary for a saved graph. It also shows how the graph was
 built (folder name, git commit, versions), and the first problem rows for any failed health
@@ -198,9 +200,13 @@ so this is a quick sanity check and too small to count as a benchmark.
 
 ## Limitations
 
-- Call resolution only works for Python. Java, JavaScript and TypeScript files get their
-  structure but no call links. Go and TSX files are recognised but have no parsing rules
-  yet, so they only produce a file entry.
+- Call resolution only works for Python. Java, JavaScript, TypeScript, TSX and Go files get
+  their structure but no call links. Their imports are read but not yet kept in the graph.
+  In JavaScript, TypeScript and TSX, a function stored in a variable (`const f = () => ...`)
+  is read as a function named `f`. Other function values, such as callbacks, are not
+  functions of their own: their calls count for the function around them. The same goes
+  for functions defined inside them, so two such functions with the same name in one file
+  can share an id.
 - Some calls stay unresolved. ACTE only links a call when it is sure of the target. If a
   call could go to more than one place, it is stored as ambiguous. `callers_of` and
   `blast_radius` then mark their answer as `lower-bound`, meaning there may be more callers.
