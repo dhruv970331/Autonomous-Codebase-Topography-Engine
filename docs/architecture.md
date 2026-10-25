@@ -30,7 +30,8 @@ Output is a `ParseResult` per file:
 - `NodeInfo`: kind, name, file, line span, language, enclosing scope; for a Python class, its
   bases as written (`Base`, `mod.Base`, `Generic` for `Generic[T]`; keyword arguments such as
   `metaclass=` are not bases, and any other expression is marked unknown)
-- `EdgeInfo`: kind, source, target, file, line
+- `EdgeInfo`: kind, source, target, file, line; for a Python import also its kind, in
+  `extra["import_kind"]`
 - `CallSite`: the caller, the called name, its receiver (`db` in `db.save()`), line, column
 - `ImportBinding`, `LocalBinding`: what each scope imports and binds, for the resolver
 
@@ -118,6 +119,9 @@ Nodes, edges and resolved calls become RDF triples in the namespace
 |---|---|
 | CONTAINS | `code:contains` |
 | IMPORTS_FROM | `code:importsFrom` the imported project File, or `code:importsExternal` its module name |
+| IMPORTS_FROM, type-only | `code:importsTypeOnly` the File, or `code:importsTypeOnlyExternal` the module name |
+| IMPORTS_FROM, in a function | `code:importsInFunction` the File, or `code:importsInFunctionExternal` the module name |
+| IMPORTS_FROM, main block | `code:importsInMainBlock` the File, or `code:importsInMainBlockExternal` the module name |
 | class bases | `code:inherits` the base Class, for project bases only |
 
 An import is looked up like a call's module (relative imports included). One project file
@@ -125,6 +129,24 @@ gives a `code:importsFrom` arrow to that File node. No project file gives a
 `code:importsExternal` string, the module as written (`"os.path"`), unless the import is
 relative: a relative import is inside the project, so it records nothing. Several project
 files make it ambiguous, and nothing is recorded. Only Python imports are kept.
+
+Each Python import has one of four kinds, and each kind has its own pair of predicates.
+A `module` import runs when the file loads. It is at the top level, also inside a top-level
+`try`, a plain `if`, or a class body. A `type-only` import is in the first block of
+`if TYPE_CHECKING:` or `if typing.TYPE_CHECKING:`, at any depth. Only type checkers read it.
+A `main-block` import is in the first block of a module-level `if __name__ == "__main__":`.
+It runs only when the file is run as a script. The operands may come in either order, with
+either quote. In both cases the `elif` and `else` blocks keep their usual kind. An
+`in-function` import is anywhere inside a function or method body. It runs only when the
+function runs. The block decides before the function: a `TYPE_CHECKING` block inside a
+function is type-only, and a function inside a main block holds main-block imports. When
+blocks nest, the innermost one decides. Only these conditions are recognised, written exactly
+so. `if t.TYPE_CHECKING:` through an alias, `if TYPE_CHECKING and x:` and
+`if (TYPE_CHECKING):` give `module` imports. A file that imports the same target in two kinds
+gets one arrow of each. The kind does not change how the resolver uses an import: a
+function-local import still binds its name for the calls in that function. Import cycles
+(`acte analyze`) count only `module` imports, because the other three do not run when the
+module loads.
 
 Every node also carries `code:name`, `code:filePath`, `code:lineStart`, `code:lineEnd` and
 `code:language`. A decorated Python function or class also carries `code:decoratorLine`, the line of its

@@ -141,8 +141,9 @@ PageRank over the resolved calls. Each one comes with `file:line`, its score, an
 places call it directly. `--top` sets how many are shown (default 10).
 
 Second, import cycles: groups of files that import each other in a loop, largest first.
-Imports inside `if TYPE_CHECKING:` and inside functions count too, so a cycle may never
-happen when the code runs.
+Only imports that run when a file loads count. Imports inside `if TYPE_CHECKING:`, inside
+`if __name__ == "__main__":` and inside functions are left out, because they cannot make a
+loop at load time.
 
 Third, subsystems: groups of files that call and import each other a lot, found with the
 Louvain method. Each group is named after its hub, the file with the most links inside the
