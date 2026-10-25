@@ -1,5 +1,7 @@
 import json
+import os
 import subprocess
+import sys
 from importlib.metadata import version
 
 import pytest
@@ -194,3 +196,60 @@ def test_stats_on_a_missing_file(tmp_path, capsys):
         main(["stats", str(tmp_path / "missing.ttl")])
     assert exit_.value.code == 2
     assert f"acte: error: cannot read {tmp_path / 'missing.ttl'}" in capsys.readouterr().err
+
+
+# base() has three callers; core.py and util.py import each other; lone.py links to nothing.
+# Link weights: core.py 6 (app.py 3, util.py 3), app.py 5, util.py 5, so core.py is the hub.
+ANALYZE = {
+    "pkg/core.py": "import pkg.util\n\n\ndef base():\n    pass\n",
+    "pkg/util.py": "from pkg.core import base\n\n\ndef helper():\n    base()\n    base()\n",
+    "app.py": "from pkg.core import base\nfrom pkg.util import helper\n\n\ndef main():\n    base()\n    helper()\n\n\nbase()\n",
+    "lone.py": "def alone():\n    pass\n",
+}
+
+
+def _analyze(capsys, tmp_path, *flags):
+    _write(tmp_path / "proj", ANALYZE)
+    _build(capsys, tmp_path / "proj", tmp_path / "g.ttl", "--no-jedi")
+    assert main(["analyze", str(tmp_path / "g.ttl"), *flags]) == 0
+    return capsys.readouterr().out
+
+
+def test_analyze_text(tmp_path, capsys):
+    out = _analyze(capsys, tmp_path, "--top", "2").splitlines()
+    assert out[0] == "most depended on: top 2 of 4 functions and classes, by PageRank"
+    assert out[1].startswith("  1. pkg/core.py:4 base (score ") and out[1].endswith(", 3 direct callers)")  # app.py, main, helper
+    assert out[2].startswith("  2. pkg/util.py:4 helper (score ") and out[2].endswith(", 1 direct callers)")
+    assert out[3:5] == ["import cycles: 1", "  2 files: pkg/core.py, pkg/util.py"]
+    assert out[5:] == ["subsystems: 1", "  pkg/core.py: 3 files in .: pkg/core.py, app.py, pkg/util.py",
+                       "1 file with no links to other files"]
+
+
+def test_analyze_json(tmp_path, capsys):
+    data = json.loads(_analyze(capsys, tmp_path, "--format", "json"))
+    assert list(data) == ["rank", "import_cycles", "subsystems"]
+    assert data["rank"]["total"] == 4 and data["rank"]["converged"] is True
+    assert list(data["rank"]["top"][0]) == ["id", "file_path", "line", "score", "callers"]
+    assert data["rank"]["top"][0]["id"] == "pkg/core.py::base" and len(data["rank"]["top"]) == 4
+    assert data["import_cycles"] == [{"files": ["pkg/core.py", "pkg/util.py"]}]
+    assert data["subsystems"][-1] == {"hub": "lone.py", "folder": ".", "size": 1, "files": ["lone.py"]}  # listed, unlike text
+    assert all(list(s) == ["hub", "folder", "size", "files"] for s in data["subsystems"])
+
+
+def test_analyze_is_the_same_on_every_run(tmp_path, capsys):
+    _analyze(capsys, tmp_path)
+    run = "import sys; from acte.cli import main; sys.exit(main(sys.argv[1:]))"
+    for fmt in ("text", "json"):
+        # separate processes with different hash seeds, so set and dict order cannot leak into the output
+        outs = [subprocess.run([sys.executable, "-c", run, "analyze", str(tmp_path / "g.ttl"), "--format", fmt],
+                               check=True, capture_output=True, text=True, env=os.environ | {"PYTHONHASHSEED": seed}).stdout
+                for seed in ("1", "2")]
+        assert outs[0] == outs[1] and outs[0]
+
+
+@pytest.mark.parametrize("flags, error", [(["--format", "dot"], "invalid choice: 'dot'"), (["--top", "0"], "--top must be at least 1")])
+def test_analyze_bad_arguments(tmp_path, capsys, flags, error):
+    with pytest.raises(SystemExit) as exit_:
+        main(["analyze", str(tmp_path / "g.ttl"), *flags])
+    assert exit_.value.code == 2
+    assert error in capsys.readouterr().err

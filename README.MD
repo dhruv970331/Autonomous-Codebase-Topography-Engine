@@ -45,7 +45,7 @@ is still young.
 | Parsing | Python. Java, JavaScript, TypeScript, TSX and Go give structure only |
 | RDF graph and Turtle output | Working |
 | Call resolution | Python only (see Limitations) |
-| Command line (`acte build`, `acte stats`, `acte serve`) | Working |
+| Command line (`acte build`, `acte stats`, `acte serve`, `acte analyze`) | Working |
 | Checks on real projects | Working (rich, httpx, click, flask) |
 | MCP server | Working, tested with opencode and Claude Code |
 
@@ -126,6 +126,32 @@ git fails.
 It cannot see definitions that the change deleted, because they are not in the new graph.
 Deleting a whole top-level function shows up only as a change to its file. Check its old callers with
 `callers_of` on a graph built before the change.
+
+### Graph analysis
+
+```bash
+poetry run acte analyze graph.ttl [--top N] [--format text|json]
+```
+
+`acte analyze GRAPH` helps you find your way around a project you do not know yet. It reads
+a saved graph and prints three things.
+
+First, the functions and classes that the most code depends on. They are ranked with
+PageRank over the resolved calls. Each one comes with `file:line`, its score, and how many
+places call it directly. `--top` sets how many are shown (default 10).
+
+Second, import cycles: groups of files that import each other in a loop, largest first.
+Imports inside `if TYPE_CHECKING:` and inside functions count too, so a cycle may never
+happen when the code runs.
+
+Third, subsystems: groups of files that call and import each other a lot, found with the
+Louvain method. Each group is named after its hub, the file with the most links inside the
+group. Files with no links to other files are only counted.
+
+`--format json` prints the same results as one JSON object, for scripts. There the files
+with no links are listed as groups of one file. With the same installed versions, the
+output is the same on every run. Only resolved calls are used, so a function that is
+mostly reached through unresolved calls ranks lower than it should.
 
 ### MCP server
 
