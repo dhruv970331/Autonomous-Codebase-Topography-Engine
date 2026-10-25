@@ -30,15 +30,34 @@ exist.
       plain-text answers that say when they were cut short. Tested with opencode and
       Claude Code, and measured with a small model in `eval/`.
 
+- [x] Change impact from a git diff. `acte impact` maps a diff to the functions and classes
+      it touches, decorators, deletions and commented-out lines included, and lists their
+      callers. `--format json` for CI.
+
+- [x] Graph analysis. `acte analyze` ranks the most depended-upon functions with PageRank,
+      finds import cycles from imports that run at load time, and groups files into
+      subsystems.
+
+- [x] Go and TSX structure, and JS/TS function values. Go and TSX files give structure like
+      Java and TypeScript. Calls inside JS/TS arrow functions are kept, and
+      `const f = () => ...` is a function named `f`.
+
 Measured results are in the README.
 
 ## Next
 
+- [ ] Speed on large projects. `callers_of` takes about a minute per question on fastapi,
+      the health checks take about 8 minutes on django, and loading a saved django graph
+      takes about 95 seconds.
+
+- [ ] Calls ACTE misses today: attribute chains such as `loader.graph.leaf_nodes()`,
+      attributes set on `self` in another method, and two-argument `super(C, self)`.
+
+- [ ] Independent checks of accuracy: calls recorded while django's own tests run, the
+      PyCG and JARVIS hand-written answer keys, and repowise's published call-graph test.
+
 - [ ] Other languages. Call resolution for Java, JavaScript, TypeScript, TSX and Go, which
       now extract structure only.
-
-- [ ] Change impact from a git diff. Map a diff to the definitions it touches and report
-      their blast radius, for review and CI.
 
 - [ ] Faster store. rdflib in memory is fine to about 5,000 files; beyond that, load the
       Turtle output into a dedicated triplestore.
@@ -47,5 +66,4 @@ Measured results are in the README.
 
 ## Later
 
-- [x] Graph analysis. Centrality ranking for the most depended-upon functions, community
-      detection for subsystems, and cycle detection for circular dependencies.
+Nothing planned here yet.

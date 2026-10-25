@@ -130,23 +130,28 @@ gives a `code:importsFrom` arrow to that File node. No project file gives a
 relative: a relative import is inside the project, so it records nothing. Several project
 files make it ambiguous, and nothing is recorded. Only Python imports are kept.
 
-Each Python import has one of four kinds, and each kind has its own pair of predicates.
-A `module` import runs when the file loads. It is at the top level, also inside a top-level
-`try`, a plain `if`, or a class body. A `type-only` import is in the first block of
-`if TYPE_CHECKING:` or `if typing.TYPE_CHECKING:`, at any depth. Only type checkers read it.
-A `main-block` import is in the first block of a module-level `if __name__ == "__main__":`.
-It runs only when the file is run as a script. The operands may come in either order, with
-either quote. In both cases the `elif` and `else` blocks keep their usual kind. An
-`in-function` import is anywhere inside a function or method body. It runs only when the
-function runs. The block decides before the function: a `TYPE_CHECKING` block inside a
-function is type-only, and a function inside a main block holds main-block imports. When
-blocks nest, the innermost one decides. Only these conditions are recognised, written exactly
-so. `if t.TYPE_CHECKING:` through an alias, `if TYPE_CHECKING and x:` and
-`if (TYPE_CHECKING):` give `module` imports. A file that imports the same target in two kinds
-gets one arrow of each. The kind does not change how the resolver uses an import: a
-function-local import still binds its name for the calls in that function. Import cycles
-(`acte analyze`) count only `module` imports, because the other three do not run when the
-module loads.
+Each Python import has one of four kinds, and each kind has its own pair of predicates:
+
+| Kind | Where the import is | When it runs |
+|---|---|---|
+| `module` | top level, also inside a top-level `try`, a plain `if`, or a class body | when the file loads |
+| `type-only` | the first block of `if TYPE_CHECKING:` or `if typing.TYPE_CHECKING:`, at any depth | never; only type checkers read it |
+| `main-block` | the first block of a module-level `if __name__ == "__main__":` (either operand order, either quote) | only when the file is run as a script |
+| `in-function` | anywhere inside a function or method body | when the function runs |
+
+Rules for the edge cases:
+
+- `elif` and `else` blocks keep their usual kind.
+- The block decides before the function: a `TYPE_CHECKING` block inside a function is
+  type-only, and a function inside a main block holds main-block imports. When blocks nest,
+  the innermost one decides.
+- Only the conditions above are recognised, written exactly so. `if t.TYPE_CHECKING:` through
+  an alias, `if TYPE_CHECKING and x:` and `if (TYPE_CHECKING):` give `module` imports.
+- A file that imports the same target in two kinds gets one arrow of each.
+
+The kind does not change how the resolver uses an import: a function-local import still binds
+its name for the calls in that function. Import cycles (`acte analyze`) count only `module`
+imports, because only those run when the file loads.
 
 Every node also carries `code:name`, `code:filePath`, `code:lineStart`, `code:lineEnd` and
 `code:language`. A decorated Python function or class also carries `code:decoratorLine`, the line of its
@@ -234,6 +239,35 @@ Each tool takes a name or path and returns plain text built for a small model:
 - both of these are normal answers. Errors are only returned when something actually fails;
 - with `--project`, every answer warns when the project's git HEAD differs from the
   commit the graph was built from.
+
+### Built on the graph: `acte impact` and `acte analyze`
+
+`impact.py` answers "what may this change break?". It reads `git diff -U0` for the given base
+(default `HEAD`), builds a fresh graph of the work tree, and maps each changed line to the
+innermost Function or Class whose span holds it, starting the span at `code:decoratorLine`
+when there is one. Blank and comment-only lines are skipped. For a deletion in a Python file it reads the
+removed text: a removed `def`, `class` or decorator marks the definition around both
+neighbouring lines, and removed body code marks the definition just above. In other
+languages a deletion marks the definition around both neighbouring lines. A line in no
+definition is a module-level change of its file. Each changed definition gets a
+`blast_radius`; a module-level change lists the files that import the file, with their
+import kinds. Deleted definitions are not named, because they are not in the new graph.
+
+`analysis.py` reads a saved graph and computes three things, all deterministic for one set of
+installed versions:
+
+- Ranking: PageRank over `code:calls` and `code:instantiates` arrows, written in about ten
+  lines of plain Python with networkx's default settings. `nx.pagerank` needs numpy and
+  scipy; the maths takes 0.18 s on django's 45,100 definitions, so the extra install is not
+  worth it. A test checks our scores against networkx's pure-Python version.
+- Import cycles: strongly connected components of two or more files over `code:importsFrom`
+  (module-level imports only).
+- Subsystems: Louvain communities (`seed=0`) on an undirected file graph, where an edge's
+  weight is the number of resolved calls between two files plus 1 if either imports the
+  other. Calls inside one file add nothing. Each subsystem is named after its hub, the file
+  with the largest weighted degree inside it.
+
+Neither adds anything to the graph.
 
 ## Identifiers
 

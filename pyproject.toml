@@ -1,7 +1,7 @@
 [project]
 name = "acte"
 version = "0.1.0"
-description = "ACTE is an AI agent architecture using MCP that translates complex Python repositories into deterministic RDF Knowledge Graphs."
+description = "A deterministic code graph for agentic coding: maps a codebase's calls into RDF that AI agents query over MCP."
 authors = [
     {name = "Dhruvesh Malhotra",email = "dhruveshmalhotra186@gmail.com"}
 ]

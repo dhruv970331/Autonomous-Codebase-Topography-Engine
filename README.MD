@@ -28,12 +28,14 @@ sequenceDiagram
 
 | Layer | What it does |
 |---|---|
-| 1. Parse | tree-sitter reads each file and finds files, classes, functions and the links between them |
-| 2. Build | the results are stored as RDF triples and can be saved as Turtle (`.ttl`) |
-| 3. Query | a fixed set of SPARQL queries answers callers, callees, dependencies and dead code |
-| 4. Serve | an MCP server lets an LLM run those queries as tools |
+| 1. Parse | tree-sitter reads each file and finds its classes, functions, imports and calls |
+| 2. Resolve | for each Python call, works out which function it runs; calls it cannot decide are kept and marked |
+| 3. Build | the results are stored as RDF triples and can be saved as Turtle (`.ttl`) |
+| 4. Query | a fixed set of SPARQL queries answers callers, callees, dependencies and dead code |
+| 5. Serve | an MCP server lets an LLM run those queries as tools |
 
 The LLM picks a query and gives it a name to look up. It does not write SPARQL itself.
+`acte impact` and `acte analyze` work on the same graph from the command line.
 
 ## Status
 
@@ -45,8 +47,8 @@ is still young.
 | Parsing | Python. Java, JavaScript, TypeScript, TSX and Go give structure only |
 | RDF graph and Turtle output | Working |
 | Call resolution | Python only (see Limitations) |
-| Command line (`acte build`, `acte stats`, `acte serve`, `acte analyze`) | Working |
-| Checks on real projects | Working (rich, httpx, click, flask) |
+| Command line (`acte build`, `acte stats`, `acte impact`, `acte analyze`, `acte serve`) | Working |
+| Checks on real projects | Working (rich, httpx, click, flask, requests) |
 | MCP server | Working, tested with opencode and Claude Code |
 
 ## Quickstart
@@ -70,9 +72,10 @@ poetry install
 poetry run pytest -q
 ```
 
-To also test against pinned releases of rich, httpx, click and flask, run
+To also test against pinned releases of rich, httpx, click, flask and requests, run
 `ACTE_REAL_REPOS=1 poetry run pytest tests/test_real_repos.py -s`. This is off by default.
-It needs git and network access the first time, and takes a few minutes.
+It needs git and network access the first time, and takes about 45 minutes.
+`ACTE_REAL_REPOS=slow` also runs projects marked slow (none are, yet).
 
 ## Usage
 
@@ -105,29 +108,45 @@ poetry run acte impact src                  # your uncommitted changes
 poetry run acte impact src --base main      # everything since main
 ```
 
-`acte impact PATH` reads `git diff` in `PATH` and builds a fresh graph of the work tree.
-Each changed line belongs to the innermost function or class around it. A definition's
-decorators count as part of it. Blank lines and lines with only a comment are ignored, so
-commenting out a line counts as removing it. Removed code counts for the definition it was
-removed from. If a whole method was removed, its class counts as changed. For
-each changed definition it lists everything that calls it, grouped by distance (2 steps by
-default, set with `--depth`). A changed line outside any definition counts as a change to the
-whole file, and the command lists the project files that import it. An importer that imports
-it only inside a function, under `if TYPE_CHECKING:` or under `if __name__ == "__main__":` is
-marked so, for example `cli.py (in function)`. In JSON these are in `importer_kinds`. New files
-that git does not track yet count as fully added. `--no-jedi` skips the jedi step, which makes the build
-faster in CI.
+`acte impact PATH` reads `git diff` in `PATH`, builds a fresh graph of the work tree, and
+lists everything that calls the code you changed, grouped by distance (2 steps by default,
+set with `--depth`). For example, after editing one line of `_self_class` in ACTE's own
+resolver (output shortened):
 
-The first line sums it up: how many definitions changed, how many others are affected, and
-whether that count is `exact` or a `lower-bound`. `--limit` caps each list (default 50) and
-says how many were left out. `--format json` prints the same data as one JSON object, for
-scripts and CI. `--graph FILE` uses a saved graph instead of building one, and warns if it
-was built at another commit. The exit code is 2 when `PATH` is not in a git repository or
-git fails.
+```
+1 definition changed in 1 file; 3 others affected (lower-bound)
+modified acte/resolver.py::_self_class  acte/resolver.py:495: 3 affected
+  Distance 1:
+    acte/resolver.py::_resolve_receiver  acte/resolver.py:322
+    acte/resolver.py::_super_class  acte/resolver.py:485
+  Distance 2:
+    acte/resolver.py::_resolve_call  acte/resolver.py:292
+```
 
-It cannot see definitions that the change deleted, because they are not in the new graph.
-Deleting a whole top-level function shows up only as a change to its file. Check its old callers with
-`callers_of` on a graph built before the change.
+How changed lines are matched:
+
+- A changed line belongs to the innermost function or class around it. Decorators count as
+  part of the function or class below them.
+- Blank lines and lines with only a comment are ignored, so commenting out a line counts as
+  removing it.
+- Removed code counts for the function it was removed from. If a whole method was removed,
+  its class counts as changed.
+- A changed line outside any function counts as a change to the whole file. The command then
+  lists the project files that import it, marked when they import it only inside a function,
+  under `if TYPE_CHECKING:` or under `if __name__ == "__main__":` (for example
+  `cli.py (in function)`).
+- Files git does not track yet count as fully added.
+
+The first line says how many definitions changed, how many others are affected, and whether
+that count is `exact` or a `lower-bound`. `--limit` caps each list (default 50) and says how
+many were left out. `--format json` prints the same data as one JSON object, for scripts and
+CI. `--no-jedi` skips the jedi step, which is faster in CI. `--graph FILE` uses a saved graph
+instead of building one, and warns if it was built at another commit. The exit code is 2 when
+`PATH` is not in a git repository or git fails.
+
+It cannot name a function the change deleted, because that function is not in the new graph.
+Deleting a whole top-level function shows up as a change to its file. To find its old
+callers, run `callers_of` on a graph built before the change.
 
 ### Graph analysis
 
@@ -176,7 +195,7 @@ was built from.
 | `callees_of` | small | what a function calls, plus how many calls go outside the project or are unresolved |
 | `blast_radius` | small | everything a change could affect, grouped by distance (1 to 3 steps) |
 | `functions_in_file` | full | what one file defines |
-| `dependencies_of` | full | what one file imports |
+| `dependencies_of` | full | what one file imports, marking imports made only inside a function, for type checkers, or in a main block |
 | `orphan_functions` | full | functions that no resolved call reaches (possible dead code) |
 | `graph_info` | full | how the graph was built, how much is resolved, and health check results |
 
@@ -217,9 +236,10 @@ Real projects (`tests/test_real_repos.py`, pinned releases):
 | httpx 0.28.1 | 60 | 87.4% | 0.99 | 0.96 |
 | click 8.1.8 | 16 | 84.2% | 0.98 | 0.76 |
 | flask 3.1.0 | 24 | 58.5% | 1.00 | 0.86 |
+| requests 2.34.2 | 19 | 69.6% | 1.00 | 0.86 |
 
-Coverage is the share of calls into the project's own code that were resolved, with jedi
-on. Precision and recall compare a build without jedi to jedi's own references, over 40
+Coverage is the share of calls that were resolved, counting every call except those known to
+go outside the project (to Python itself or a library), with jedi on. Precision and recall compare a build without jedi to jedi's own references, over 40
 sampled functions. Jedi misses some references too, so a precision below 1.00 does not
 always mean a wrong link.
 
@@ -229,32 +249,29 @@ so this is a quick sanity check and too small to count as a benchmark.
 
 ## Limitations
 
-- Call resolution only works for Python. Java, JavaScript, TypeScript, TSX and Go files get
-  their structure but no call links. Their imports are read but not yet kept in the graph.
-  In JavaScript, TypeScript and TSX, a function stored in a variable (`const f = () => ...`)
-  is read as a function named `f`. Other function values, such as callbacks, are not
-  functions of their own: their calls count for the function around them. The same goes
-  for functions defined inside them, so two such functions with the same name in one file
-  can share an id.
-- Some calls stay unresolved. ACTE only links a call when it is sure of the target. If a
-  call could go to more than one place, it is stored as ambiguous. `callers_of` and
-  `blast_radius` then mark their answer as `lower-bound`, meaning there may be more callers.
-- Values passed around are not tracked. A method call on a variable is resolved only if the
-  variable's type is known, from a type hint or an assignment like `db = Database()`.
-  Functions used as callbacks, stored in dicts or wrapped in decorators are not followed.
-- Inheritance uses the class written in the code, not the class of the object at run time.
-  Methods are looked up through that class's MRO. A call to a base-class method (through
-  `self`, `cls`, a variable typed as the base class, or found by jedi) is listed as a
-  possible caller of every override in the project, and the answer is marked `lower-bound`.
-  Calls through `super()` are not listed for overrides. If the lookup reaches a base class
-  from outside the project, such as `dict` or a library class, it stops there. A method it
-  has not found by then stays unresolved, and answers it might affect are marked
-  `lower-bound`.
-- The dead-code list shows too much. Entry points, `__init__` methods, properties, functions
-  passed as values, and functions reached only through unresolved calls all appear in
-  `orphan_functions`.
-- rdflib keeps the whole graph in memory. That limits ACTE to roughly 5,000 files. The
-  largest project tested so far is rich: 190 files, built in about 24 seconds.
+- Call resolution only works for Python. Java, JavaScript, TypeScript, TSX and Go files give
+  their structure but no call links, and their imports are not kept in the graph yet. In
+  JavaScript and TypeScript, two functions defined inside callbacks in one file can share an id.
+- ACTE only links a call when it is sure of the target. A call that could go to more than one
+  place is kept as ambiguous, and `callers_of` and `blast_radius` then mark their answer as
+  `lower-bound`: there may be more callers.
+- Without jedi, a method call on a variable is resolved only when the variable's type is
+  known, from a type hint or an assignment like `db = Database()`. Attributes set on `self`
+  in another method, chains like `loader.graph.leaf_nodes()`, callbacks, and functions
+  stored in dicts are not followed.
+- Inherited methods are looked up from the class written in the code, not the class of the
+  object at run time. Calls that may reach an override are listed as possible callers, and
+  the lookup stops at a base class from outside the project, such as `dict`.
+- The dead-code list shows too much: entry points, `__init__` methods, properties, and
+  functions reached only through unresolved calls all appear in `orphan_functions`.
+- jedi finds more calls but is slow: on django's 907-file package the build took 29 minutes
+  with jedi and 20 seconds without (on a shared machine, so the jedi time is on the high side).
+- rdflib keeps the whole graph in memory. The largest project tested is django: 3,030 files,
+  built in 100 seconds without jedi, with 4 GB of memory. Loading a saved graph of that size
+  takes about 95 seconds, and on fastapi (1,223 files) `callers_of` took over a minute per
+  question. Larger projects have not been tried.
+
+The full rules are in [`docs/architecture.md`](docs/architecture.md).
 
 ## Design notes
 
