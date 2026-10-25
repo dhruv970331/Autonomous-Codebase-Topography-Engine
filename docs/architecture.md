@@ -127,7 +127,8 @@ relative: a relative import is inside the project, so it records nothing. Severa
 files make it ambiguous, and nothing is recorded. Only Python imports are kept.
 
 Every node also carries `code:name`, `code:filePath`, `code:lineStart`, `code:lineEnd` and
-`code:language`.
+`code:language`. A decorated Python function or class also carries `code:decoratorLine`, the line of its
+first decorator. Its `code:lineStart` stays the line of `def` or `class`.
 
 Every call becomes a `code:CallSite` record:
 

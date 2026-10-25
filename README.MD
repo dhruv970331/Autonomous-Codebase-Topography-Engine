@@ -92,9 +92,38 @@ functions, classes and calls, how many calls it resolved, and the health check r
 
 `acte stats GRAPH` prints the same summary for a saved graph. It also shows how the graph was
 built (folder name, git commit, versions), and the first problem rows for any failed health
-check.
+check. With `--format json` it prints the same data as one JSON object, with all problem rows.
 
 Both commands exit with code 1 if a health check fails.
+
+### What does my change break?
+
+```bash
+poetry run acte impact src                  # your uncommitted changes
+poetry run acte impact src --base main      # everything since main
+```
+
+`acte impact PATH` reads `git diff` in `PATH` and builds a fresh graph of the work tree.
+Each changed line belongs to the innermost function or class around it. A definition's
+decorators count as part of it. Blank lines and lines with only a comment are ignored, so
+commenting out a line counts as removing it. Removed code counts for the definition it was
+removed from. If a whole method was removed, its class counts as changed. For
+each changed definition it lists everything that calls it, grouped by distance (2 steps by
+default, set with `--depth`). A changed line outside any definition counts as a change to the
+whole file, and the command lists the project files that import it. New files that git does
+not track yet count as fully added. `--no-jedi` skips the jedi step, which makes the build
+faster in CI.
+
+The first line sums it up: how many definitions changed, how many others are affected, and
+whether that count is `exact` or a `lower-bound`. `--limit` caps each list (default 50) and
+says how many were left out. `--format json` prints the same data as one JSON object, for
+scripts and CI. `--graph FILE` uses a saved graph instead of building one, and warns if it
+was built at another commit. The exit code is 2 when `PATH` is not in a git repository or
+git fails.
+
+It cannot see definitions that the change deleted, because they are not in the new graph.
+Deleting a whole top-level function shows up only as a change to its file. Check its old callers with
+`callers_of` on a graph built before the change.
 
 ### MCP server
 

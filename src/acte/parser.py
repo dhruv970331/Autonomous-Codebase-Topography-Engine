@@ -29,6 +29,7 @@ class NodeInfo:
     params: str | None = None
     return_type: str | None = None
     bases: list[str] | None = None  # a Python class's bases as written (UNKNOWN_BASE for any other expression); None otherwise
+    decorator_line: int | None = None  # a decorated Python definition's first decorator line; None otherwise
     is_test: bool = False
     extra: dict = field(default_factory=dict)
 
@@ -453,7 +454,10 @@ class CodeParser:
                     # R24b: `-> Database`, as written; the resolver decides what it names
                     returns = self._annotation_type(parts[types.index("->") + 1], source) if language == "python" and is_func and "->" in types else None
                     bases = self._class_bases(parts, source) if language == "python" and not is_func else None
-                    nodes.append(NodeInfo("Function" if is_func else "Class", name, file_path, _get_start_line(child), _get_end_line(child), language, parent, return_type=returns, bases=bases))
+                    # the decorators are the parent decorated_definition's, which starts at the first of them
+                    decorated = _get_start_line(root) if language == "python" and _get_type(root) == "decorated_definition" else None
+                    nodes.append(NodeInfo("Function" if is_func else "Class", name, file_path, _get_start_line(child), _get_end_line(child), language, parent,
+                                          return_type=returns, bases=bases, decorator_line=decorated))
                     edges.append(EdgeInfo("CONTAINS", container, f"{file_path}::{qualname}", file_path, _get_start_line(child)))
                     if language == "python":  # R17: the name is bound in the enclosing scope
                         local_bindings.append(LocalBinding(container, name, "def" if is_func else "class", None, file_path, _get_start_line(name_node)))

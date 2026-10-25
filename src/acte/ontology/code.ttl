@@ -41,6 +41,10 @@ code:lineEnd a rdf:Property ;
     rdfs:comment "The last line of the node, counted from 1." ;
     rdfs:range xsd:integer .
 
+code:decoratorLine a rdf:Property ;
+    rdfs:comment "The line of the first decorator of a decorated Python function or class, counted from 1. Absent when it has none." ;
+    rdfs:range xsd:integer .
+
 code:language a rdf:Property ;
     rdfs:comment "The programming language of the file the node is in." ;
     rdfs:range xsd:string .

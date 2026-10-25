@@ -1,12 +1,14 @@
 """
 Command line.
 `acte build PATH` parses a project into one Turtle graph, with ids relative to PATH.
-`acte stats GRAPH.ttl` summarises a graph written by build.
+`acte stats GRAPH.ttl` summarises a graph written by build, as text or JSON.
+`acte impact PATH` lists what the uncommitted changes (or those since --base) may break.
 `acte serve GRAPH.ttl` answers questions about a graph as an MCP server over stdio.
 """
 
 import argparse
 import contextlib
+import json
 import os
 import subprocess
 from importlib.metadata import version
@@ -77,34 +79,50 @@ def build(root: Path, use_jedi: bool = True) -> Graph:
     return graph
 
 
+def _counts(graph: Graph) -> tuple[dict, dict]:
+    """The file, function, class and call-site counts of *graph*, and its coverage."""
+    cov = SPARQLEngine(graph=graph).coverage()
+    return {"files": len(set(graph.subjects(RDF.type, CODE.File))), "functions": len(set(graph.subjects(RDF.type, CODE.Function))),
+            "classes": len(set(graph.subjects(RDF.type, CODE.Class))), "call_sites": cov["total"]}, cov
+
+
 def _summary(graph: Graph) -> tuple[dict, dict[str, list[dict]]]:
     """Print the counts and coverage rate of *graph*; return its coverage and health check results."""
-    cov = SPARQLEngine(graph=graph).coverage()
-    print(f"files parsed: {len(set(graph.subjects(RDF.type, CODE.File)))}")
-    print(f"functions: {len(set(graph.subjects(RDF.type, CODE.Function)))}")
-    print(f"classes: {len(set(graph.subjects(RDF.type, CODE.Class)))}")
-    print(f"call sites: {cov['total']}")
+    counts, cov = _counts(graph)
+    for label, key in (("files parsed", "files"), ("functions", "functions"), ("classes", "classes"), ("call sites", "call_sites")):
+        print(f"{label}: {counts[key]}")
     rate = cov["rate"]
     print(f"coverage: {'n/a' if rate is None else f'{rate:.1%}'}")
     return cov, run_checks(graph)
 
 
-def _stats(graph: Graph) -> int:
+def _row(row: dict) -> dict:
+    """A health check row with its code URIs shown as their ids, as SPARQLEngine._id decodes them."""
+    return {k: SPARQLEngine()._id(v) if v.startswith(str(CODE)) else v for k, v in row.items()}
+
+
+def _stats(graph: Graph, fmt: str = "text") -> int:
     """Print the build metadata, summary, coverage breakdown and health of *graph*; 1 if a health check fails."""
     meta = CODE["build"]
-    for prop in ("root", "commit", "acteVersion", "jediVersion"):
-        if (value := graph.value(meta, CODE[prop])) is not None:
-            print(f"{prop}: {value}")
+    built = {prop: str(value) for prop in ("root", "commit", "acteVersion", "jediVersion")
+             if (value := graph.value(meta, CODE[prop])) is not None}
+    if fmt == "json":
+        counts, cov = _counts(graph)
+        failing = {name: [_row(r) for r in rows] for name, rows in run_checks(graph).items() if rows}
+        print(json.dumps({"build": built, **counts, "coverage": cov, "health": "failing" if failing else "ok",
+                          "failing": failing}, indent=2))
+        return 1 if failing else 0
+    for prop, value in built.items():
+        print(f"{prop}: {value}")
     cov, checks = _summary(graph)
     for key in ("status", "tier", "reason"):
         print(f"{key}: {', '.join(f'{k} {n}' for k, n in cov[key].items()) or 'none'}")
     failing = {name: rows for name, rows in checks.items() if rows}
     print(f"health: {'ok' if not failing else 'failing'}")
-    engine = SPARQLEngine()
     for name, rows in failing.items():
         print(f"  {name}: {len(rows)} rows")
-        for row in rows[:5]:  # code URIs shown as their ids, as SPARQLEngine._id decodes them
-            print("    " + ", ".join(f"{k}={engine._id(v) if v.startswith(str(CODE)) else v}" for k, v in row.items()))
+        for row in rows[:5]:
+            print("    " + ", ".join(f"{k}={v}" for k, v in _row(row).items()))
         if len(rows) > 5:
             print(f"    ... and {len(rows) - 5} more")
     return 1 if failing else 0
@@ -119,6 +137,18 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--no-jedi", action="store_true", help="skip the jedi resolution tier")
     st = sub.add_parser("stats", help="summarise a Turtle graph written by build")
     st.add_argument("graph", help="the Turtle file")
+    st.add_argument("--format", choices=["text", "json"], default="text", help="output format (default: text)")
+    im = sub.add_parser(
+        "impact", help="list what a git diff may break",
+        description="Map each line the diff of the work tree against BASE changes to the function or class that holds it, "
+                    "and list what calls those. Definitions the change deleted are not detected: they are not in the new graph.")
+    im.add_argument("path", nargs="?", default=".", help="the project root, as for build (default: .)")
+    im.add_argument("--base", default="HEAD", help="the git revision to diff against (default: HEAD, so uncommitted work)")
+    im.add_argument("--graph", help="a Turtle file written by build, used instead of building the work tree afresh")
+    im.add_argument("--depth", type=int, default=2, help="hops of callers to follow, 1 to 10 (default: 2)")
+    im.add_argument("--limit", type=int, default=50, help="most affected entries listed per change (default: 50)")
+    im.add_argument("--format", choices=["text", "json"], default="text", help="output format (default: text)")
+    im.add_argument("--no-jedi", action="store_true", help="skip the jedi resolution tier when building")
     sv = sub.add_parser("serve", help="serve a Turtle graph as an MCP server over stdio")
     sv.add_argument("graph", help="the Turtle file")
     sv.add_argument("--project", help="the project root the graph was built from")
@@ -138,11 +168,16 @@ def main(argv: list[str] | None = None) -> int:
             graph = Graph().parse(args.graph, format="turtle")
         except (OSError, SyntaxError, UnicodeDecodeError) as exc:  # rdflib's turtle BadSyntax is a SyntaxError
             parser.error(f"cannot read {args.graph}: {exc}")
-        return _stats(graph)
+        return _stats(graph, args.format)
 
     root = Path(args.path)
     if not root.is_dir():
         parser.error(f"{args.path} is not a directory")
+    if args.command == "impact":
+        if args.limit < 1:
+            parser.error("--limit must be at least 1")
+        from acte.impact import run  # imported here: impact imports this module
+        return run(root, args.base, args.graph, args.depth, args.limit, args.format, not args.no_jedi)
     graph = build(root, not args.no_jedi)
     graph.serialize(destination=args.output, format="turtle")
     print(f"wrote {args.output}")

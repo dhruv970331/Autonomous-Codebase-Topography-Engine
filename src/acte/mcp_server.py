@@ -120,6 +120,13 @@ def _head(project: str | Path) -> str | None:
     return (head.stdout.strip() or None) if head.returncode == 0 else None
 
 
+def stale_warning(built: str | None, now: str | None) -> str:
+    """The warning line to put first when the project is at commit *now* but the graph was built at *built*, else ""."""
+    if not built or now is None or now == str(built):
+        return ""
+    return f"Warning: this map was built at commit {built[:7]} but the project is now at {now[:7]}; answers may be out of date.\n"
+
+
 def create_server(graph_path: str | Path, project: str | Path | None = None, profile: str = "small") -> MCPServer:
     """A server over the graph in *graph_path*, loaded once and read under one lock (the SDK runs sync tools on worker threads)."""
     engine = SPARQLEngine.from_turtle(graph_path)
@@ -129,10 +136,7 @@ def create_server(graph_path: str | Path, project: str | Path | None = None, pro
 
     def stale() -> str:
         """The warning line to put first when the project has moved on from the graph's commit, else ""."""
-        now = _head(project) if project and built else None
-        if now is None or now == str(built):
-            return ""
-        return f"Warning: this map was built at commit {built[:7]} but the project is now at {now[:7]}; answers may be out of date.\n"
+        return stale_warning(built, _head(project) if project and built else None)
 
     def tool(description: str, full: bool = False):
         """Register the decorated function as a text tool whose answers carry the stale warning; *full*: full profile only."""
