@@ -186,7 +186,7 @@ A fixed set of named queries over the graph:
 | `blast_radius` | who depends on it, hop by hop: a `BlastAnswer` |
 | `callees_of` | what this function's calls resolve to |
 | `functions_in_file` / `classes_in_file` | what a file defines |
-| `dependencies_of` | what a file imports: project file paths and external module names |
+| `dependencies_of` | what a file imports: a `DependenciesAnswer`, the project file paths and external module names, and the import kinds of each one not imported at module level |
 | `orphan_functions` | functions nothing calls (recursion does not count) |
 | `execute_raw_sparql` | escape hatch for exploration |
 

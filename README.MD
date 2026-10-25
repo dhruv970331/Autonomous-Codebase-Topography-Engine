@@ -112,8 +112,10 @@ commenting out a line counts as removing it. Removed code counts for the definit
 removed from. If a whole method was removed, its class counts as changed. For
 each changed definition it lists everything that calls it, grouped by distance (2 steps by
 default, set with `--depth`). A changed line outside any definition counts as a change to the
-whole file, and the command lists the project files that import it. New files that git does
-not track yet count as fully added. `--no-jedi` skips the jedi step, which makes the build
+whole file, and the command lists the project files that import it. An importer that imports
+it only inside a function, under `if TYPE_CHECKING:` or under `if __name__ == "__main__":` is
+marked so, for example `cli.py (in function)`. In JSON these are in `importer_kinds`. New files
+that git does not track yet count as fully added. `--no-jedi` skips the jedi step, which makes the build
 faster in CI.
 
 The first line sums it up: how many definitions changed, how many others are affected, and

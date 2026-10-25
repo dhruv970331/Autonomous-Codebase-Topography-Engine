@@ -318,9 +318,13 @@ def test_import_kinds(tmp_path):
     assert objects(CODE.importsInFunctionExternal) == {"os", "string", "fractions"}
     assert {(app, CODE.importsFrom, lib), (app, CODE.importsInFunction, lib), (app, CODE.importsTypeOnly, other)} <= set(graph)
     assert not any(run_checks(graph).values())
-    assert SPARQLEngine(graph=graph).dependencies_of(f"{tmp_path}/app.py") == sorted([
+    deps = SPARQLEngine(graph=graph).dependencies_of(f"{tmp_path}/app.py")
+    assert deps.dependencies == sorted([
         f"{tmp_path}/lib.py", f"{tmp_path}/other.py", "typing", "csv", "re", "enum", "json", "collections", "decimal",
         "os", "string", "fractions"])  # every kind
+    # lib.py is imported at module level too, so it has no kinds
+    assert deps.kinds == {f"{tmp_path}/other.py": ["type-only"], "json": ["type-only"], "collections": ["type-only"],
+                          "decimal": ["type-only"], "os": ["in-function"], "string": ["in-function"], "fractions": ["in-function"]}
 
 
 def test_main_block_imports(tmp_path):
@@ -364,6 +368,7 @@ def test_main_block_imports(tmp_path):
     assert objects(CODE.importsInFunctionExternal) == {"timeit"}
     assert objects(CODE.importsTypeOnlyExternal) == {"decimal"}
     assert objects(CODE.importsFrom) == set()
+    assert SPARQLEngine(graph=graph).dependencies_of(f"{tmp_path}/app.py").kinds[f"{tmp_path}/lib.py"] == ["main-block"]
     assert not any(run_checks(graph).values())
 
 

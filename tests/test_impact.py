@@ -219,6 +219,31 @@ def test_added_function_and_module_level(repo, capsys):
     ], "")
 
 
+def test_importers_are_labelled_with_their_kind(repo, capsys):
+    _write(repo, {
+        "both.py": "from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    import shop.models\n\n\ndef go():\n    import shop.models\n",
+        "script.py": "if __name__ == '__main__':\n    import shop.models\n",
+        "mixed.py": "import shop.models\n\n\ndef go():\n    import shop.models\n",  # module level too: no label
+    })
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "importers")
+    _edit(repo, "shop/models.py", "RATE = 2", "RATE = 3")
+    assert _impact(capsys, repo) == (0, [
+        "0 definitions changed in 0 files, 1 file changed at module level; 4 others affected (exact)",
+        "module-level shop/models.py: imported by 4 project files",
+        "    app.py",
+        "    both.py (type only, in function)",
+        "    mixed.py",
+        "    script.py (main block)",
+    ], "")
+    code, out, err = _impact(capsys, repo, "--format", "json", "--limit", "2")
+    assert (code, err) == (0, "")
+    assert json.loads("\n".join(out))["modules"] == [{
+        "file_path": "shop/models.py", "importers": ["app.py", "both.py"], "total": 4,
+        "importer_kinds": {"both.py": ["type-only", "in-function"]},  # only the listed importers
+    }]
+
+
 def test_untracked_file_is_fully_added(repo, capsys):
     _write(repo, {"extra.py": "from app import main\n\n\ndef go():\n    return main()\n"})
     assert _impact(capsys, repo) == (0, [
@@ -287,7 +312,7 @@ def test_json_shape(repo, capsys):
                 "completeness": "lower-bound", "reasons": {"depth-limit": 1},
             },
         }],
-        "modules": [{"file_path": "shop/models.py", "importers": ["app.py"], "total": 1}],
+        "modules": [{"file_path": "shop/models.py", "importers": ["app.py"], "total": 1, "importer_kinds": {}}],
         "affected": 2,
         "completeness": "lower-bound",
     }
