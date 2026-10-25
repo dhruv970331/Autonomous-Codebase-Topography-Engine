@@ -1,3 +1,4 @@
+import json
 import subprocess
 from importlib.metadata import version
 
@@ -135,6 +136,35 @@ def test_stats_on_a_broken_graph(tmp_path, capsys):
         "  dangling-call-arrows: 1 rows",
         "    s=shop/models.py::make, p=instantiates, o=shop/models.py::A",
     ]
+
+
+def test_stats_as_json(tmp_path, capsys):
+    _write(tmp_path / "proj", PROJECT)
+    graph, _ = _build(capsys, tmp_path / "proj", tmp_path / "g.ttl", "--no-jedi")
+
+    assert main(["stats", str(tmp_path / "g.ttl"), "--format", "json"]) == 0
+    stats = json.loads(capsys.readouterr().out)
+    assert stats == {
+        "build": {"root": "proj", "acteVersion": version("acte")},
+        "files": 3, "functions": 3, "classes": 1, "call_sites": 3,
+        "coverage": {"edge": {"calls": 1, "instantiates": 1}, "rate": 2 / 3, "reason": {"unknown-receiver": 1},
+                     "status": {"resolved": 2, "unresolved": 1}, "tier": {"T2": 1, "T3": 1}, "total": 3},
+        "health": "ok", "failing": {},
+    }
+
+    graph.remove((CODE["shop/models.py::A"], RDF.type, CODE.Class))
+    graph.serialize(tmp_path / "broken.ttl", format="turtle")
+    assert main(["stats", str(tmp_path / "broken.ttl"), "--format", "json"]) == 1
+    stats = json.loads(capsys.readouterr().out)
+    assert (stats["health"], stats["failing"]) == ("failing", {
+        "dangling-call-arrows": [{"s": "shop/models.py::make", "p": "instantiates", "o": "shop/models.py::A"}]})
+
+
+def test_stats_unknown_format(tmp_path, capsys):
+    with pytest.raises(SystemExit) as exit_:
+        main(["stats", str(tmp_path / "g.ttl"), "--format", "xml"])
+    assert exit_.value.code == 2
+    assert "invalid choice: 'xml'" in capsys.readouterr().err
 
 
 def test_stats_on_a_missing_file(tmp_path, capsys):
