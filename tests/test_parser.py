@@ -421,6 +421,15 @@ def test_local_binding_none_values(parser, tmp_path):
         ("a", True), ("b", True), ("c", True), ("d", True), ("e", False), ("f", False), ("self.g", True), ("self.h", False),
     ]
 
+def test_local_binding_literal_types(parser, tmp_path):
+    code = "a = {}\nb = []\nc = ()\nd = {1}\ne = 's'\nf = b'x'\ng = 1\nh = 1.5\ni = True\nj = 'a' 'b'\nk = rb'x'\nl = -1\nm = X()\n"
+    p = tmp_path / "a.py"
+    p.write_text(code)
+    assert [(b.name, b.literal) for b in parser.parse_file(p).local_bindings] == [
+        ("a", "dict"), ("b", "list"), ("c", "tuple"), ("d", "set"), ("e", "str"), ("f", "bytes"), ("g", "int"),
+        ("h", "float"), ("i", "bool"), ("j", "str"), ("k", "bytes"), ("l", None), ("m", None),
+    ]
+
 def test_local_binding_scopes(parser, tmp_path):
     code = "x = A()\nclass C:\n    y = B()\n    def m(self):\n        z = D()\n"
     assert _bindings(parser, tmp_path, code, "assign") == [

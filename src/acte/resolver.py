@@ -7,7 +7,7 @@ Used by `rdf_builder.build_graph`.
 import builtins
 import sys
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from acte.parser import (
@@ -95,6 +95,21 @@ class SymbolIndex:
         self.bases = {n.qualified_id: [r for r in (self._base(n, b) for b in n.bases) if r] for n in nodes if n.kind == "Class" and n.bases is not None}
         for cls in sorted(self.bases):
             self._linearize(cls, frozenset())
+        self.children: dict[str, list[str]] = defaultdict(list)  # class -> the project classes that name it as a base
+        for cls, bases in sorted(self.bases.items()):
+            for b in dict.fromkeys(bases):
+                if b in self.by_class:
+                    self.children[b].append(cls)
+
+    def subclasses(self, cls: str) -> list[str]:
+        """Every project class that inherits from *cls* through declared bases, at any depth, sorted."""
+        found, todo = set(), [cls]
+        while todo:
+            for c in self.children.get(todo.pop(), []):
+                if c not in found and c != cls:
+                    found.add(c)
+                    todo.append(c)
+        return sorted(found)
 
     def _base(self, n: NodeInfo, base: str) -> str | None:
         """Look up a base as written the way a type name is, from the scope the class statement runs in.
@@ -325,8 +340,8 @@ def _resolve_receiver(index: SymbolIndex, call: CallSite, typed: bool = True) ->
     cls = _self_class(index, scope, head) if scope else None
     if cls and not rest:
         return _on_class(index, call, cls, "T1")
-    if cls and typed and head == "self" and len(rest) == 1:  # `self.attr`: its types are looked up from C's file
-        return _typed(index, call, *_one_type(index.locals.get(cls, {}).get(f"self.{rest[0]}", []), name), cls.split("::")[0])
+    if cls and typed and head == "self" and len(rest) == 1:  # `self.attr`
+        return _typed(index, call, *_attr_type(index, cls, rest[0], name))
     if cls:
         return unknown
     local, imports = _bindings(index, scope, head) if scope else ([], [])
@@ -427,9 +442,69 @@ def _one_type(bindings: list[LocalBinding], method: str) -> tuple[str | None, bo
     """The type every binding of a name agrees on for a call of *method* on it (None when one is untyped or two
     disagree, R7), and whether an annotation says so. A binding to None takes no part unless None has *method*:
     calling it on None fails, so the call only runs on one of the other values."""
-    bindings = [b for b in bindings if b.kind not in ("del", "global", "nonlocal") and not (b.is_none and not hasattr(None, method))]
+    bindings = _holding(bindings, method)
     types = {b.type_name for b in bindings}
     return types.pop() if len(types) == 1 else None, any(b.kind in ("param", "annotation") for b in bindings)
+
+
+def _holding(bindings: list[LocalBinding], method: str) -> list[LocalBinding]:
+    """The bindings whose value *method* may be called on (see _one_type)."""
+    return [b for b in bindings if b.kind not in ("del", "global", "nonlocal") and not (b.is_none and not hasattr(None, method))]
+
+
+def _attr_type(index: SymbolIndex, cls: str, attr: str, method: str) -> tuple[str | None, bool, str]:
+    """The type of attribute *attr* of an instance of project class *cls*, for a call of *method* on it, as
+    _typed takes it: (type name, annotated, the file to look it up from). The name is None when it is not certain.
+
+    The bindings are ``self.attr = ...`` in any method and the class-level annotations ``attr: T`` of every project
+    class in cls's MRO, and of every project class that inherits from cls, since the instance may be one of those;
+    an outside base is not looked into, as everywhere in T4b. A class-level literal (``{}``, ``()``, ``0``) binds its
+    builtin type. They must agree as in _one_type, and when they are in several files their type names must name
+    the same project class. A name that is a method, property or nested class in any of these classes, any other
+    class-level value except None (``attr = ForeignKey(...)``, often a descriptor whose value on an instance has
+    another type), a class-level import, or a broken MRO gives None."""
+    # shortcut: writes from outside the class (`obj.attr = x`) are not seen; the parser would have to record them
+    unknown = None, False, cls.split("::")[0]
+    mro = index.mro.get(cls)
+    if mro is None:
+        return unknown
+    bindings = []
+    for c in [k for k in mro if isinstance(k, str)] + index.subclasses(cls):
+        level = [replace(b, type_name=b.literal) if b.literal else b for b in index.locals.get(c, {}).get(attr, [])]
+        # a class-level None is a default, as in _one_type; a literal is no descriptor
+        values = [b for b in level if b.kind != "annotation" and not b.is_none and not b.literal]
+        if f"{c}.{attr}" in index.by_id or attr in index.imports.get(c, {}) or values:
+            return unknown
+        bindings += index.locals.get(c, {}).get(f"self.{attr}", []) + level
+    bindings = _holding(bindings, method)
+    by_file = defaultdict(set)  # file -> the type names bound there
+    for b in bindings:
+        by_file[b.file_path].add(b.type_name)
+    if not by_file or any(len(types) != 1 or None in types for types in by_file.values()):
+        return unknown
+    if len(by_file) > 1:
+        named = {_class_of(index, next(iter(types)), file) for file, types in by_file.items()}
+        if len(named) != 1 or None in named:
+            return unknown
+    file, types = min(by_file.items())
+    return next(iter(types)), any(b.kind == "annotation" for b in bindings), file
+
+
+def _class_of(index: SymbolIndex, type_name: str, scope: str) -> str | None:
+    """The one project class *type_name* names, looked up from *scope*; a project function gives its return
+    annotation's class (one hop, as in _typed). None for anything else."""
+    for _ in range(2):
+        receiver, _, name = type_name.rpartition(".")
+        found = _resolve_call(index, CallSite(scope, name, receiver or None, scope.split("::")[0], 0, 0), typed=False)
+        if found.status != "resolved":
+            return None
+        node = index.by_id[found.target]
+        if node.kind == "Class":
+            return found.target
+        if not node.return_type:
+            return None
+        type_name, scope = node.return_type, node.file_path
+    return None
 
 
 def _typed(index: SymbolIndex, call: CallSite, type_name: str | None, annotated: bool, scope: str, hop: bool = True) -> CallResolution:

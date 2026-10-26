@@ -925,6 +925,81 @@ def test_super_with_explicit_class_in_a_closure(tmp_path):
     assert calls[("s.py::B.m.<locals>.f", "m")] == ("resolved", "T1", "s.py::A.m", None)
 
 
+def test_attribute_types_come_from_the_whole_project_mro(tmp_path):
+    calls = _calls(tmp_path, {
+        # django/core/management/base.py and its commands: self.stdout is set in BaseCommand only
+        "base.py": (
+            "class OutputWrapper:\n    def write(self, msg):\n        pass\n\n\n"
+            "class Field:\n    def check(self):\n        pass\n\n    def get_internal_type(self):\n        pass\n\n\n"
+            "class BaseCommand:\n    def __init__(self):\n        self.stdout = OutputWrapper()\n"
+            "        self.both = Field()\n        self.loose = make()\n"
+        ),
+        "cmd.py": (
+            "from base import BaseCommand, Field, OutputWrapper\n\n\n"
+            "class Command(BaseCommand):\n    def handle(self):\n        self.stdout.write('x')\n        self.both.check()\n"
+            "\n    def loose_use(self):\n        self.loose.check()\n\n    def later(self):\n        self.both = OutputWrapper()\n        self.loose = Field()\n"
+        ),
+        # fastapi/routing.py: dataclass fields annotated in the class body, an outside base
+        "routing.py": (
+            "from dataclasses import dataclass\n\nfrom starlette.routing import BaseRoute\n\n\n"
+            "class Router:\n    def matches(self, scope):\n        pass\n\n\n"
+            "@dataclass\nclass Included(BaseRoute):\n    original: 'Router'\n    count: int = 0\n\n"
+            "    def matches(self, scope):\n        return self.original.matches(scope)\n"
+        ),
+        # django/contrib/admin/models.py:184: a class-level value is a descriptor, not the type on an instance
+        "models.py": (
+            "from base import Field\n\n\n"
+            "class ForeignKey(Field):\n    pass\n\n\n"
+            "class LogEntry:\n    content_type = ForeignKey()\n\n    def get_edited_object(self):\n        return self.content_type.check()\n\n\n"
+            # django/db/models/fields/generated.py: a class-level None default, set on the instance later
+            "class Generated:\n    _query = None\n\n    def contribute(self):\n        self._query = Field()\n\n"
+            "    def referenced_fields(self):\n        return self._query.get_internal_type()\n"
+        ),
+        # django/db/models/expressions.py: output_field is a cached_property and also assigned
+        "expressions.py": (
+            "from functools import cached_property\n\nfrom base import Field\n\n\n"
+            "class BaseExpression:\n    @cached_property\n    def output_field(self):\n        return Field()\n\n\n"
+            "class Value(BaseExpression):\n    def __init__(self):\n        self.output_field = Field()\n\n"
+            "    def as_sql(self):\n        return self.output_field.get_internal_type()\n"
+        ),
+    })
+    assert calls[("cmd.py::Command.handle", "write")] == ("resolved", "T4b", "base.py::OutputWrapper.write", None)  # set in a base
+    assert calls[("routing.py::Included.matches", "matches")] == ("resolved", "T4b", "routing.py::Router.matches", None)
+    assert calls[("cmd.py::Command.handle", "check")] == ("unresolved", None, None, "unknown-receiver")  # Field and OutputWrapper
+    assert calls[("cmd.py::Command.loose_use", "check")] == ("unresolved", None, None, "unknown-receiver")  # make() is untyped
+    assert calls[("models.py::LogEntry.get_edited_object", "check")] == ("unresolved", None, None, "unknown-receiver")
+    assert calls[("models.py::Generated.referenced_fields", "get_internal_type")] == ("resolved", "T4b", "base.py::Field.get_internal_type", None)
+    assert calls[("expressions.py::Value.as_sql", "get_internal_type")] == ("unresolved", None, None, "unknown-receiver")
+
+
+def test_attribute_types_count_subclasses_and_class_level_literals(tmp_path):
+    calls = _calls(tmp_path, {
+        "ab.py": "class A:\n    def m(self):\n        pass\n\n\nclass B:\n    def m(self):\n        pass\n",
+        # Sub().f() runs B.m: a subclass may set the attribute the base class uses
+        "base.py": (
+            "from ab import A, B\n\n\n"
+            "class Base:\n    def __init__(self):\n        self.x = A()\n\n    def set_y(self):\n        self.y = A()\n\n"
+            "    def set_z(self):\n        self.z = A()\n\n"
+            "    def f(self):\n        self.x.m()\n\n    def g(self):\n        self.y.m()\n\n    def h(self):\n        self.z.m()\n\n\n"
+            "class Sub(Base):\n    def __init__(self):\n        self.x = B()\n\n    def set_y(self):\n        self.y = A()\n\n\n"
+            "class Other(Sub):\n    def z(self):\n        pass\n"
+        ),
+        # django/contrib/gis/db/backends/postgis/introspection.py:67 and indexes.py:374
+        "lit.py": (
+            "class Introspection:\n    oid_lookup = {}\n    wrappers = (int, str)\n    lookup = {}\n\n"
+            "    def fill(self):\n        self.oid_lookup = dict()\n        self.wrappers = tuple()\n        self.lookup = []\n\n"
+            "    def get(self):\n        return self.oid_lookup.get(1)\n\n    def where(self):\n        return self.wrappers.index(int)\n\n"
+            "    def keys(self):\n        return self.lookup.keys()\n"
+        ),
+    })
+    assert calls[("base.py::Base.f", "m")] == ("unresolved", None, None, "unknown-receiver")  # A in Base, B in Sub
+    assert calls[("base.py::Base.g", "m")] == ("resolved", "T4b", "ab.py::A.m", None)  # both A
+    assert calls[("base.py::Base.h", "m")] == ("unresolved", None, None, "unknown-receiver")  # z is a method in Other
+    assert calls[("lit.py::Introspection.get", "get")] == ("external", None, None, "builtin")
+    assert calls[("lit.py::Introspection.where", "index")] == ("external", None, None, "builtin")
+    assert calls[("lit.py::Introspection.keys", "keys")] == ("unresolved", None, None, "unknown-receiver")  # a dict and a list
+
+
 def test_none_takes_no_part_in_the_type_unless_none_has_the_method(tmp_path):
     calls = _calls(tmp_path, {
         # django/utils/translation/trans_real.py:265: self._catalog is None at first, a TranslationCatalog later

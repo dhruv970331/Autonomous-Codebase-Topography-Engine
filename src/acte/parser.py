@@ -85,6 +85,7 @@ class LocalBinding:
     file_path: str
     line: int
     is_none: bool = False  # the value bound is the literal None
+    literal: str | None = None  # the builtin type of a literal value bound: dict for {}, str for "x", int for 1
 
 @dataclass
 class ParseResult:
@@ -154,6 +155,8 @@ _BINDING_TYPES = {
 _TARGET_SEQUENCES = {"pattern_list", "tuple_pattern", "list_pattern", "tuple", "list"}
 _VALUE_SEQUENCES = {"expression_list", "tuple", "list"}
 _PUNCTUATION = {"(", ")", "[", "]", ","}
+# Literal values and their builtin types; strings are str or bytes, by their prefix.
+_LITERALS = {"dictionary": "dict", "list": "list", "tuple": "tuple", "set": "set", "integer": "int", "float": "float", "true": "bool", "false": "bool"}
 # A class base that is not a plain or dotted name (`f()`, `*bases`): never a name, so it never resolves.
 UNKNOWN_BASE = "?"
 
@@ -679,14 +682,15 @@ class CodeParser:
         bind = functools.partial(self._bind, source, file_path, scope_id, method_id, local_bindings)
         tt = _get_type(target)
         is_none = value is not None and _get_type(value) == "none"
+        literal = self._literal_type(value, source)
         if tt == "identifier":
             type_name = type_name or self._callee_type(value, source)
-            local_bindings.append(LocalBinding(scope_id, _safe_text(target, source), kind, type_name, file_path, _get_start_line(target), is_none))
+            local_bindings.append(LocalBinding(scope_id, _safe_text(target, source), kind, type_name, file_path, _get_start_line(target), is_none, literal))
         elif tt == "attribute" and method_id:
             parts = _get_children(target)
             if len(parts) == 3 and _get_type(parts[0]) == "identifier" and _safe_text(parts[0], source) == "self":
                 type_name = type_name or self._callee_type(value, source)
-                local_bindings.append(LocalBinding(method_id, "self." + _safe_text(parts[2], source), "attr", type_name, file_path, _get_start_line(target), is_none))
+                local_bindings.append(LocalBinding(method_id, "self." + _safe_text(parts[2], source), "attr", type_name, file_path, _get_start_line(target), is_none, literal))
         elif tt == "list_splat_pattern":  # *rest is a list: never the paired value's type
             for c in _get_children(target):
                 bind(c, None, kind)
@@ -727,6 +731,14 @@ class CodeParser:
             # skip the class name of a class pattern and the keyword of a keyword pattern
             for c in children[1:] if t in ("class_pattern", "keyword_pattern") else children:
                 self._match_captures(c, source, emit)
+
+    def _literal_type(self, value, source: bytes) -> str | None:
+        """The builtin type of *value* when it is a literal (``{}``, ``[]``, ``()``, a set, a string, a number, a bool)."""
+        t = _get_type(value) if value is not None else None
+        if t in ("string", "concatenated_string"):
+            prefix = _safe_text(value, source).split('"')[0].split("'")[0].lower()
+            return "bytes" if "b" in prefix else "str"
+        return _LITERALS.get(t)
 
     def _callee_type(self, value, source: bytes) -> str | None:
         """The callee of *value* as written, when *value* is a call on a plain or dotted name."""
