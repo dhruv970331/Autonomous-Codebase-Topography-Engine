@@ -405,20 +405,20 @@ SELECT ?site ?status ?tier ?reason ?kind ?path WHERE {
         possible = self._callers(f"VALUES ?t {{ {values} }} ?site code:candidate ?t .", "ambiguous")
         # A8: a call resolved to a method target overrides, through self / cls, a variable typed as that class
         # or jedi, may run target when the object is of target's class
-        overridden = self._overridden(target)
-        override = self._callers(f"""
-    VALUES ?t {{ {" ".join(t.n3() for t in overridden)} }}
-    {{ ?site code:resolvedTo ?t ; code:tier ?tier . VALUES ?tier {{ {self._literal("T4b")} {self._literal("TJ")} }} }}
-    UNION
-    {{ ?site code:resolvedTo ?t ; code:tier {self._literal("T1")} ; code:receiver ?r .
-       VALUES ?r {{ {self._literal("self")} {self._literal("cls")} }} }}""", "override") if overridden else []
+        # The sites are picked with triples(), each as often as the SPARQL pattern it replaces matched it: rdflib
+        # evaluated the tier and receiver literals over every call site first (about 3 s per call on django).
+        g, xsd = self.graph, lambda v: Literal(v, datatype=XSD.string)
+        sites = [s for t in self._overridden(target) for s in g.subjects(_CODE.resolvedTo, t) for tier in g.objects(s, _CODE.tier)
+                 for r in ([None] if tier in (xsd("T4b"), xsd("TJ")) else g.objects(s, _CODE.receiver) if tier == xsd("T1") else [])
+                 if r is None or r in (xsd("self"), xsd("cls"))]
+        override = self._callers(f"VALUES ?site {{ {' '.join(s.n3() for s in sites)} }}", "override") if sites else []
         if target.endswith(".__init__"):  # a subclass whose MRO reaches an outside or unknown base before any __init__
             possible += self._callers(f"?site code:initUnknown true ; code:resolvedTo/code:inherits+ {self._uri(cls)} .", "unknown-base")
         possible = sorted(possible + override, key=lambda c: (c.file_path, c.line, c.id))
         listed = Counter(c.reason for c in possible)
         reasons = {"ambiguous": listed["ambiguous"], "override": listed["override"]}
         # a method not found before an external or unknown base may be a project method after it in the MRO
-        g, xsd = self.graph, lambda v: Literal(v, datatype=XSD.string)  # counted with triples(): SPARQL took 0.06 s per count
+        # (counted with triples(): SPARQL took 0.06 s per count)
         for status, reason in (("unresolved", "unknown-receiver"), ("unresolved", "unknown-base"), ("ambiguous", "ceiling")):
             reasons[reason] = listed[reason] + sum(
                 1 for n in names for site in g.subjects(_CODE.targetName, xsd(n))
