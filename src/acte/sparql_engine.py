@@ -24,9 +24,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from rdflib import Graph
+from rdflib import Graph, Namespace, URIRef
+from rdflib.namespace import RDF
 
 _CODE_NS = "http://acte.local/code#"
+_CODE = Namespace(_CODE_NS)
 _PREFIXES = (
     f"PREFIX code: <{_CODE_NS}>\n"
     "PREFIX xsd:  <http://www.w3.org/2001/XMLSchema#>\n"
@@ -407,16 +409,13 @@ SELECT ?d ?name WHERE {
         possible = self._callers(f"VALUES ?t {{ {values} }} ?site code:candidate ?t .", "ambiguous")
         # A8: a call resolved to a method target overrides, through self / cls, a variable typed as that class
         # or jedi, may run target when the object is of target's class
+        overridden = self._overridden(target)
         override = self._callers(f"""
-    {self._uri(target)} ^code:contains ?sub ; code:name ?m .
-    ?sub a code:Class ; code:inherits+ ?base .
-    ?base code:contains ?t .
-    ?t a code:Function ; code:name ?m .
-    FILTER(?t != {self._uri(target)})
+    VALUES ?t {{ {" ".join(t.n3() for t in overridden)} }}
     {{ ?site code:resolvedTo ?t ; code:tier ?tier . VALUES ?tier {{ {self._literal("T4b")} {self._literal("TJ")} }} }}
     UNION
     {{ ?site code:resolvedTo ?t ; code:tier {self._literal("T1")} ; code:receiver ?r .
-       VALUES ?r {{ {self._literal("self")} {self._literal("cls")} }} }}""", "override")
+       VALUES ?r {{ {self._literal("self")} {self._literal("cls")} }} }}""", "override") if overridden else []
         if target.endswith(".__init__"):  # a subclass whose MRO reaches an outside or unknown base before any __init__
             possible += self._callers(f"?site code:initUnknown true ; code:resolvedTo/code:inherits+ {self._uri(cls)} .", "unknown-base")
         possible = sorted(possible + override, key=lambda c: (c.file_path, c.line, c.id))
@@ -435,6 +434,26 @@ SELECT (COUNT(?site) AS ?n) WHERE {{
             reasons[reason] = int(next(iter(self.graph.query(q))).n) + listed[reason]
         reasons = {k: v for k, v in reasons.items() if v}
         return CallerAnswer(target, callers, possible, "lower-bound" if reasons else "exact", reasons)
+
+    def _overridden(self, target: str) -> list[URIRef]:
+        """Every Function of *target*'s name in a class its class reaches by ``code:inherits+``, other than *target*.
+
+        Walked with triples() lookups: as one SPARQL pattern, rdflib evaluated ``code:inherits+``
+        from every node in the graph (about 65 s on fastapi)."""
+        g, uri = self.graph, URIRef(self._uri(target)[1:-1])
+        found = []
+        for sub in g.subjects(_CODE.contains, uri):
+            if (sub, RDF.type, _CODE.Class) not in g:
+                continue
+            bases, todo = set(), [sub]  # one or more steps, as inherits+: sub itself only through a cycle
+            while todo:
+                for b in g.objects(todo.pop(), _CODE.inherits):
+                    if b not in bases:
+                        bases.add(b)
+                        todo.append(b)
+            found += [t for m in g.objects(uri, _CODE.name) for base in bases for t in g.objects(base, _CODE.contains)
+                      if t != uri and (t, RDF.type, _CODE.Function) in g and (t, _CODE.name, m) in g]
+        return found
 
     def _blast(self, target: str, bare: str, depth: int, limit: int) -> BlastAnswer:
         """Breadth-first over confirmed callers of *target*; each node visited once, so cycles end."""
