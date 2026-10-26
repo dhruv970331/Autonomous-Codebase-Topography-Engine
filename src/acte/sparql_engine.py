@@ -24,8 +24,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from rdflib import Graph, Namespace, URIRef
-from rdflib.namespace import RDF
+from rdflib import Graph, Literal, Namespace, URIRef
+from rdflib.namespace import RDF, XSD
 
 _CODE_NS = "http://acte.local/code#"
 _CODE = Namespace(_CODE_NS)
@@ -418,16 +418,11 @@ SELECT ?site ?status ?tier ?reason ?kind ?path WHERE {
         listed = Counter(c.reason for c in possible)
         reasons = {"ambiguous": listed["ambiguous"], "override": listed["override"]}
         # a method not found before an external or unknown base may be a project method after it in the MRO
+        g, xsd = self.graph, lambda v: Literal(v, datatype=XSD.string)  # counted with triples(): SPARQL took 0.06 s per count
         for status, reason in (("unresolved", "unknown-receiver"), ("unresolved", "unknown-base"), ("ambiguous", "ceiling")):
-            q = _PREFIXES + f"""
-SELECT (COUNT(?site) AS ?n) WHERE {{
-    VALUES ?target_name {{ {" ".join(self._literal(n) for n in names)} }}
-    ?site code:status {self._literal(status)} ;
-          code:reason {self._literal(reason)} ;
-          code:targetName ?target_name .
-}}
-"""
-            reasons[reason] = int(next(iter(self.graph.query(q))).n) + listed[reason]
+            reasons[reason] = listed[reason] + sum(
+                1 for n in names for site in g.subjects(_CODE.targetName, xsd(n))
+                if (site, _CODE.status, xsd(status)) in g and (site, _CODE.reason, xsd(reason)) in g)
         reasons = {k: v for k, v in reasons.items() if v}
         return CallerAnswer(target, callers, possible, "lower-bound" if reasons else "exact", reasons)
 
