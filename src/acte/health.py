@@ -6,16 +6,19 @@ one rule of the graph's shape; a healthy graph returns none.
 
 from importlib.resources import files
 
-from rdflib import Graph
+from rdflib import BNode, Graph, Namespace
 from rdflib.namespace import RDF, RDFS
 from rdflib.plugins.sparql import prepareQuery
 
 _CODE_NS = "http://acte.local/code#"
+_CODE = Namespace(_CODE_NS)
 _PREFIXES = f"PREFIX code: <{_CODE_NS}>\n"
 _STATUSES = '"resolved", "ambiguous", "unresolved", "external"'
+_STATUS_SET = {"resolved", "ambiguous", "unresolved", "external"}
 
 _ONTOLOGY = Graph().parse(files("acte") / "ontology" / "code.ttl", format="turtle")
 _DECLARED = sorted(set(_ONTOLOGY.subjects(RDF.type, RDFS.Class)) | set(_ONTOLOGY.subjects(RDF.type, RDF.Property)))
+_DECLARED_SET = set(_DECLARED)
 
 CHECKS: dict[str, str] = {
     # a calls arrow must end on a Function, an instantiates arrow on a Class
@@ -90,9 +93,49 @@ ORDER BY ?term
 _PREPARED = {name: prepareQuery(_PREFIXES + q) for name, q in CHECKS.items()}  # parsing dominates on small graphs
 
 
+def _statuses(graph: Graph, site) -> list:
+    return list(graph.objects(site, _CODE.status))
+
+
+def _one_known_status(graph: Graph, site) -> bool:
+    statuses = _statuses(graph, site)
+    return len(statuses) == 1 and str(statuses[0]) in _STATUS_SET
+
+
+def _callers_known(graph: Graph, site) -> bool:
+    callers = list(graph.objects(site, _CODE.inFunction))
+    return bool(callers) and all((c, RDF.type, _CODE.File) in graph or (c, RDF.type, _CODE.Function) in graph for c in callers)
+
+
+# The slow checks, as (variable, the nodes that might break the check): a superset found with triples() lookups, so
+# the check's query only runs over those (not at all on a healthy graph). Each row is still the query's own.
+_SUSPECTS = {
+    "callsite-status": ("site", lambda g: [s for s in g.subjects(RDF.type, _CODE.CallSite) if not _one_known_status(g, s)]),
+    "resolved-without-target": ("site", lambda g: [
+        s for s in g.subjects(RDF.type, _CODE.CallSite)
+        if any((str(st) == "resolved") != ((s, _CODE.resolvedTo, None) in g) for st in _statuses(g, s))]),
+    "callsite-without-caller": ("site", lambda g: [
+        s for s in g.subjects(RDF.type, _CODE.CallSite) if not _callers_known(g, s)]),
+    "undeclared-terms": ("term", lambda g: [
+        t for t in set(g.predicates()) | set(g.objects(None, RDF.type))
+        if str(t).startswith(_CODE_NS) and t not in _DECLARED_SET]),
+}
+
+
+def _rows(graph: Graph, name: str) -> list[dict]:
+    """The offending rows of check *name*."""
+    query = _PREPARED[name]
+    if name in _SUSPECTS:
+        var, find = _SUSPECTS[name]
+        suspects = set(find(graph))
+        if not suspects:
+            return []
+        if not any(isinstance(n, BNode) for n in suspects):  # a blank node cannot be written in VALUES: run it all
+            values = f"WHERE {{\n    VALUES ?{var} {{ {' '.join(sorted(n.n3() for n in suspects))} }}"
+            query = _PREFIXES + CHECKS[name].replace("WHERE {", values, 1)
+    return [{k: str(v) for k, v in row.asdict().items()} for row in graph.query(query)]
+
+
 def run_checks(graph: Graph) -> dict[str, list[dict]]:
     """Every check by name, in CHECKS order, with its offending rows ({variable: value as str}); [] is a pass."""
-    return {
-        name: [{k: str(v) for k, v in row.asdict().items()} for row in graph.query(q)]
-        for name, q in _PREPARED.items()
-    }
+    return {name: _rows(graph, name) for name in CHECKS}
