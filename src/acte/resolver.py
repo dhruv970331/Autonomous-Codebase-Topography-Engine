@@ -370,8 +370,12 @@ def _resolve_receiver(index: SymbolIndex, call: CallSite, typed: bool = True) ->
                 ambiguous |= len(files) > 1
             elif index.module_files(submodule, file):  # `from pkg import sub`
                 modules.add(submodule)
-            elif files or b.module.startswith("."):  # a project name that is not a definition (a variable)
-                misses.add("unknown-receiver")
+            elif files or b.module.startswith("."):  # a project name that is not a definition
+                outside = _follow_import(index, b, file) if files else None
+                if outside and outside[0] == "external":  # re-exported from outside the project
+                    external.add("stdlib" if outside[1].split(".")[0] in sys.stdlib_module_names else "third-party")
+                else:
+                    misses.add("unknown-receiver")  # a variable
             else:
                 external.add("stdlib" if b.module.split(".")[0] in sys.stdlib_module_names else "third-party")
         elif files:  # `import a.b` binds module `a`; `import a.b as m` binds `a.b`
@@ -422,21 +426,37 @@ def _resolve_receiver(index: SymbolIndex, call: CallSite, typed: bool = True) ->
 
 
 def _imported_variable(index: SymbolIndex, b: ImportBinding, file: str, method: str) -> tuple[str | None, bool, str] | None:
-    """Follow ``from M import name`` (re-imports too, at most 10 hops) to a module-level variable:
-    its type for a call of *method* on it (``_one_type``) and the file it is bound in. None when the name is not one such variable."""
-    seen = set()
+    """Follow ``from M import name`` (re-imports too) to a module-level variable: its type for a call of *method*
+    on it (``_one_type``) and the file it is bound in. None when the name is not one such variable."""
+    found = _follow_import(index, b, file)
+    if found is None or found[0] != "variable":
+        return None
+    _, file, name = found
+    return *_one_type(index.locals[file][name], method), file
+
+
+def _follow_import(index: SymbolIndex, b: ImportBinding, file: str) -> tuple[str, str, str] | None:
+    """Follow ``from M import name`` in *file* through the project modules that re-import it (at most 10 hops):
+    ("variable", file, name) for a module-level variable of a project module, ("external", module, name) for an
+    import from outside the project (``from starlette.testclient import TestClient`` in fastapi/testclient.py),
+    None for anything else: a definition or a name a ``*`` import may bind (the ladder's own business), a module,
+    two bindings of the name, two matching files, a cycle, or an outside import in a module with a ``*`` import."""
+    seen, stars = set(), False
     for _ in range(10):
         files = [] if b.is_module_alias else index.module_files(b.module, file)
+        if seen and not files and not b.is_module_alias and not b.module.startswith("."):
+            return None if stars else ("external", b.module, b.imported_name)
         submodule = b.module + ("" if b.module.endswith(".") else ".") + b.imported_name
         if len(files) != 1 or (files[0], b.imported_name) in seen or index.module_files(submodule, file):
             return None
         file, name = files[0], b.imported_name
         seen.add((file, name))
         if name in index.exports[file] or _star_exports(index, name, file)[0]:
-            return None  # a definition, or a name a `*` import may bind: the ladder's own business
+            return None
+        stars |= bool(index.star_imports.get(file))  # an outside `from m import *` may rebind the name
         local, imports = _bindings(index, file, name)
         if local and not imports:
-            return *_one_type(index.locals[file][name], method), file
+            return "variable", file, name
         if local or len(imports) != 1:
             return None
         b = imports[0]
@@ -674,6 +694,10 @@ def _decide(index: SymbolIndex, call: CallSite, scope: str) -> CallResolution:
                 external.add("stdlib" if b.module.split(".")[0] in sys.stdlib_module_names else "third-party")
             continue
         hits = set() if b.is_module_alias else {index.exports[f][b.imported_name] for f in files if b.imported_name in index.exports[f]}
+        outside = None if hits or b.is_module_alias else _follow_import(index, b, file)
+        if outside and outside[0] == "external":  # a project module re-exports a name from outside the project
+            external.add("stdlib" if outside[1].split(".")[0] in sys.stdlib_module_names else "third-party")
+            continue
         unmatched |= not hits  # a module, or a name that is not a project definition
         ids |= hits
         ambiguous |= len(files) > 1

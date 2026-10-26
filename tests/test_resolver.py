@@ -1000,6 +1000,30 @@ def test_attribute_types_count_subclasses_and_class_level_literals(tmp_path):
     assert calls[("lit.py::Introspection.keys", "keys")] == ("unresolved", None, None, "unknown-receiver")  # a dict and a list
 
 
+def test_names_a_project_module_re_exports_from_outside_are_external(tmp_path):
+    calls = _calls(tmp_path, {
+        "pkg/__init__.py": "from pkg.testclient import TestClient\n",
+        # fastapi/testclient.py
+        "pkg/testclient.py": "from starlette.testclient import TestClient as TestClient  # noqa\n",
+        "pkg/concurrency.py": "from contextlib import asynccontextmanager\n",
+        "pkg/compat.py": "try:\n    from ujson import dumps\nexcept ImportError:\n    from json import dumps\n",
+        "pkg/star.py": "from json import loads\nfrom os import *\n",
+        "tests/test_app.py": (
+            "from pkg import TestClient\nfrom pkg.concurrency import asynccontextmanager\n"
+            "from pkg.compat import dumps\nfrom pkg.star import loads\n\n\n"
+            "def test_a():\n    client = TestClient(app)\n    asynccontextmanager(f)\n    dumps(1)\n    loads('1')\n\n\n"
+            "def test_b(client: TestClient):\n    client.get('/')\n"
+        ),
+        "pkg/rel.py": "from .testclient import TestClient\n\n\ndef make():\n    return TestClient.create()\n",
+    })
+    assert calls[("tests/test_app.py::test_a", "TestClient")] == ("external", None, None, "third-party")
+    assert calls[("tests/test_app.py::test_a", "asynccontextmanager")] == ("external", None, None, "stdlib")
+    assert calls[("tests/test_app.py::test_b", "get")] == ("external", None, None, "third-party")  # annotated with the re-export
+    assert calls[("pkg/rel.py::make", "create")] == ("external", None, None, "third-party")
+    assert calls[("tests/test_app.py::test_a", "dumps")] == ("unresolved", None, None, "no-match")  # two imports of dumps
+    assert calls[("tests/test_app.py::test_a", "loads")] == ("unresolved", None, None, "no-match")  # `from os import *` after it
+
+
 def test_attribute_chains(tmp_path):
     calls = _calls(tmp_path, {
         "graph.py": "class Node:\n    def key(self):\n        pass\n\n\nclass MigrationGraph:\n    def __init__(self):\n        self.root = Node()\n\n"
