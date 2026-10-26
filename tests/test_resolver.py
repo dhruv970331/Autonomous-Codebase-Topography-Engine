@@ -909,8 +909,9 @@ def test_super_calls(tmp_path):
         assert calls[(f"s.py::{caller}", "m")] == ("resolved", "T1", "s.py::A.m", None), caller
     assert calls[("s.py::B.none", "n")] == ("unresolved", None, None, "no-match")
     assert calls[("s.py::C.k", "keys")] == ("unresolved", None, None, "unknown-base")
-    for caller in ("B.nested.<locals>.f", "B.other", "free"):  # zero-argument super() in a nested function; super(A, self) in B; no class
+    for caller in ("B.nested.<locals>.f", "free"):  # zero-argument super() in a nested function; no class
         assert calls[(f"s.py::{caller}", "m")] == ("unresolved", None, None, "unknown-receiver"), caller
+    assert calls[("s.py::B.other", "m")] == ("unresolved", None, None, "no-match")  # super(A, self) in B: nothing after A
     assert calls[("t.py::B.m", "m")] == ("unresolved", None, None, "unknown-receiver")  # super is not the builtin
 
 
@@ -922,6 +923,35 @@ def test_super_with_explicit_class_in_a_closure(tmp_path):
         ),
     })
     assert calls[("s.py::B.m.<locals>.f", "m")] == ("resolved", "T1", "s.py::A.m", None)
+
+
+def test_super_with_a_base_class_or_another_object(tmp_path):
+    calls = _calls(tmp_path, {
+        # django/forms/fields.py:374: FloatField.to_python skips IntegerField.to_python
+        "fields.py": (
+            "class Field:\n    def to_python(self, value):\n        return value\n\n\n"
+            "class IntegerField(Field):\n    def to_python(self, value):\n        return int(value)\n\n\n"
+            "class FloatField(IntegerField):\n    def to_python(self, value):\n"
+            "        value = super(IntegerField, self).to_python(value)\n        return float(value)\n\n"
+            "    def clean(self, value):\n        return super(FloatField, self).to_python(value)\n\n"
+            "    def other(self, value):\n        return super(Unrelated, self).to_python(value)\n\n\n"
+            "class Unrelated:\n    def to_python(self, value):\n        pass\n"
+        ),
+        # django/db/models/aggregates.py:136: super(Aggregate, c) on a copy of self
+        "agg.py": (
+            "class Func:\n    def get_source_expressions(self):\n        return []\n\n\n"
+            "class Aggregate(Func):\n    def get_source_expressions(self):\n        return []\n\n"
+            "    def resolve_expression(self):\n        c = self.copy()\n        return super(Aggregate, c).get_source_expressions()\n\n"
+            "    def by_name(self, klass):\n        return super(klass, self).copy()\n"
+        ),
+    })
+    assert calls[("fields.py::FloatField.to_python", "to_python")] == ("resolved", "T1", "fields.py::Field.to_python", None)
+    assert calls[("fields.py::FloatField.clean", "to_python")] == ("resolved", "T1", "fields.py::IntegerField.to_python", None)
+    # not in FloatField's MRO: a TypeError at run time
+    assert calls[("fields.py::FloatField.other", "to_python")] == ("unresolved", None, None, "unknown-receiver")
+    assert calls[("agg.py::Aggregate.resolve_expression", "get_source_expressions")] == (
+        "resolved", "T1", "agg.py::Func.get_source_expressions", None)
+    assert calls[("agg.py::Aggregate.by_name", "copy")] == ("unresolved", None, None, "unknown-receiver")  # klass is a variable
 
 
 def test_bad_class_graphs_are_unknown(tmp_path):

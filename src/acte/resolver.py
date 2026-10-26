@@ -313,9 +313,9 @@ def _resolve_receiver(index: SymbolIndex, call: CallSite, typed: bool = True) ->
     parts, name, file = call.receiver.split("."), call.target_name, call.file_path
     unknown = CallResolution(call, "unresolved", reason="unknown-receiver")
     if not all(p.isidentifier() for p in parts):  # a literal, call or subscript: values are not followed (N2)
-        cls = _super_class(index, call)
-        if cls:
-            return _on_class(index, call, cls, "T1", after=True)
+        found = _super_class(index, call)
+        if found:
+            return _on_class(index, call, found[0], "T1", after=found[1])
         callee = call.receiver[:-1].split("(")[0]
         if typed and call.receiver.endswith(")") and call.receiver.count("(") == 1 and all(p.isidentifier() for p in callee.split(".")):
             return _typed(index, call, callee, False, call.caller_id)  # R24a: `C(...).m()`
@@ -457,13 +457,14 @@ def _typed(index: SymbolIndex, call: CallSite, type_name: str | None, annotated:
     return _pick(index, call, ids, found.status == "ambiguous", "T4b")
 
 
-def _method(index: SymbolIndex, cls: str, name: str, after: bool = False) -> tuple[str | None, str | None]:
-    """Method *name* of class *cls*, or of the classes after it in its MRO (``super()``: *after*), as (id, None).
+def _method(index: SymbolIndex, cls: str, name: str, after: str | None = None) -> tuple[str | None, str | None]:
+    """Method *name* of class *cls* through its MRO, as (id, None); with *after* (``super()``), only the classes
+    after *after* in cls's MRO, which the caller has checked holds it.
     Not found: (None, "no-match"), or (None, "unknown-base") once an external or unknown base, or a broken MRO, could hold it."""
-    if not after and name in index.by_class[cls]:
+    if after is None and name in index.by_class[cls]:
         return index.by_class[cls][name], None
     mro = index.mro.get(cls)
-    for c in mro[1:] if mro else []:
+    for c in mro[mro.index(after if after else cls) + 1:] if mro else []:
         if not isinstance(c, str):
             return None, "unknown-base"
         if name in index.by_class[c]:
@@ -471,28 +472,40 @@ def _method(index: SymbolIndex, cls: str, name: str, after: bool = False) -> tup
     return None, "no-match" if mro else "unknown-base"
 
 
-def _on_class(index: SymbolIndex, call: CallSite, cls: str, tier: str, after: bool = False) -> CallResolution:
+def _on_class(index: SymbolIndex, call: CallSite, cls: str, tier: str, after: str | None = None) -> CallResolution:
     target, reason = _method(index, cls, call.target_name, after)
     return _pick(index, call, {target}, False, tier) if target else CallResolution(call, "unresolved", reason=reason)
 
 
-def _super_class(index: SymbolIndex, call: CallSite) -> str | None:
-    """The class C of ``super().m()`` in a method of C, or of ``super(C, self).m()`` where ``self`` is a method's
-    first parameter in C; None for anything else, or when ``super`` is not the builtin."""
+def _super_class(index: SymbolIndex, call: CallSite) -> tuple[str, str] | None:
+    """(C, B) for a ``super`` receiver whose method is looked up in C's MRO after B; None for anything else,
+    or when ``super`` is not the builtin.
+
+    ``super().m()`` in a method of C is (C, C). ``super(B, y).m()`` needs B to name a project class: when ``y`` is
+    the first parameter of a method of C (``self``/``cls``) B must be in C's MRO, else it is (B, B), since ``y`` must
+    be an instance of B; as for ``super()``, the MRO is the declared one, not that of the object at run time."""
     receiver, caller, file = call.receiver, call.caller_id, call.file_path
     if not (receiver.startswith("super(") and receiver.endswith(")")) or _binding_scope(index, "super", caller, file):
         return None
     args = receiver[6:-1].split(",") if receiver[6:-1] else []
     if not args:  # zero-argument super() uses the method's own first parameter
         firsts = set(index.first_params.get(caller, []))
-        return _self_class(index, caller, firsts.pop()) if len(firsts) == 1 else None
+        cls = _self_class(index, caller, firsts.pop()) if len(firsts) == 1 else None
+        return (cls, cls) if cls else None
     if len(args) != 2 or not args[1].isidentifier() or not all(p.isidentifier() for p in args[0].split(".")):
+        return None
+    named, _, name = args[0].rpartition(".")
+    found = _resolve_call(index, CallSite(caller, name, named or None, file, call.line, call.col), typed=False)
+    if found.status != "resolved" or index.by_id[found.target].kind != "Class":
         return None
     scope = _binding_scope(index, args[1], caller, file)
     cls = _self_class(index, scope, args[1]) if scope else None
-    named, _, name = args[0].rpartition(".")
-    found = _resolve_call(index, CallSite(caller, name, named or None, file, call.line, call.col), typed=False)
-    return cls if found.status == "resolved" and found.target == cls else None
+    if cls is None:
+        return found.target, found.target
+    mro = index.mro.get(cls)
+    if mro is not None and found.target not in mro:  # a TypeError at run time
+        return None
+    return cls, found.target
 
 
 def _self_class(index: SymbolIndex, scope: str, name: str) -> str | None:
