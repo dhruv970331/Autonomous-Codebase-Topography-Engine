@@ -75,6 +75,11 @@ def _count(n: int, one: str, many: str) -> str:
     return f"{n} {one if n == 1 else many}"
 
 
+def _kinds(kinds: list[str]) -> str:
+    """The label of an import that is only of *kinds*: ``["in-function"]`` as " (in function)"; "" for none."""
+    return f" ({', '.join(k.replace('-', ' ') for k in kinds)})" if kinds else ""
+
+
 def _calls(reasons: dict[str, int], words: dict[str, str] = _REASONS) -> str:
     """``{"local": 2}`` as "2 calls through local variables"."""
     return ", ".join(f"{n} call{'' if n == 1 else 's'} {words.get(r, r)}" for r, n in reasons.items() if n)
@@ -120,6 +125,13 @@ def _head(project: str | Path) -> str | None:
     return (head.stdout.strip() or None) if head.returncode == 0 else None
 
 
+def stale_warning(built: str | None, now: str | None) -> str:
+    """The warning line to put first when the project is at commit *now* but the graph was built at *built*, else ""."""
+    if not built or now is None or now == str(built):
+        return ""
+    return f"Warning: this map was built at commit {built[:7]} but the project is now at {now[:7]}; answers may be out of date.\n"
+
+
 def create_server(graph_path: str | Path, project: str | Path | None = None, profile: str = "small") -> MCPServer:
     """A server over the graph in *graph_path*, loaded once and read under one lock (the SDK runs sync tools on worker threads)."""
     engine = SPARQLEngine.from_turtle(graph_path)
@@ -129,10 +141,7 @@ def create_server(graph_path: str | Path, project: str | Path | None = None, pro
 
     def stale() -> str:
         """The warning line to put first when the project has moved on from the graph's commit, else ""."""
-        now = _head(project) if project and built else None
-        if now is None or now == str(built):
-            return ""
-        return f"Warning: this map was built at commit {built[:7]} but the project is now at {now[:7]}; answers may be out of date.\n"
+        return stale_warning(built, _head(project) if project and built else None)
 
     def tool(description: str, full: bool = False):
         """Register the decorated function as a text tool whose answers carry the stale warning; *full*: full profile only."""
@@ -276,9 +285,10 @@ def create_server(graph_path: str | Path, project: str | Path | None = None, pro
             if answer:
                 return answer
             files = set(engine.files())
-            deps = engine.dependencies_of(path)
-        project = [d for d in deps if d in files]
-        outside = [d for d in deps if d not in files]
+            answer = engine.dependencies_of(path)
+        deps, kinds = answer.dependencies, answer.kinds
+        project = [d + _kinds(kinds.get(d, [])) for d in deps if d in files]
+        outside = [d + _kinds(kinds.get(d, [])) for d in deps if d not in files]
         headline = (f"dependencies_of {path}: {_count(len(project), 'project file', 'project files')}, "
                     f"{_count(len(outside), 'outside module', 'outside modules')}")
         return _text(headline, [("Project files:", project), ("Outside modules:", outside)])
@@ -313,6 +323,8 @@ def create_server(graph_path: str | Path, project: str | Path | None = None, pro
             + (f" with jedi {jedi}" if jedi else " without jedi"),
             f"Size: {counts['File']} files, {counts['Function']} functions, {counts['Class']} classes, {cov['total']} calls",
             f"Coverage: {rate} of calls resolved (calls to outside code not counted)",
+            *([f"Calls in languages without call resolution: {cov['no_resolver']} (not counted in coverage or status)"]
+              if cov["no_resolver"] else []),
             f"Status: {', '.join(f'{n} {k}' for k, n in cov['status'].items()) or 'no calls'}",
             f"Resolved: {_calls(cov['tier'], _TIERS) or 'none'}",
             f"Not resolved to project code: {_calls(cov['reason']) or 'none'}",

@@ -28,8 +28,8 @@ SELECT ?s ?p ?o WHERE {
 ORDER BY ?s ?p ?o
 """,
     "dangling-import-arrows": """
-SELECT ?s ?o WHERE {
-    ?s code:importsFrom ?o .
+SELECT DISTINCT ?s ?o WHERE {
+    ?s code:importsFrom|code:importsTypeOnly|code:importsInFunction|code:importsInMainBlock ?o .
     FILTER NOT EXISTS { ?o a code:File }
 }
 ORDER BY ?s ?o

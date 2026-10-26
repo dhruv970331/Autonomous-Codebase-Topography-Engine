@@ -31,6 +31,17 @@ _PREFIXES = (
     f"PREFIX code: <{_CODE_NS}>\n"
     "PREFIX xsd:  <http://www.w3.org/2001/XMLSchema#>\n"
 )
+# every kind of import of a project file, and of an outside module (ontology/code.ttl)
+_IMPORTS = "code:importsFrom|code:importsTypeOnly|code:importsInFunction|code:importsInMainBlock"
+_IMPORTS_EXTERNAL = "code:importsExternal|code:importsTypeOnlyExternal|code:importsInFunctionExternal|code:importsInMainBlockExternal"
+# the kind of each import predicate, and the order kinds other than "module" are listed in
+IMPORT_KINDS = {_CODE_NS + p: kind for p, kind in {
+    "importsFrom": "module",          "importsExternal": "module",
+    "importsTypeOnly": "type-only",   "importsTypeOnlyExternal": "type-only",
+    "importsInFunction": "in-function", "importsInFunctionExternal": "in-function",
+    "importsInMainBlock": "main-block", "importsInMainBlockExternal": "main-block",
+}.items()}
+KIND_ORDER = ("type-only", "in-function", "main-block")
 _MAX_ANSWERS = 6  # R23: per-definition answers for an ambiguous name
 _MAX_DEPTH = 10  # D3: hard ceiling on blast_radius hops
 
@@ -83,6 +94,12 @@ class CallerAnswer:
                             # and, for C.__init__, creations of a subclass whose MRO stops at an outside base first (D9)
     completeness: str       # "exact" | "lower-bound" (R23)
     reasons: dict[str, int]  # why lower-bound: "ambiguous", "override", "unknown-receiver", "unknown-base", "ceiling" counts
+
+
+@dataclass
+class DependenciesAnswer:
+    dependencies: list[str]      # project file paths and outside module names, sorted
+    kinds: dict[str, list[str]]  # a dependency with no module-level import: its kinds, in KIND_ORDER
 
 
 @dataclass
@@ -235,19 +252,23 @@ ORDER BY ?start
             for r in self.graph.query(q)
         ]
 
-    def dependencies_of(self, file_path: str) -> list[str]:
+    def dependencies_of(self, file_path: str) -> DependenciesAnswer:
         """Return what *file_path* imports, sorted: the path of each project file it imports,
-        and the dotted name (``os.path``) of each module outside the project."""
+        and the dotted name (``os.path``) of each module outside the project. Each one it never
+        imports at module level gets its kinds of import ("type-only", "in-function", "main-block")."""
         file_uri = self._uri(file_path)
         q = _PREFIXES + f"""
-SELECT DISTINCT ?dep WHERE {{
-    {{ {file_uri} code:importsFrom/code:filePath ?dep }}
+SELECT DISTINCT ?dep ?p WHERE {{
+    {{ {file_uri} ?p ?t . ?t code:filePath ?dep . VALUES ?p {{ {_IMPORTS.replace("|", " ")} }} }}
     UNION
-    {{ {file_uri} code:importsExternal ?dep }}
+    {{ {file_uri} ?p ?dep . VALUES ?p {{ {_IMPORTS_EXTERNAL.replace("|", " ")} }} }}
 }}
-ORDER BY ?dep
 """
-        return [str(r.dep) for r in self.graph.query(q)]
+        found: dict[str, set[str]] = {}
+        for r in self.graph.query(q):
+            found.setdefault(str(r.dep), set()).add(IMPORT_KINDS[str(r.p)])
+        kinds = {d: [k for k in KIND_ORDER if k in ks] for d, ks in found.items() if "module" not in ks}
+        return DependenciesAnswer(sorted(found), kinds)
 
     def orphan_functions(self) -> list[FunctionResult]:
         """Return functions that are never called by anything in the graph.
@@ -300,20 +321,23 @@ ORDER BY ?path
 
     def coverage(self) -> dict:
         """Counts per status, tier (resolved only), reason and edge kind, plus total and
-        rate = resolved / (total - external): ``Resolution.report()`` from the graph alone,
+        rate = resolved / (calls - external): ``Resolution.report()`` from the graph alone,
         without the jedi fields only the resolver knows. A call's edge kind is the type
-        of its target, so a recursive call counts too, as in ``report()``."""
+        of its target, so a recursive call counts too, as in ``report()``. Only calls in
+        languages with call resolution are measured; no_resolver counts the others, total all."""
         q = _PREFIXES + """
-SELECT ?site ?status ?tier ?reason ?kind WHERE {
+SELECT ?site ?status ?tier ?reason ?kind ?path WHERE {
     ?site a code:CallSite ;
           code:status ?status .
     OPTIONAL { ?site code:tier ?tier }
     OPTIONAL { ?site code:reason ?reason }
     OPTIONAL { ?site code:resolvedTo/a ?kind }
+    OPTIONAL { ?site code:inFunction/code:filePath ?path }
 }
 """
         edges = {f"{_CODE_NS}Function": "calls", f"{_CODE_NS}Class": "instantiates"}
-        rows = list(self.graph.query(q))
+        everything = list(self.graph.query(q))
+        rows = [r for r in everything if str(r.path).endswith(".py")]  # as the resolver: only Python is resolved
 
         def count(values):
             return dict(sorted(Counter(str(v) for v in values if v is not None).items()))
@@ -321,11 +345,12 @@ SELECT ?site ?status ?tier ?reason ?kind WHERE {
         measured = len(rows) - status.get("external", 0)
         return {
             "edge": count(edges.get(str(r.kind)) for r in rows),
+            "no_resolver": len(everything) - len(rows),
             "rate": status.get("resolved", 0) / measured if measured else None,
             "reason": count(r.reason for r in rows),
             "status": status,
             "tier": count(r.tier for r in rows),
-            "total": len(rows),
+            "total": len(everything),
         }
 
     def execute_raw_sparql(self, query: str) -> list[dict[str, Any]]:

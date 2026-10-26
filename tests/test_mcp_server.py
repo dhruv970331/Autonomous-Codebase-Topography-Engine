@@ -274,6 +274,21 @@ def test_full_profile_tools(serve, tool, arguments, expected):
     assert _call(serve(CALLS, profile="full"), tool, **arguments) == "\n".join(expected)
 
 
+def test_dependencies_of_labels_imports_not_at_module_level(serve):
+    files = {
+        "a.py": "",
+        "lib.py": "",
+        "app.py": ("import lib\nfrom typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    import a\n    import json\n\n\n"
+                   "def f():\n    import a\n    import csv\n    import lib\n\n\nif __name__ == '__main__':\n    import argparse\n"),
+    }
+    expected = [
+        "dependencies_of app.py: 2 project files, 4 outside modules",
+        "Project files:", "a.py (type only, in function)", "lib.py",
+        "Outside modules:", "argparse (main block)", "csv (in function)", "json (type only)", "typing",
+    ]
+    assert _call(serve(files, profile="full"), "dependencies_of", path="app.py") == "\n".join(expected)
+
+
 def test_graph_info(serve):
     lines = _call(serve(CALLS, profile="full"), "graph_info").splitlines()
     assert lines[0].startswith("graph_info: proj")
@@ -288,6 +303,17 @@ def test_graph_info(serve):
          "1 call to the standard library, 1 call on objects of unknown type"),
         "Health: ok",
     ]
+
+
+def test_graph_info_counts_other_languages_apart(serve):
+    lines = _call(serve(CALLS | {"svc/main.go": "package main\n\nfunc main() {\n\tfmt.Println(run())\n}\n"},
+                        profile="full"), "graph_info").splitlines()
+    assert lines[1:4] == [
+        "Size: 7 files, 9 functions, 2 classes, 13 calls",
+        "Coverage: 50.0% of calls resolved (calls to outside code not counted)",
+        "Calls in languages without call resolution: 2 (not counted in coverage or status)",
+    ]
+    assert lines[4:] == _call(serve(CALLS, profile="full"), "graph_info").splitlines()[3:]
 
 
 CALLS_EACH_TOOL = [("find_symbol", {"name": "connect"}), ("callers_of", {"name": "zz"}), ("callees_of", {"name": "run"}),

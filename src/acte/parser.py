@@ -29,6 +29,7 @@ class NodeInfo:
     params: str | None = None
     return_type: str | None = None
     bases: list[str] | None = None  # a Python class's bases as written (UNKNOWN_BASE for any other expression); None otherwise
+    decorator_line: int | None = None  # a decorated Python definition's first decorator line; None otherwise
     is_test: bool = False
     extra: dict = field(default_factory=dict)
 
@@ -110,28 +111,36 @@ _CLASS_TYPES: dict[str, list[str]] = {
     "python": ["class_definition"],
     "javascript": ["class_declaration", "class"],
     "typescript": ["class_declaration", "class"],
+    "tsx": ["class_declaration", "class"],
     "java": ["class_declaration", "interface_declaration", "enum_declaration"],
+    "go": ["type_spec"],  # every named type: struct, interface, `type UUID [16]byte`; not `type A = B`
 }
 
 _FUNCTION_TYPES: dict[str, list[str]] = {
     "python": ["function_definition"],
-    "javascript": ["function_declaration", "method_definition", "arrow_function"],
-    "typescript": ["function_declaration", "method_definition", "arrow_function"],
+    "javascript": ["function_declaration", "method_definition"],
+    "typescript": ["function_declaration", "method_definition"],
+    "tsx": ["function_declaration", "method_definition"],
     "java": ["method_declaration", "constructor_declaration"],
+    "go": ["function_declaration", "method_declaration"],
 }
 
 _CALL_TYPES: dict[str, list[str]] = {
     "python": ["call"],
     "javascript": ["call_expression", "new_expression"],
     "typescript": ["call_expression", "new_expression"],
+    "tsx": ["call_expression", "new_expression"],
     "java": ["method_invocation", "object_creation_expression"],
+    "go": ["call_expression"],
 }
 
 _IMPORT_TYPES: dict[str, list[str]] = {
     "python": ["import_statement", "import_from_statement"],
     "javascript": ["import_statement"],
     "typescript": ["import_statement"],
+    "tsx": ["import_statement"],
     "java": ["import_declaration"],
+    "go": ["import_spec"],
 }
 
 # Python nodes that bind local names (_extract_bindings).
@@ -146,6 +155,11 @@ _VALUE_SEQUENCES = {"expression_list", "tuple", "list"}
 _PUNCTUATION = {"(", ")", "[", "]", ","}
 # A class base that is not a plain or dotted name (`f()`, `*bases`): never a name, so it never resolves.
 UNKNOWN_BASE = "?"
+
+# The conditions of an `if` whose first block holds imports of their own kind, as _compact_text writes them:
+# it runs only for a type checker, or only when the file is run as a script (at module level).
+_TYPE_CHECKING = {"TYPE_CHECKING", "typing.TYPE_CHECKING"}
+_MAIN = {'__name__=="__main__"', "__name__=='__main__'", '"__main__"==__name__', "'__main__'==__name__"}
 
 # Kept whole by _compact_text: whitespace inside a literal is part of its value.
 _ATOMIC_TYPES = {"string", "template_string"}
@@ -420,7 +434,7 @@ class CodeParser:
         import_bindings = [b for b in import_bindings if b.local_name != "*"]
         return ParseResult(nodes=nodes, edges=edges, call_sites=call_sites, import_bindings=import_bindings, local_bindings=local_bindings, star_imports=star_imports)
 
-    def _extract_from_tree(self, root, source, language, file_path, nodes, edges, call_sites, import_bindings, local_bindings, scope=None, in_func=False, func=None, method_of=None, _depth=0):
+    def _extract_from_tree(self, root, source, language, file_path, nodes, edges, call_sites, import_bindings, local_bindings, scope=None, in_func=False, func=None, method_of=None, _depth=0, block=None):
         """Walk *root*, giving definitions ids shaped like Python's ``__qualname__``.
 
         *scope* is the qualname of the innermost enclosing class or function (None at
@@ -428,6 +442,8 @@ class CodeParser:
         inside it get ``<locals>``: ``outer.<locals>.helper``, but ``A.B`` for a class in a class.
         *func* is the qualname of the innermost enclosing function, the caller of any call.
         *method_of* is the class qualname when that scope is a method, the owner of ``self.X``.
+        *block* is "type-only" inside the first block of an ``if TYPE_CHECKING:``, "main-block" inside that of a
+        module-level ``if __name__ == "__main__":``, else None. The innermost such block counts.
         """
         if _depth > 180 or not root:
             return
@@ -436,16 +452,28 @@ class CodeParser:
         func_types = set(_FUNCTION_TYPES.get(language, []))
         call_types = set(_CALL_TYPES.get(language, []))
         import_types = set(_IMPORT_TYPES.get(language, []))
+        # only its first block runs for a type checker; elif and else run as usual
+        parts = _get_children(root) if language == "python" and _get_type(root) == "if_statement" else []
+        condition = _compact_text(parts[1], source) if len(parts) > 1 else ""
+        opens = "type-only" if condition in _TYPE_CHECKING else "main-block" if condition in _MAIN and not scope else None
 
         for child in _get_children(root):
             node_type = _get_type(child)
 
-            if node_type in class_types or node_type in func_types:
+            # `const f = () => ...`: a Function named f. Any other arrow function or function
+            # expression is no definition; the walk below goes through its body, as for a lambda.
+            fn_var = language in ("javascript", "typescript", "tsx") and self._is_function_variable(child)
+            if node_type in class_types or node_type in func_types or fn_var:
                 name_node = self._get_name_node(child)
                 name = _safe_text(name_node, source) if name_node else None
                 if name:
-                    is_func = node_type in func_types
+                    is_func = node_type in func_types or fn_var
                     parent = f"{scope}.<locals>" if in_func else scope
+                    if language == "go" and node_type == "method_declaration":
+                        # `Recv.Method`, contained by the File: the type may be declared in another file of the package
+                        parent = self._go_receiver_type(child, source)
+                        if parent is None:  # a receiver shape not handled, such as `(p (*Point))`: no id for it
+                            continue
                     qualname = f"{parent}.{name}" if parent else name
                     container = f"{file_path}::{scope}" if scope else file_path
                     parts = _get_children(child)
@@ -453,11 +481,14 @@ class CodeParser:
                     # R24b: `-> Database`, as written; the resolver decides what it names
                     returns = self._annotation_type(parts[types.index("->") + 1], source) if language == "python" and is_func and "->" in types else None
                     bases = self._class_bases(parts, source) if language == "python" and not is_func else None
-                    nodes.append(NodeInfo("Function" if is_func else "Class", name, file_path, _get_start_line(child), _get_end_line(child), language, parent, return_type=returns, bases=bases))
+                    # the decorators are the parent decorated_definition's, which starts at the first of them
+                    decorated = _get_start_line(root) if language == "python" and _get_type(root) == "decorated_definition" else None
+                    nodes.append(NodeInfo("Function" if is_func else "Class", name, file_path, _get_start_line(child), _get_end_line(child), language, parent,
+                                          return_type=returns, bases=bases, decorator_line=decorated))
                     edges.append(EdgeInfo("CONTAINS", container, f"{file_path}::{qualname}", file_path, _get_start_line(child)))
                     if language == "python":  # R17: the name is bound in the enclosing scope
                         local_bindings.append(LocalBinding(container, name, "def" if is_func else "class", None, file_path, _get_start_line(name_node)))
-                    self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, import_bindings, local_bindings, qualname, is_func, qualname if is_func else func, scope if is_func and scope and not in_func else None, _depth + 1)
+                    self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, import_bindings, local_bindings, qualname, is_func, qualname if is_func else func, scope if is_func and scope and not in_func else None, _depth + 1, block)
                 continue
 
             if node_type in call_types:
@@ -468,13 +499,14 @@ class CodeParser:
                     caller = f"{file_path}::{func}" if func else file_path
                     receiver = self._get_call_receiver(child, source)
                     call_sites.append(CallSite(caller, call_name, receiver, file_path, _get_start_line(name_node), _get_start_col(name_node)))
-                self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, import_bindings, local_bindings, scope, in_func, func, method_of, _depth + 1)
+                self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, import_bindings, local_bindings, scope, in_func, func, method_of, _depth + 1, block)
                 continue
 
             if node_type in import_types:
                 # Innermost scope, class included: a class-body import is visible only in that body.
                 scope_id = f"{file_path}::{scope}" if scope else file_path
-                self._extract_imports(child, language, source, file_path, edges, import_bindings, scope_id)
+                kind = block or ("in-function" if func else "module")
+                self._extract_imports(child, language, source, file_path, edges, import_bindings, scope_id, kind)
                 continue
 
             if language == "python" and node_type in _BINDING_TYPES:
@@ -483,7 +515,8 @@ class CodeParser:
                 self._extract_bindings(child, source, file_path, scope_id, method_id, local_bindings)
                 # no continue: values and default arguments still hold calls
 
-            self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, import_bindings, local_bindings, scope, in_func, func, method_of, _depth + 1)
+            self._extract_from_tree(child, source, language, file_path, nodes, edges, call_sites, import_bindings, local_bindings, scope, in_func, func, method_of, _depth + 1,
+                                    opens if opens and node_type == "block" else block)
 
     def _get_name_node(self, node):
         for child in _get_children(node):
@@ -491,6 +524,29 @@ class CodeParser:
             if t in ("identifier", "name", "type_identifier", "property_identifier", "field_identifier"):
                 return child
         return None
+
+    def _is_function_variable(self, node) -> bool:
+        """``const f = () => ...`` or ``let f = function () {}``: a declarator of one plain name
+        whose value is an arrow function or function expression."""
+        if _get_type(node) != "variable_declarator":
+            return False
+        parts = _get_children(node)
+        return (len(parts) >= 3 and _get_type(parts[0]) == "identifier" and _get_type(parts[-2]) == "="
+                and _get_type(parts[-1]) in ("arrow_function", "function_expression"))
+
+    def _go_receiver_type(self, method, source: bytes) -> str | None:
+        """The receiver type name of a Go method, pointer ``*`` and type arguments removed:
+        ``Point`` for ``(p *Point)`` or ``(p (*Point))``, ``Pair`` for ``(p *Pair[T])``. None for any other receiver shape."""
+        receiver = next((c for c in _get_children(method) if _get_type(c) == "parameter_list"), None)
+        decl = next((c for c in _get_children(receiver) if _get_type(c) == "parameter_declaration"), None)
+        t = _get_children(decl)[-1] if decl else None  # the type comes last, after the optional name
+        while _get_type(t) == "parenthesized_type":  # `(p (*Point))`
+            t = _get_children(t)[1]
+        if _get_type(t) == "pointer_type":
+            t = _get_children(t)[-1]
+        if _get_type(t) == "generic_type":
+            t = _get_children(t)[0]
+        return _safe_text(t, source) if _get_type(t) == "type_identifier" else None
 
     def _get_call_name(self, node, source: bytes) -> str | None:
         name_node = self._get_call_name_node(node)
@@ -506,9 +562,9 @@ class CodeParser:
         t = _get_type(first)
         if t in ("identifier", "simple_identifier"):
             return first
-        if t in ("attribute", "member_expression"):
+        if t in ("attribute", "member_expression", "selector_expression"):
             for child in reversed(_get_children(first)):
-                if _get_type(child) in ("identifier", "property_identifier"):
+                if _get_type(child) in ("identifier", "property_identifier", "field_identifier"):
                     return child
         return None
 
@@ -522,7 +578,7 @@ class CodeParser:
         t = _get_type(first)
         if t in ("identifier", "simple_identifier"):
             return None
-        if t in ("attribute", "member_expression"):
+        if t in ("attribute", "member_expression", "selector_expression"):
             # `return *o.m(), x` parses with the star on `o`; it belongs to the result, not the receiver
             full_text = _compact_text(first, source).lstrip("*")
             if "." not in full_text:
@@ -720,7 +776,10 @@ class CodeParser:
             return len(parts) == 3 and self._is_dotted(parts[0]) and _get_type(parts[2]) == "identifier"
         return False
 
-    def _extract_imports(self, node, language: str, source: bytes, file_path: str, edges: list[EdgeInfo], import_bindings: list[ImportBinding], scope_id: str) -> None:
+    def _extract_imports(self, node, language: str, source: bytes, file_path: str, edges: list[EdgeInfo], import_bindings: list[ImportBinding], scope_id: str, kind: str = "module") -> None:
+        """IMPORTS_FROM edges and bindings. A Python edge's extra["import_kind"] is *kind*:
+        "module", "type-only" (under ``if TYPE_CHECKING:``), "main-block" (under a module-level
+        ``if __name__ == "__main__":``) or "in-function" (in a function body)."""
         if language == "python":
             node_type = _get_type(node)
             line = _get_start_line(node)
@@ -730,19 +789,24 @@ class CodeParser:
                     # it the loop skips past the module and matches an imported name instead.
                     if _get_type(child) in ("dotted_name", "relative_import"):
                         target = _safe_text(child, source)
-                        edges.append(EdgeInfo("IMPORTS_FROM", file_path, target, file_path, line))
+                        edges.append(EdgeInfo("IMPORTS_FROM", file_path, target, file_path, line, {"import_kind": kind}))
                         break
                 self._extract_import_from_bindings(node, source, file_path, line, import_bindings, scope_id)
             else:
                 for child in _get_children(node):
                     if _get_type(child) == "dotted_name":
                         target = _safe_text(child, source)
-                        edges.append(EdgeInfo("IMPORTS_FROM", file_path, target, file_path, line))
+                        edges.append(EdgeInfo("IMPORTS_FROM", file_path, target, file_path, line, {"import_kind": kind}))
                 self._extract_import_bindings(node, source, file_path, line, import_bindings, scope_id)
         elif language in ("javascript", "typescript", "tsx"):
             for child in _get_children(node):
                 if _get_type(child) == "string":
                     val = _safe_text(child, source).strip("'\"")
+                    edges.append(EdgeInfo("IMPORTS_FROM", file_path, val, file_path, _get_start_line(node)))
+        elif language == "go":  # one import_spec: its path, without the alias
+            for child in _get_children(node):
+                if _get_type(child) in ("interpreted_string_literal", "raw_string_literal"):
+                    val = _safe_text(child, source).strip('"`')
                     edges.append(EdgeInfo("IMPORTS_FROM", file_path, val, file_path, _get_start_line(node)))
 
     def _extract_import_bindings(self, node, source: bytes, file_path: str, line: int, import_bindings: list[ImportBinding], scope_id: str) -> None:

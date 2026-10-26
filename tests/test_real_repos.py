@@ -1,9 +1,10 @@
 """
-Validation on real code ACTE's authors did not write: pinned releases of rich, httpx, click
-and flask, built with jedi and checked against tests/data/real_repos.json.
+Validation on real code ACTE's authors did not write: pinned releases of the projects in
+tests/data/real_repos.json, built with jedi and checked against the baselines there.
 
 Skipped unless ACTE_REAL_REPOS=1, since it needs git and the network on first run and takes
-a few minutes:
+a few minutes. Projects marked "slow" (a jedi build over 5 minutes) run only with
+ACTE_REAL_REPOS=slow, which runs every project:
 
     ACTE_REAL_REPOS=1 poetry run pytest tests/test_real_repos.py -s
 
@@ -47,9 +48,11 @@ from acte.health import run_checks
 from acte.rdf_builder import CODE
 from acte.sparql_engine import SPARQLEngine
 
-pytestmark = pytest.mark.skipif(os.environ.get("ACTE_REAL_REPOS") != "1", reason="set ACTE_REAL_REPOS=1 to run")
+LEVEL = os.environ.get("ACTE_REAL_REPOS")
+pytestmark = pytest.mark.skipif(LEVEL not in ("1", "slow"), reason="set ACTE_REAL_REPOS=1 (or =slow) to run")
 
 BASELINE = json.loads((Path(__file__).parent / "data" / "real_repos.json").read_text())
+REPOS = sorted(n for n, r in BASELINE["repos"].items() if LEVEL == "slow" or not r.get("slow"))
 CORPUS = Path(os.environ.get("ACTE_CORPUS_DIR") or Path.home() / ".cache" / "acte-corpus")
 
 
@@ -81,7 +84,7 @@ def _measure(root: Path, use_jedi: bool) -> tuple[dict, dict]:
     }, run_checks(graph)
 
 
-@pytest.mark.parametrize("name", sorted(BASELINE["repos"]))
+@pytest.mark.parametrize("name", REPOS)
 def test_real_repo(name):
     root = _checkout(name)
     got, checks = _measure(root, use_jedi=True)
@@ -145,8 +148,9 @@ def _link_accuracy(root: Path) -> dict:
     engines = {k: SPARQLEngine(graph=g) for k, g in graphs.items()}
     graph, project = graphs[False], jedi.Project(root.resolve())
     ranges = _ranges(graph)
-    nodes = sorted((f for f in graph.subjects(RDF.type, CODE.Function)
-                    if not re.fullmatch(r"__\w+__", str(graph.value(f, CODE.name)))), key=_id)
+    nodes = sorted((f for f in graph.subjects(RDF.type, CODE.Function)  # jedi reads Python only: no .js in fastapi's docs
+                    if str(graph.value(f, CODE.language)) == "python" and not re.fullmatch(r"__\w+__", str(graph.value(f, CODE.name)))),
+                   key=_id)
     k = max(1, len(nodes) // SAMPLE)
     rows = []
     for node in (nodes[i] for start in range(k) for i in range(start, len(nodes), k)):  # every k-th, then the next offset
@@ -168,7 +172,7 @@ def _link_accuracy(root: Path) -> dict:
     return out
 
 
-@pytest.mark.parametrize("name", sorted(BASELINE["repos"]))
+@pytest.mark.parametrize("name", REPOS)
 def test_link_accuracy(name):
     got = _link_accuracy(_checkout(name))
     print(f"\n{name}: " + json.dumps({k: v for k, v in got.items() if k != "disagreements"}))

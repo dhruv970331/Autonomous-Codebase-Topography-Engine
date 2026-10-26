@@ -16,6 +16,14 @@ from acte.resolver import CallResolution, Resolution, SymbolIndex, resolve
 # Formal namespace for the codebase topography ontology
 CODE = Namespace("http://acte.local/code#")
 
+# An import's kind (parser EdgeInfo.extra["import_kind"]) -> its (project file, outside module) predicates
+_IMPORT_PREDICATES = {
+    "module":      (CODE.importsFrom, CODE.importsExternal),
+    "type-only":   (CODE.importsTypeOnly, CODE.importsTypeOnlyExternal),
+    "in-function": (CODE.importsInFunction, CODE.importsInFunctionExternal),
+    "main-block":  (CODE.importsInMainBlock, CODE.importsInMainBlockExternal),
+}
+
 
 class KnowledgeGraphBuilder:
     """Constructs an RDF Knowledge Graph from extracted AST nodes and edges.
@@ -106,6 +114,8 @@ class KnowledgeGraphBuilder:
         self.graph.add((uri, CODE.filePath,  Literal(node.file_path, datatype=XSD.string)))
         self.graph.add((uri, CODE.lineStart, Literal(node.line_start, datatype=XSD.integer)))
         self.graph.add((uri, CODE.lineEnd,   Literal(node.line_end,   datatype=XSD.integer)))
+        if node.decorator_line is not None:
+            self.graph.add((uri, CODE.decoratorLine, Literal(node.decorator_line, datatype=XSD.integer)))
 
         if node.language:
             self.graph.add((uri, CODE.language, Literal(node.language, datatype=XSD.string)))
@@ -117,10 +127,11 @@ class KnowledgeGraphBuilder:
             self.graph.add((source_uri, CODE.contains, self._make_uri(edge.target)))
         elif edge.kind == "IMPORTS_FROM" and index and edge.source.endswith(".py"):  # the index only knows Python modules
             files = index.module_files(edge.target, edge.source)
+            project, external = _IMPORT_PREDICATES[edge.extra.get("import_kind", "module")]
             if len(files) == 1:
-                self.graph.add((source_uri, CODE.importsFrom, self._make_uri(files[0])))
+                self.graph.add((source_uri, project, self._make_uri(files[0])))
             elif not files and not edge.target.startswith("."):  # a relative import is inside the project, never external
-                self.graph.add((source_uri, CODE.importsExternal, Literal(edge.target, datatype=XSD.string)))
+                self.graph.add((source_uri, external, Literal(edge.target, datatype=XSD.string)))
             # several files: ambiguous, so no arrow
 
     def _add_call(self, r: CallResolution) -> None:

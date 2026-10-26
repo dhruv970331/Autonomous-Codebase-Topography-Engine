@@ -2,18 +2,18 @@
 
 ## Why a graph
 
-Retrieval-augmented generation answers "what code is relevant to this question" with vector
-similarity. That works well for prose and poorly for structure: similarity cannot tell you
-that changing `verify_token` breaks four callers two hops away. Relational facts have to be
-traversed, not approximated.
+Most code assistants find code with vector search: they look for text that is similar to
+the question. That is good for finding where something is described. It cannot tell you
+that changing `verify_token` breaks four callers two steps away. For that you have to follow
+the calls one by one.
 
-ACTE extracts those facts once, stores them as a graph, and answers structural questions by
-querying it. Results are derived from the parse, so they are reproducible and checkable.
+ACTE finds those calls once, stores them in a graph, and answers questions by querying the
+graph. The answers come straight from the parsed code, so the same query always gives the
+same result, and each result can be checked.
 
-RDF was chosen over a dedicated graph database for two reasons. It needs no server, since the
-graph lives in memory and serialises to a single text file. And the output is a W3C
-standard, so a `.ttl` artifact loads into an external triplestore unchanged if the project
-ever outgrows in-memory processing.
+ACTE uses RDF instead of a graph database for two reasons. It needs no server: the graph
+lives in memory and is saved as one text file. And RDF is a W3C standard, so the `.ttl` file
+can be loaded into a triplestore as it is, if a project ever gets too big for memory.
 
 ## Pipeline
 
@@ -30,7 +30,8 @@ Output is a `ParseResult` per file:
 - `NodeInfo`: kind, name, file, line span, language, enclosing scope; for a Python class, its
   bases as written (`Base`, `mod.Base`, `Generic` for `Generic[T]`; keyword arguments such as
   `metaclass=` are not bases, and any other expression is marked unknown)
-- `EdgeInfo`: kind, source, target, file, line
+- `EdgeInfo`: kind, source, target, file, line; for a Python import also its kind, in
+  `extra["import_kind"]`
 - `CallSite`: the caller, the called name, its receiver (`db` in `db.save()`), line, column
 - `ImportBinding`, `LocalBinding`: what each scope imports and binds, for the resolver
 
@@ -40,8 +41,8 @@ Extracted edges: `CONTAINS`, `IMPORTS_FROM`. Calls are not edges at this stage; 
 
 The tree-sitter helper functions each try the standard `tree_sitter` attribute and then the
 `tree_sitter_language_pack` equivalent. The two libraries expose different APIs for the same
-data (`node.type` versus `node.kind()`, `start_point` versus `start_position()`) and the
-fallbacks absorb that difference rather than pinning to one library's shape.
+data (`node.type` versus `node.kind()`, `start_point` versus `start_position()`). The
+fallbacks let ACTE work with either library.
 
 ### Layer 1.5: Call resolution (`src/acte/resolver.py`)
 
@@ -71,7 +72,9 @@ matches decides:
 | T5 | `mod.f()` | a module alias or dotted module path |
 | TJ | `x.m()` | jedi, optional, only for calls still unknown after T1 to T5 |
 
-**Method lookup through the MRO.** For T1, T4 and T4b (and `mod.C.m()` under T5), the class's
+#### Method lookup through the MRO
+
+For T1, T4 and T4b (and `mod.C.m()` under T5), the class's
 own method wins. Otherwise the MRO is walked in order. A method found on a project class
 before any external or unknown base resolves to that class's method, with the same tier.
 Reaching an external or unknown base first leaves the call `unresolved` with reason
@@ -79,7 +82,8 @@ Reaching an external or unknown base first leaves the call `unresolved` with rea
 `C`, and `super(C, self).m()` where `self` is the method's first parameter, search the MRO
 after `C` (tier T1); neither applies when `super` is rebound. The MRO is the one declared
 from the class the code is written in: a subclass that overrides `m` is not seen from a call
-in the base class, and `super()` follows `C`'s MRO, not that of the object's actual class.
+in the base class, and `super()` follows `C`'s MRO. The class of the object at run time is
+not known.
 
 Every call gets exactly one status:
 
@@ -91,11 +95,13 @@ Every call gets exactly one status:
   (the method was not found before an external or unknown base in the MRO).
 - `external`, with a reason: `builtin`, `stdlib`, `third-party` or `jedi-external`.
 
-**The validation rule.** A tier may only produce an id that a real node owns. If it does not,
-that tier did not match. So a fallible heuristic can produce no edge, never a wrong one.
+#### The validation rule
 
-There is no project-wide "only function with that name" matching: it is what produces
-plausible wrong links. Files in other languages are parsed, but their calls stay
+A tier may only produce an id that belongs to a real node. If it produces any other id, the
+tier counts as not matching. So when a tier gets it wrong, the call gets no link at all.
+
+ACTE does not link a call to a function just because it is the only one in the project with
+that name. That shortcut is a common source of wrong links. Files in other languages are parsed, but their calls stay
 `unresolved`.
 
 ### Layer 2: Graph construction (`src/acte/rdf_builder.py`)
@@ -113,6 +119,9 @@ Nodes, edges and resolved calls become RDF triples in the namespace
 |---|---|
 | CONTAINS | `code:contains` |
 | IMPORTS_FROM | `code:importsFrom` the imported project File, or `code:importsExternal` its module name |
+| IMPORTS_FROM, type-only | `code:importsTypeOnly` the File, or `code:importsTypeOnlyExternal` the module name |
+| IMPORTS_FROM, in a function | `code:importsInFunction` the File, or `code:importsInFunctionExternal` the module name |
+| IMPORTS_FROM, main block | `code:importsInMainBlock` the File, or `code:importsInMainBlockExternal` the module name |
 | class bases | `code:inherits` the base Class, for project bases only |
 
 An import is looked up like a call's module (relative imports included). One project file
@@ -121,8 +130,32 @@ gives a `code:importsFrom` arrow to that File node. No project file gives a
 relative: a relative import is inside the project, so it records nothing. Several project
 files make it ambiguous, and nothing is recorded. Only Python imports are kept.
 
+Each Python import has one of four kinds, and each kind has its own pair of predicates:
+
+| Kind | Where the import is | When it runs |
+|---|---|---|
+| `module` | top level, also inside a top-level `try`, a plain `if`, or a class body | when the file loads |
+| `type-only` | the first block of `if TYPE_CHECKING:` or `if typing.TYPE_CHECKING:`, at any depth | never; only type checkers read it |
+| `main-block` | the first block of a module-level `if __name__ == "__main__":` (either operand order, either quote) | only when the file is run as a script |
+| `in-function` | anywhere inside a function or method body | when the function runs |
+
+Rules for the edge cases:
+
+- `elif` and `else` blocks keep their usual kind.
+- The block decides before the function: a `TYPE_CHECKING` block inside a function is
+  type-only, and a function inside a main block holds main-block imports. When blocks nest,
+  the innermost one decides.
+- Only the conditions above are recognised, written exactly so. `if t.TYPE_CHECKING:` through
+  an alias, `if TYPE_CHECKING and x:` and `if (TYPE_CHECKING):` give `module` imports.
+- A file that imports the same target in two kinds gets one arrow of each.
+
+The kind does not change how the resolver uses an import: a function-local import still binds
+its name for the calls in that function. Import cycles (`acte analyze`) count only `module`
+imports, because only those run when the file loads.
+
 Every node also carries `code:name`, `code:filePath`, `code:lineStart`, `code:lineEnd` and
-`code:language`.
+`code:language`. A decorated Python function or class also carries `code:decoratorLine`, the line of its
+first decorator. Its `code:lineStart` stays the line of `def` or `class`.
 
 Every call becomes a `code:CallSite` record:
 
@@ -158,7 +191,7 @@ A fixed set of named queries over the graph:
 | `blast_radius` | who depends on it, hop by hop: a `BlastAnswer` |
 | `callees_of` | what this function's calls resolve to |
 | `functions_in_file` / `classes_in_file` | what a file defines |
-| `dependencies_of` | what a file imports: project file paths and external module names |
+| `dependencies_of` | what a file imports: a `DependenciesAnswer`, the project file paths and external module names, and the import kinds of each one not imported at module level |
 | `orphan_functions` | functions nothing calls (recursion does not count) |
 | `execute_raw_sparql` | escape hatch for exploration |
 
@@ -200,11 +233,41 @@ Each tool takes a name or path and returns plain text built for a small model:
 - the first line sums up the answer, including `exact` or `lower-bound` and why;
 - every item has `file:line`;
 - answers stay under about 4,000 characters, cut at whole lines, and say what was left out;
-- a name with several definitions gets the list and a request for the full name, never a
-  pick; an unknown name gets up to 3 close spellings and a prompt to call again with one;
-- these are normal answers, not errors. Errors are kept for real malfunctions;
+- a name with several definitions gets the list and a request for the full name. The
+  server does not pick one;
+- an unknown name gets up to 3 close spellings and a prompt to call again with one;
+- both of these are normal answers. Errors are only returned when something actually fails;
 - with `--project`, every answer warns when the project's git HEAD differs from the
   commit the graph was built from.
+
+### Built on the graph: `acte impact` and `acte analyze`
+
+`impact.py` answers "what may this change break?". It reads `git diff -U0` for the given base
+(default `HEAD`), builds a fresh graph of the work tree, and maps each changed line to the
+innermost Function or Class whose span holds it, starting the span at `code:decoratorLine`
+when there is one. Blank and comment-only lines are skipped. For a deletion in a Python file it reads the
+removed text: a removed `def`, `class` or decorator marks the definition around both
+neighbouring lines, and removed body code marks the definition just above. In other
+languages a deletion marks the definition around both neighbouring lines. A line in no
+definition is a module-level change of its file. Each changed definition gets a
+`blast_radius`; a module-level change lists the files that import the file, with their
+import kinds. Deleted definitions are not named, because they are not in the new graph.
+
+`analysis.py` reads a saved graph and computes three things, all deterministic for one set of
+installed versions:
+
+- Ranking: PageRank over `code:calls` and `code:instantiates` arrows, written in about ten
+  lines of plain Python with networkx's default settings. `nx.pagerank` needs numpy and
+  scipy; the maths takes 0.18 s on django's 45,100 definitions, so the extra install is not
+  worth it. A test checks our scores against networkx's pure-Python version.
+- Import cycles: strongly connected components of two or more files over `code:importsFrom`
+  (module-level imports only).
+- Subsystems: Louvain communities (`seed=0`) on an undirected file graph, where an edge's
+  weight is the number of resolved calls between two files plus 1 if either imports the
+  other. Calls inside one file add nothing. Each subsystem is named after its hub, the file
+  with the largest weighted degree inside it.
+
+Neither adds anything to the graph.
 
 ## Identifiers
 
@@ -218,7 +281,13 @@ src/app.py::AuthManager.login         a method
 src/app.py::main                      a module-level function
 src/app.py::outer.<locals>.helper     a function defined inside outer
 src/app.py::main@L12c8                a call site in main
+shapes/point.go::Point.Scale          a Go method on Point or *Point
 ```
+
+A Go method is scoped by its receiver type, without the pointer `*` or type arguments
+(`Pair` for `*Pair[T]`). Its File contains it, since the type may be declared in another
+file of the package. Every Go named type is a Class, such as `type Point struct` or
+`type UUID [16]byte`. A type alias (`type A = B`) is not.
 
 A call site's id is its caller's id plus line and column. The column is counted in UTF-8
 bytes, as tree-sitter and Python's `ast` count it.
@@ -226,23 +295,30 @@ bytes, as tree-sitter and Python's `ast` count it.
 Identifiers are percent-encoded and appended to the `code:` namespace to form the node's
 URI. `#` is encoded too, so the namespace's `#` stays the only one in the IRI.
 
-**Node URIs and edge endpoints must be the same identifier.** An edge whose target does not
+Node URIs and edge endpoints must use the same identifier. An edge whose target does not
 match a node's id connects to nothing, and multi-hop traversal silently stops there. The
 validation rule above is what keeps call arrows on real nodes.
 
 ## Design choices
 
-**Named queries are hardcoded.** The model selects a query by name and supplies arguments;
-it never authors SPARQL. A generated query can be subtly wrong in ways that are hard to
-detect, and the failure mode of a confident answer from a malformed query is precisely what
-this project exists to avoid. `execute_raw_sparql` remains available for exploration.
+### Named queries are hardcoded
 
-**Resolution does not guess.** When a call target cannot be determined unambiguously (say
-two imported modules both define it) the call is recorded as ambiguous with its candidates
-rather than resolved to one. A graph containing a plausible-looking wrong edge is worse than
-one with a documented gap, because nothing downstream can tell the difference. Answers built
-on such gaps say so: they are labelled `lower-bound`.
+The model picks a query by name and gives it arguments. It does not write SPARQL. A
+generated query can be wrong in ways that are hard to spot, and the model would then give a
+confident answer based on bad data. `execute_raw_sparql` is still there for exploring the
+graph by hand.
 
-**Coverage is measurable.** Every call site is recorded with its status, so the proportion
-resolved is a number that is reported and regression-tested. Call links are also graded
-against PyCG's benchmark (`tests/test_pycg.py`), where no wrong link is allowed.
+### Resolution does not guess
+
+If a call could go to more than one target (for example, two imported modules both define
+the function), it is stored as ambiguous with all its candidates. A wrong link that looks
+right is worse than a known gap, because nothing later on can tell that it is wrong. Answers
+that depend on such gaps are marked `lower-bound`.
+
+### Coverage is measured
+
+Every call site is stored with its status, so the share of resolved calls is a number. It is
+shown on every build and checked by the tests. Only calls in Python files count towards it,
+since Python is the only language with call resolution. Calls in other languages are
+counted apart. Call links are also checked against PyCG's
+benchmark (`tests/test_pycg.py`), where no wrong link is allowed.

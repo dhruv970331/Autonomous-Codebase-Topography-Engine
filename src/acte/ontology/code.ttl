@@ -41,6 +41,10 @@ code:lineEnd a rdf:Property ;
     rdfs:comment "The last line of the node, counted from 1." ;
     rdfs:range xsd:integer .
 
+code:decoratorLine a rdf:Property ;
+    rdfs:comment "The line of the first decorator of a decorated Python function or class, counted from 1. Absent when it has none." ;
+    rdfs:range xsd:integer .
+
 code:language a rdf:Property ;
     rdfs:comment "The programming language of the file the node is in." ;
     rdfs:range xsd:string .
@@ -57,6 +61,36 @@ code:importsFrom a rdf:Property ;
 
 code:importsExternal a rdf:Property ;
     rdfs:comment "A Python file imports a module that is not in the project, named as the import writes it." ;
+    rdfs:domain code:File ;
+    rdfs:range xsd:string .
+
+code:importsTypeOnly a rdf:Property ;
+    rdfs:comment "As code:importsFrom, for an import under if TYPE_CHECKING:, which never runs." ;
+    rdfs:domain code:File ;
+    rdfs:range code:File .
+
+code:importsTypeOnlyExternal a rdf:Property ;
+    rdfs:comment "As code:importsExternal, for an import under if TYPE_CHECKING:, which never runs." ;
+    rdfs:domain code:File ;
+    rdfs:range xsd:string .
+
+code:importsInFunction a rdf:Property ;
+    rdfs:comment "As code:importsFrom, for an import inside a function body, which runs when the function does." ;
+    rdfs:domain code:File ;
+    rdfs:range code:File .
+
+code:importsInFunctionExternal a rdf:Property ;
+    rdfs:comment "As code:importsExternal, for an import inside a function body, which runs when the function does." ;
+    rdfs:domain code:File ;
+    rdfs:range xsd:string .
+
+code:importsInMainBlock a rdf:Property ;
+    rdfs:comment "As code:importsFrom, for an import under a module-level if __name__ == \"__main__\":, which runs only when the file is run as a script." ;
+    rdfs:domain code:File ;
+    rdfs:range code:File .
+
+code:importsInMainBlockExternal a rdf:Property ;
+    rdfs:comment "As code:importsExternal, for an import under a module-level if __name__ == \"__main__\":, which runs only when the file is run as a script." ;
     rdfs:domain code:File ;
     rdfs:range xsd:string .
 

@@ -71,11 +71,11 @@ def test_callees_of(mock_engine, tmp_path):
 
 def test_dependencies_of(mock_engine, tmp_path):
     results = mock_engine.dependencies_of(f"{tmp_path}/app.py")
-    assert results == [f"{tmp_path}/db.py"]
+    assert (results.dependencies, results.kinds) == ([f"{tmp_path}/db.py"], {})
 
 def test_dependencies_of_lists_project_files_and_external_modules(tmp_path):
     engine = _engine(tmp_path, {"app.py": "import os.path\nimport json\nfrom db import x\n", "db.py": "x = 1\n"})
-    assert engine.dependencies_of(f"{tmp_path}/app.py") == [f"{tmp_path}/db.py", "json", "os.path"]
+    assert engine.dependencies_of(f"{tmp_path}/app.py").dependencies == [f"{tmp_path}/db.py", "json", "os.path"]
 
 def test_orphan_functions(mock_engine):
     results = mock_engine.orphan_functions()
@@ -293,7 +293,7 @@ def test_coverage_matches_report_and_survives_turtle(tmp_path, use_jedi):
     report = resolution.report()
     graph = KnowledgeGraphBuilder().build([n for r in results for n in r.nodes], [e for r in results for e in r.edges], resolution)
     coverage = SPARQLEngine(graph=graph).coverage()
-    assert coverage == {k: report[k] for k in ("edge", "rate", "reason", "status", "tier", "total")}
+    assert coverage == {k: report[k] for k in ("edge", "no_resolver", "rate", "reason", "status", "tier", "total")}
     graph.serialize(tmp_path / "g.ttl", format="turtle")
     assert SPARQLEngine.from_turtle(tmp_path / "g.ttl").coverage() == coverage
 
