@@ -84,6 +84,7 @@ class LocalBinding:
     type_name: str | None
     file_path: str
     line: int
+    is_none: bool = False  # the value bound is the literal None
 
 @dataclass
 class ParseResult:
@@ -677,14 +678,15 @@ class CodeParser:
         """LocalBinding records for the names *target* binds to *value* (see _extract_bindings)."""
         bind = functools.partial(self._bind, source, file_path, scope_id, method_id, local_bindings)
         tt = _get_type(target)
+        is_none = value is not None and _get_type(value) == "none"
         if tt == "identifier":
             type_name = type_name or self._callee_type(value, source)
-            local_bindings.append(LocalBinding(scope_id, _safe_text(target, source), kind, type_name, file_path, _get_start_line(target)))
+            local_bindings.append(LocalBinding(scope_id, _safe_text(target, source), kind, type_name, file_path, _get_start_line(target), is_none))
         elif tt == "attribute" and method_id:
             parts = _get_children(target)
             if len(parts) == 3 and _get_type(parts[0]) == "identifier" and _safe_text(parts[0], source) == "self":
                 type_name = type_name or self._callee_type(value, source)
-                local_bindings.append(LocalBinding(method_id, "self." + _safe_text(parts[2], source), "attr", type_name, file_path, _get_start_line(target)))
+                local_bindings.append(LocalBinding(method_id, "self." + _safe_text(parts[2], source), "attr", type_name, file_path, _get_start_line(target), is_none))
         elif tt == "list_splat_pattern":  # *rest is a list: never the paired value's type
             for c in _get_children(target):
                 bind(c, None, kind)

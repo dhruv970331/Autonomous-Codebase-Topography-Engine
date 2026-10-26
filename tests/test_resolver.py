@@ -658,7 +658,7 @@ def test_typed_receivers(tmp_path):
     assert calls[("use.py::s", "connect")] == ("resolved", "T4b", "shop/db.py::Database.connect", None)  # R24c
     assert calls[("use.py::s", "close")] == ("unresolved", None, None, "no-match")
     assert calls[("use.py::t", "connect")] == ("unresolved", None, None, "unknown-receiver")  # two classes
-    assert calls[("use.py::u", "connect")] == ("unresolved", None, None, "unknown-receiver")  # later None
+    assert calls[("use.py::u", "connect")] == ("resolved", "T4b", "shop/db.py::Database.connect", None)  # None has no connect
     assert calls[("use.py::v", "connect")] == ("unresolved", None, None, "unknown-receiver")  # later untyped make()
     assert calls[("use.py::w", "get")] == ("external", None, None, "builtin")  # dict is a builtin class
     assert calls[("use.py::w", "connect")] == ("unresolved", None, None, "unknown-receiver")  # max is a builtin function
@@ -923,6 +923,32 @@ def test_super_with_explicit_class_in_a_closure(tmp_path):
         ),
     })
     assert calls[("s.py::B.m.<locals>.f", "m")] == ("resolved", "T1", "s.py::A.m", None)
+
+
+def test_none_takes_no_part_in_the_type_unless_none_has_the_method(tmp_path):
+    calls = _calls(tmp_path, {
+        # django/utils/translation/trans_real.py:265: self._catalog is None at first, a TranslationCatalog later
+        "trans.py": (
+            "import gettext as gettext_module\n\n\n"
+            "class TranslationCatalog:\n    def update(self, trans):\n        pass\n\n\n"
+            "class DjangoTranslation(gettext_module.GNUTranslations):\n"
+            "    def __init__(self):\n        self._catalog = None\n\n"
+            "    def merge(self, other):\n        if self._catalog is None:\n            self._catalog = TranslationCatalog()\n"
+            "        else:\n            self._catalog.update(other)\n\n"
+            "    def same(self, other):\n        return self._catalog.__eq__(other)\n"
+        ),
+        "use.py": (
+            "from trans import TranslationCatalog\n\n\n"
+            "def f(flag):\n    cat = None\n    if flag:\n        cat = TranslationCatalog()\n    cat.update(1)\n    cat.__bool__()\n\n\n"
+            "def g():\n    cat = None\n    cat.update(1)\n"
+        ),
+    })
+    assert calls[("trans.py::DjangoTranslation.merge", "update")] == ("resolved", "T4b", "trans.py::TranslationCatalog.update", None)
+    assert calls[("use.py::f", "update")] == ("resolved", "T4b", "trans.py::TranslationCatalog.update", None)
+    # None has __eq__ and __bool__ too
+    assert calls[("trans.py::DjangoTranslation.same", "__eq__")] == ("unresolved", None, None, "unknown-receiver")
+    assert calls[("use.py::f", "__bool__")] == ("unresolved", None, None, "unknown-receiver")
+    assert calls[("use.py::g", "update")] == ("unresolved", None, None, "unknown-receiver")  # only ever None
 
 
 def test_super_with_a_base_class_or_another_object(tmp_path):

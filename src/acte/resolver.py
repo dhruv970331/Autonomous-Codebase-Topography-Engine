@@ -326,16 +326,16 @@ def _resolve_receiver(index: SymbolIndex, call: CallSite, typed: bool = True) ->
     if cls and not rest:
         return _on_class(index, call, cls, "T1")
     if cls and typed and head == "self" and len(rest) == 1:  # `self.attr`: its types are looked up from C's file
-        return _typed(index, call, *_one_type(index.locals.get(cls, {}).get(f"self.{rest[0]}", [])), cls.split("::")[0])
+        return _typed(index, call, *_one_type(index.locals.get(cls, {}).get(f"self.{rest[0]}", []), name), cls.split("::")[0])
     if cls:
         return unknown
     local, imports = _bindings(index, scope, head) if scope else ([], [])
     if any(b.kind not in ("def", "class") for b in local):
         # a variable: T4b when its type is certain; an import or `*` export of the same name makes it uncertain
         certain = typed and not rest and not imports and not (scope == file and _star_exports(index, head, file)[0])
-        return _typed(index, call, *_one_type(index.locals[scope][head]), scope) if certain else unknown
+        return _typed(index, call, *_one_type(index.locals[scope][head], name), scope) if certain else unknown
     if typed and not rest and not local and len(imports) == 1 and not (scope in (None, file) and _star_exports(index, head, file)[0]):
-        variable = _imported_variable(index, imports[0], file)
+        variable = _imported_variable(index, imports[0], file, name)
         if variable:  # T4b on a variable another project module binds
             return _typed(index, call, *variable)
     defs = {f"{file}::{head}" if scope == file else f"{scope}.<locals>.{head}" for b in local}
@@ -401,9 +401,9 @@ def _resolve_receiver(index: SymbolIndex, call: CallSite, typed: bool = True) ->
     return CallResolution(call, "unresolved", reason=next(iter(misses)) if len(misses) == 1 else "unknown-receiver")
 
 
-def _imported_variable(index: SymbolIndex, b: ImportBinding, file: str) -> tuple[str | None, bool, str] | None:
+def _imported_variable(index: SymbolIndex, b: ImportBinding, file: str, method: str) -> tuple[str | None, bool, str] | None:
     """Follow ``from M import name`` (re-imports too, at most 10 hops) to a module-level variable:
-    its type (``_one_type``) and the file it is bound in. None when the name is not one such variable."""
+    its type for a call of *method* on it (``_one_type``) and the file it is bound in. None when the name is not one such variable."""
     seen = set()
     for _ in range(10):
         files = [] if b.is_module_alias else index.module_files(b.module, file)
@@ -416,16 +416,18 @@ def _imported_variable(index: SymbolIndex, b: ImportBinding, file: str) -> tuple
             return None  # a definition, or a name a `*` import may bind: the ladder's own business
         local, imports = _bindings(index, file, name)
         if local and not imports:
-            return *_one_type(index.locals[file][name]), file
+            return *_one_type(index.locals[file][name], method), file
         if local or len(imports) != 1:
             return None
         b = imports[0]
     return None
 
 
-def _one_type(bindings: list[LocalBinding]) -> tuple[str | None, bool]:
-    """The type every binding of a name agrees on (None when one is untyped or two disagree, R7), and whether an annotation says so."""
-    bindings = [b for b in bindings if b.kind not in ("del", "global", "nonlocal")]
+def _one_type(bindings: list[LocalBinding], method: str) -> tuple[str | None, bool]:
+    """The type every binding of a name agrees on for a call of *method* on it (None when one is untyped or two
+    disagree, R7), and whether an annotation says so. A binding to None takes no part unless None has *method*:
+    calling it on None fails, so the call only runs on one of the other values."""
+    bindings = [b for b in bindings if b.kind not in ("del", "global", "nonlocal") and not (b.is_none and not hasattr(None, method))]
     types = {b.type_name for b in bindings}
     return types.pop() if len(types) == 1 else None, any(b.kind in ("param", "annotation") for b in bindings)
 
