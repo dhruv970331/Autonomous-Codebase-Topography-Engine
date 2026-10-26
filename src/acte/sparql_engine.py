@@ -382,13 +382,9 @@ SELECT ?site ?status ?tier ?reason ?kind ?path WHERE {
         An exact id wins. Otherwise a dotted *name* is a qualname (``<locals>``
         optional) and an undotted one matches every definition with that bare name.
         """
-        q = _PREFIXES + """
-SELECT ?d ?name WHERE {
-    VALUES ?kind { code:Function code:Class }
-    ?d a ?kind ; code:name ?name .
-}
-"""
-        defs = sorted((self._id(r.d), str(r.name)) for r in self.graph.query(q))
+        g = self.graph  # triples() lookups: the same rows as a SPARQL query over every definition, several times faster
+        defs = sorted((self._id(d), str(n)) for kind in (_CODE.Function, _CODE.Class)
+                      for d in g.subjects(RDF.type, kind) for n in g.objects(d, _CODE.name))
         exact = [d for d in defs if d[0] == name]
         if exact or "." not in name:
             return exact or [d for d in defs if d[1] == name]
