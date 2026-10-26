@@ -907,11 +907,11 @@ def test_super_calls(tmp_path):
     })
     for caller in ("B.m", "B.two", "B.k", "C.m"):
         assert calls[(f"s.py::{caller}", "m")] == ("resolved", "T1", "s.py::A.m", None), caller
-    assert calls[("s.py::B.none", "n")] == ("unresolved", None, None, "no-match")
+    assert calls[("s.py::B.none", "n")] == ("unresolved", None, None, "unknown-base")  # a class after B at run time may have n
     assert calls[("s.py::C.k", "keys")] == ("unresolved", None, None, "unknown-base")
     for caller in ("B.nested.<locals>.f", "free"):  # zero-argument super() in a nested function; no class
         assert calls[(f"s.py::{caller}", "m")] == ("unresolved", None, None, "unknown-receiver"), caller
-    assert calls[("s.py::B.other", "m")] == ("unresolved", None, None, "no-match")  # super(A, self) in B: nothing after A
+    assert calls[("s.py::B.other", "m")] == ("unresolved", None, None, "unknown-base")  # super(A, self) in B: nothing after A
     assert calls[("t.py::B.m", "m")] == ("unresolved", None, None, "unknown-receiver")  # super is not the builtin
 
 
@@ -1079,6 +1079,19 @@ def test_none_takes_no_part_in_the_type_unless_none_has_the_method(tmp_path):
     assert calls[("trans.py::DjangoTranslation.same", "__eq__")] == ("unresolved", None, None, "unknown-receiver")
     assert calls[("use.py::f", "__bool__")] == ("unresolved", None, None, "unknown-receiver")
     assert calls[("use.py::g", "update")] == ("unresolved", None, None, "unknown-receiver")  # only ever None
+
+
+def test_super_past_the_declared_mro_is_unknown_base(tmp_path):
+    calls = _calls(tmp_path, {
+        # django/contrib/staticfiles/storage.py:136: HashedFilesMixin.__init__ runs StaticFilesStorage.__init__
+        "storage.py": (
+            "class StaticFilesStorage:\n    def __init__(self):\n        pass\n\n\n"
+            "class HashedFilesMixin:\n    def __init__(self):\n        super().__init__()\n\n    def __dir__(self):\n        return super().__dir__()\n\n\n"
+            "class ManifestStaticFilesStorage(HashedFilesMixin, StaticFilesStorage):\n    pass\n"
+        ),
+    })
+    assert calls[("storage.py::HashedFilesMixin.__init__", "__init__")] == ("unresolved", None, None, "unknown-base")
+    assert calls[("storage.py::HashedFilesMixin.__dir__", "__dir__")] == ("unresolved", None, None, "unknown-base")
 
 
 def test_super_with_a_base_class_or_another_object(tmp_path):

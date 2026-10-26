@@ -587,6 +587,8 @@ def _method(index: SymbolIndex, cls: str, name: str, after: str | None = None) -
 
 def _on_class(index: SymbolIndex, call: CallSite, cls: str, tier: str, after: str | None = None) -> CallResolution:
     target, reason = _method(index, cls, call.target_name, after)
+    if after and reason == "no-match":  # super() past the declared MRO: at run time a mixin's next class may hold it
+        reason = "unknown-base"
     return _pick(index, call, {target}, False, tier) if target else CallResolution(call, "unresolved", reason=reason)
 
 
