@@ -1000,6 +1000,37 @@ def test_attribute_types_count_subclasses_and_class_level_literals(tmp_path):
     assert calls[("lit.py::Introspection.keys", "keys")] == ("unresolved", None, None, "unknown-receiver")  # a dict and a list
 
 
+def test_attribute_chains(tmp_path):
+    calls = _calls(tmp_path, {
+        "graph.py": "class Node:\n    def key(self):\n        pass\n\n\nclass MigrationGraph:\n    def __init__(self):\n        self.root = Node()\n\n"
+                    "    def leaf_nodes(self):\n        pass\n",
+        "loader.py": (
+            "from functools import cached_property\n\nfrom graph import MigrationGraph\n\n\n"
+            "class MigrationLoader:\n    def __init__(self):\n        self.graph = None\n\n"
+            "    def build_graph(self):\n        self.graph = MigrationGraph()\n\n"
+            "    @cached_property\n    def cached(self):\n        return MigrationGraph()\n"
+        ),
+        # django/core/management/commands/makemigrations.py:272
+        "makemigrations.py": (
+            "from loader import MigrationLoader\n\n\n"
+            "class Holder:\n    def __init__(self):\n        self.inner = Command()\n\n\n"
+            "class Command:\n    def __init__(self):\n        self.loader = MigrationLoader()\n        self.other = make()\n\n"
+            "    def write_to_last_migration_files(self):\n        loader = MigrationLoader()\n        loader.graph.leaf_nodes()\n\n"
+            "    def on_self(self):\n        self.loader.graph.leaf_nodes()\n\n"
+            "    def three(self):\n        self.loader.graph.root.key()\n\n"
+            "    def untyped_hop(self):\n        self.other.graph.leaf_nodes()\n\n"
+            "    def through_property(self):\n        self.loader.cached.leaf_nodes()\n\n\n"
+            "def four(h: Holder):\n    h.inner.loader.graph.root.key()\n"
+        ),
+    })
+    target = ("resolved", "T4b", "graph.py::MigrationGraph.leaf_nodes", None)
+    assert calls[("makemigrations.py::Command.write_to_last_migration_files", "leaf_nodes")] == target
+    assert calls[("makemigrations.py::Command.on_self", "leaf_nodes")] == target
+    assert calls[("makemigrations.py::Command.three", "key")] == ("resolved", "T4b", "graph.py::Node.key", None)
+    for caller, name in (("Command.untyped_hop", "leaf_nodes"), ("Command.through_property", "leaf_nodes"), ("four", "key")):
+        assert calls[(f"makemigrations.py::{caller}", name)] == ("unresolved", None, None, "unknown-receiver"), caller
+
+
 def test_none_takes_no_part_in_the_type_unless_none_has_the_method(tmp_path):
     calls = _calls(tmp_path, {
         # django/utils/translation/trans_real.py:265: self._catalog is None at first, a TranslationCatalog later

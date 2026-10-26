@@ -25,6 +25,7 @@ except ImportError:  # jedi is optional (D7): without it tier TJ is skipped
     jedi = None
 
 CANDIDATE_CEILING = 100
+CHAIN_LIMIT = 3  # attributes followed in `x.a.b.m()`; every chain T10 found on django has at most 2
 _BUILTINS = set(dir(builtins))
 _NOT_BINDING_KINDS = {"global", "nonlocal", "attr"}
 
@@ -340,15 +341,19 @@ def _resolve_receiver(index: SymbolIndex, call: CallSite, typed: bool = True) ->
     cls = _self_class(index, scope, head) if scope else None
     if cls and not rest:
         return _on_class(index, call, cls, "T1")
-    if cls and typed and head == "self" and len(rest) == 1:  # `self.attr`
-        return _typed(index, call, *_attr_type(index, cls, rest[0], name))
+    if cls and typed and head == "self" and len(rest) <= CHAIN_LIMIT:  # `self.a.m()`, `self.a.b.m()`
+        return _on_attributes(index, call, cls, rest)
     if cls:
         return unknown
     local, imports = _bindings(index, scope, head) if scope else ([], [])
     if any(b.kind not in ("def", "class") for b in local):
         # a variable: T4b when its type is certain; an import or `*` export of the same name makes it uncertain
-        certain = typed and not rest and not imports and not (scope == file and _star_exports(index, head, file)[0])
-        return _typed(index, call, *_one_type(index.locals[scope][head], name), scope) if certain else unknown
+        certain = typed and len(rest) <= CHAIN_LIMIT and not imports and not (scope == file and _star_exports(index, head, file)[0])
+        if not certain or not rest:
+            return _typed(index, call, *_one_type(index.locals[scope][head], name), scope) if certain else unknown
+        type_name, _ = _one_type(index.locals[scope][head], rest[0])
+        start = _class_of(index, type_name, scope) if type_name else None
+        return _on_attributes(index, call, start, rest) if start else unknown
     if typed and not rest and not local and len(imports) == 1 and not (scope in (None, file) and _star_exports(index, head, file)[0]):
         variable = _imported_variable(index, imports[0], file, name)
         if variable:  # T4b on a variable another project module binds
@@ -450,6 +455,17 @@ def _one_type(bindings: list[LocalBinding], method: str) -> tuple[str | None, bo
 def _holding(bindings: list[LocalBinding], method: str) -> list[LocalBinding]:
     """The bindings whose value *method* may be called on (see _one_type)."""
     return [b for b in bindings if b.kind not in ("del", "global", "nonlocal") and not (b.is_none and not hasattr(None, method))]
+
+
+def _on_attributes(index: SymbolIndex, call: CallSite, cls: str, attrs: list[str]) -> CallResolution:
+    """T4b on ``x.a.b.m()`` once the project class *cls* of ``x`` is known: the type of each attribute in turn
+    (_attr_type); unknown-receiver at the first one that has no certain project class."""
+    for i, attr in enumerate(attrs[:-1]):
+        type_name, _, file = _attr_type(index, cls, attr, attrs[i + 1])
+        cls = _class_of(index, type_name, file) if type_name else None
+        if cls is None:
+            return CallResolution(call, "unresolved", reason="unknown-receiver")
+    return _typed(index, call, *_attr_type(index, cls, attrs[-1], call.target_name))
 
 
 def _attr_type(index: SymbolIndex, cls: str, attr: str, method: str) -> tuple[str | None, bool, str]:
