@@ -279,7 +279,11 @@ def _jedi_tier(index: SymbolIndex, resolved: list[CallResolution]) -> tuple[list
         col = len(lines[call.file_path][call.line - 1][: call.col].decode("utf-8"))  # CallSite.col counts UTF-8 bytes, jedi characters
         ids, external, other = set(), False, False
         try:
-            found = scripts[call.file_path].goto(call.line, col, follow_imports=True)
+            try:
+                found = scripts[call.file_path].goto(call.line, col, follow_imports=True)
+            except KeyError:  # parso drops files unused for 10 minutes once it holds over 600: parse this one again, once
+                scripts[call.file_path] = jedi.Script(path=call.file_path, project=project)
+                found = scripts[call.file_path].goto(call.line, col, follow_imports=True)
         except Exception:  # noqa: BLE001 -- a jedi failure on one call must not stop the run; it is counted
             errors += 1
             out.append(r)

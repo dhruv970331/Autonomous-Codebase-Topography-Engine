@@ -771,6 +771,33 @@ def test_jedi_errors_are_counted(tmp_path, monkeypatch):
     assert resolution.report()["jedi_errors"] == asked == 11
 
 
+def test_jedi_lookup_survives_parso_dropping_the_file(tmp_path, monkeypatch):
+    """parso drops files unused for 10 minutes once it holds over 600; a Script made before then fails with KeyError."""
+    jedi = pytest.importorskip("jedi")
+    import parso.cache
+
+    made = []
+    init = jedi.Script.__init__
+
+    def first_script_loses_its_file(self, *args, **kwargs):
+        init(self, *args, **kwargs)
+        if not made:
+            parso.cache.parser_cache.clear()
+        made.append(self)
+
+    monkeypatch.setattr(jedi.Script, "__init__", first_script_loses_its_file)
+    files = {
+        "a.py": "class A:\n    def m(self):\n        pass\n",
+        "b.py": "from a import A\n\n\ndef make():\n    return A()\n\n\ndef g():\n    x = make()\n    x.m()\n",
+    }
+    for rel, code in files.items():
+        (tmp_path / rel).write_text(code)
+    resolution = resolve([CodeParser().parse_file(tmp_path / rel) for rel in sorted(files)], tmp_path)
+    m = next(r for r in resolution.calls if r.call.target_name == "m")
+    assert (m.status, m.tier, m.target, resolution.jedi_errors) == ("resolved", "TJ", f"{tmp_path}/a.py::A.m", 0)
+    assert len(made) == 2  # one more Script for the retry
+
+
 def test_jedi_definition_outside_the_parsed_files_is_external(tmp_path):
     """Code under the root that was not parsed (a `.venv`, vendored packages) is not the project."""
     pytest.importorskip("jedi")
