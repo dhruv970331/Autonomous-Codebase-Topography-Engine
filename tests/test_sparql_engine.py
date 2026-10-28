@@ -1,3 +1,4 @@
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -421,3 +422,46 @@ def test_definitions_index_matches_a_full_scan():
     engine.graph.remove((f, None, None))
     assert engine._definitions(engine._id(f)) == _uncached_definitions(engine, engine._id(f)) == []
     assert engine.symbols() == engine._symbols() != symbols
+
+
+_COVERAGE_ORACLE = """
+SELECT ?site ?status ?tier ?reason ?kind ?path WHERE {
+    ?site a code:CallSite ;
+          code:status ?status .
+    OPTIONAL { ?site code:tier ?tier }
+    OPTIONAL { ?site code:reason ?reason }
+    OPTIONAL { ?site code:resolvedTo/a ?kind }
+    OPTIONAL { ?site code:inFunction/code:filePath ?path }
+}
+"""
+
+
+def _coverage_by_sparql(engine: SPARQLEngine) -> dict:
+    """coverage() as it was before its triples() rewrite: the old SPARQL query, kept as an oracle."""
+    edges = {str(CODE.Function): "calls", str(CODE.Class): "instantiates"}
+    everything = list(engine.graph.query(f"PREFIX code: <{CODE}>\n" + _COVERAGE_ORACLE))
+    rows = [r for r in everything if str(r.path).endswith(".py")]
+
+    def count(values):
+        return dict(sorted(Counter(str(v) for v in values if v is not None).items()))
+    status = count(r.status for r in rows)
+    measured = len(rows) - status.get("external", 0)
+    return {
+        "edge": count(edges.get(str(r.kind)) for r in rows),
+        "no_resolver": len(everything) - len(rows),
+        "rate": status.get("resolved", 0) / measured if measured else None,
+        "reason": count(r.reason for r in rows),
+        "status": status,
+        "tier": count(r.tier for r in rows),
+        "total": len(everything),
+    }
+
+
+@pytest.mark.parametrize("root", [SRC, Path(__file__).parent / "data" / "pycg" / "snippets"], ids=["src", "pycg"])
+def test_coverage_matches_the_old_sparql_query(root):
+    """The triples() coverage gives the same dict, keys in the same order, as the old query, on real pipeline output."""
+    paths = sorted(p for p in root.rglob("*") if p.is_file() and p.suffix in {".py", ".js", ".ts"})
+    engine = SPARQLEngine(graph=build_graph(paths, root, use_jedi=False))
+    new, old = engine.coverage(), _coverage_by_sparql(engine)
+    assert new["total"] > 0
+    assert list(new.items()) == list(old.items())
