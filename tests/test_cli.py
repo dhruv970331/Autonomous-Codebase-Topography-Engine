@@ -140,6 +140,15 @@ def test_failed_write_keeps_the_old_output(tmp_path, monkeypatch):
     assert os.listdir(out.parent) == ["g.ttl"]  # no temporary file left behind
 
 
+def test_parallel_parse_writes_the_same_map(tmp_path, monkeypatch, capsys):
+    from acte import rdf_builder
+    monkeypatch.setattr(rdf_builder, "MIN_PARALLEL_FILES", 2)  # this repository's src/ has fewer than 50 files
+    src = Path(__file__).resolve().parents[1] / "src"
+    main(["build", str(src), "-o", str(tmp_path / "one.ttl"), "--no-jedi", "--jobs", "1"])
+    main(["build", str(src), "-o", str(tmp_path / "four.ttl"), "--no-jedi", "--jobs", "4"])
+    assert (tmp_path / "one.ttl").read_bytes() == (tmp_path / "four.ttl").read_bytes()
+
+
 def test_default_output_is_in_the_working_directory(tmp_path, monkeypatch, capsys):
     _write(tmp_path / "proj", PROJECT)
     monkeypatch.chdir(tmp_path)

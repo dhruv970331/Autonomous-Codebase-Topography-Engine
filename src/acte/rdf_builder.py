@@ -4,13 +4,15 @@ Translates AST structural data (NodeInfo / EdgeInfo) into a formal Semantic Web
 graph for SPARQL querying.
 """
 
+import os
 import urllib.parse
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 from rdflib import Graph, Literal, Namespace, URIRef
 from rdflib.namespace import RDF, XSD
 
-from acte.parser import CodeParser, EdgeInfo, NodeInfo
+from acte.parser import CodeParser, EdgeInfo, NodeInfo, ParseResult
 from acte.resolver import CallResolution, Resolution, SymbolIndex, resolve
 
 # Formal namespace for the codebase topography ontology
@@ -168,10 +170,36 @@ class KnowledgeGraphBuilder:
                 g.add((uri, CODE.candidate, self._make_uri(c)))
 
 
-def build_graph(paths: list[Path], root: Path, use_jedi: bool = True) -> Graph:
-    """The whole pipeline over *paths*: parse, resolve calls across all of them, build one graph."""
+# below this many files a process pool costs more than it saves
+MIN_PARALLEL_FILES = 50
+_worker_parser: CodeParser | None = None
+
+
+def _parse_in_worker(path: Path) -> ParseResult:
+    global _worker_parser
+    if _worker_parser is None:  # set already when the worker was forked from the parent
+        _worker_parser = CodeParser()
+    return _worker_parser.parse_file(path)
+
+
+def build_graph(paths: list[Path], root: Path, use_jedi: bool = True, jobs: int = 1) -> Graph:
+    """The whole pipeline over *paths*: parse, resolve calls across all of them, build one graph.
+    With *jobs* > 1 and enough files, files are parsed in that many processes; the results keep the order of *paths*."""
+    global _worker_parser
     parser = CodeParser()
-    results = [parser.parse_file(p) for p in paths]
+    if jobs <= 1 or len(paths) < MIN_PARALLEL_FILES:
+        results = [parser.parse_file(p) for p in paths]
+    else:
+        # Load every grammar here first, so workers never race to download or cache one in HOME.
+        for language in {parser.detect_language(p) for p in paths} - {None}:
+            parser._get_parser(language)
+        _worker_parser = parser
+        try:
+            # relative paths resolve against the working directory, so each worker starts in this one, whatever the start method
+            with ProcessPoolExecutor(jobs, initializer=os.chdir, initargs=(os.getcwd(),)) as pool:
+                results = list(pool.map(_parse_in_worker, paths, chunksize=max(1, len(paths) // (jobs * 4))))
+        finally:
+            _worker_parser = None
     nodes = [n for r in results for n in r.nodes]
     edges = [e for r in results for e in r.edges]
     return KnowledgeGraphBuilder().build(nodes, edges, resolve(results, root, use_jedi))

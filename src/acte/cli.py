@@ -63,14 +63,14 @@ def source_files(root: Path) -> tuple[list[str], str | None]:
     return files, commit
 
 
-def build(root: Path, use_jedi: bool = True) -> Graph:
+def build(root: Path, use_jedi: bool = True, jobs: int = 1) -> Graph:
     """The graph of the project at *root*, plus one code:Build node describing the run (root is the directory's name only)."""
     files, commit = source_files(root)
     # The parser records the path it is given, so parsing relative paths from inside root makes
     # every id relative; jedi and the resolver resolve those against the working directory.
     # shortcut: chdir is process-wide so two builds cannot run at once in one process, pass a display path through the parser when that is needed.
     with contextlib.chdir(root):
-        graph = build_graph([Path(f) for f in files], Path("."), use_jedi)
+        graph = build_graph([Path(f) for f in files], Path("."), use_jedi, jobs)
     meta = CODE["build"]
     graph.add((meta, RDF.type, CODE.Build))
     graph.add((meta, CODE.root, Literal(root.resolve().name, datatype=XSD.string)))
@@ -165,6 +165,8 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("path", help="the project root")
     b.add_argument("-o", "--output", default="acte-graph.ttl", help="Turtle file to write (default: acte-graph.ttl)")
     b.add_argument("--no-jedi", action="store_true", help="skip the jedi resolution tier")
+    b.add_argument("--jobs", type=int, default=min(os.cpu_count() or 1, 8),
+                   help="processes that parse files; 1 parses in this process (default: CPU count, at most 8)")
     st = sub.add_parser("stats", help="summarise a Turtle graph written by build")
     st.add_argument("graph", help="the Turtle file")
     st.add_argument("--format", choices=["text", "json"], default="text", help="output format (default: text)")
@@ -217,7 +219,9 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--limit must be at least 1")
         from acte.impact import run  # imported here: impact imports this module
         return run(root, args.base, args.graph, args.depth, args.limit, args.format, not args.no_jedi)
-    graph = build(root, not args.no_jedi)
+    if args.jobs < 1:
+        parser.error("--jobs must be at least 1")
+    graph = build(root, not args.no_jedi, args.jobs)
     # Write beside the output then rename, so a failed write never leaves a half-written map.
     # A plain name, not tempfile's: tempfile creates mode 0600, which the rename would keep.
     tmp = Path(args.output).with_name(f".{Path(args.output).name}.{os.getpid()}.tmp")
