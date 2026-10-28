@@ -390,3 +390,34 @@ def test_blast_radius_counts_an_unknown_base_creator_once(tmp_path):
     assert [(i.name, i.distance) for i in answer.affected] == [("__init__", 1), ("make", 1)]  # D5: D.__init__ has a caller, make none
     assert [(c.name, c.line, c.reason) for c in answer.possible] == [("make", 27, "unknown-base")]
     assert (answer.completeness, answer.reasons) == ("lower-bound", {"unknown-base": 1})
+
+
+def _uncached_definitions(engine: SPARQLEngine, name: str) -> list[tuple[str, str]]:
+    """_definitions before the index: a scan of every definition per call."""
+    g = engine.graph
+    defs = sorted((engine._id(d), str(n)) for kind in (CODE.Function, CODE.Class)
+                  for d in g.subjects(RDF.type, kind) for n in g.objects(d, CODE.name))
+    exact = [d for d in defs if d[0] == name]
+    if exact or "." not in name:
+        return exact or [d for d in defs if d[1] == name]
+    plain = name.replace(".<locals>", "")
+    return [d for d in defs if d[0].split("::", 1)[-1].replace(".<locals>", "") == plain]
+
+
+def test_definitions_index_matches_a_full_scan():
+    from acte.mcp_server import _case_insensitive
+    engine = SPARQLEngine(graph=build_graph(sorted(SRC.rglob("*.py")), SRC, use_jedi=False))
+    symbols = engine._symbols()
+    assert engine.symbols() == symbols and any(".<locals>." in s[0] for s in symbols)
+    names = {"no_such_name", "no.such.name", "", "."}
+    for d, _, bare, _, _ in symbols:
+        qual = d.split("::", 1)[-1]
+        names |= {d, bare, qual, qual.replace(".<locals>", ""), d.upper(), bare.upper(), qual.lower()}
+    for name in sorted(names):
+        assert engine._definitions(name) == _uncached_definitions(engine, name), name
+        assert _case_insensitive(name, engine.symbols()) == _case_insensitive(name, symbols), name
+    # a changed graph is indexed again
+    f = next(iter(engine.graph.subjects(RDF.type, CODE.Function)))
+    engine.graph.remove((f, None, None))
+    assert engine._definitions(engine._id(f)) == _uncached_definitions(engine, engine._id(f)) == []
+    assert engine.symbols() == engine._symbols() != symbols

@@ -19,7 +19,7 @@ but draws no arrow (R11); ambiguous, unresolved and external calls draw none.
 """
 
 import urllib.parse
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -143,6 +143,7 @@ class SPARQLEngine:
 
     def __init__(self, graph: Graph | None = None) -> None:
         self.graph: Graph = graph if graph is not None else Graph()
+        self._index: tuple | None = None  # (graph size, symbols, by id, by bare name, by qualname), see _indexed()
 
     @classmethod
     def from_turtle(cls, path: str | Path) -> "SPARQLEngine":
@@ -299,6 +300,9 @@ ORDER BY ?file ?start
 
     def symbols(self) -> list[tuple[str, str, str, str, int]]:
         """Return (id, kind, bare name, file, lineStart) of every Function and Class, sorted by id."""
+        return list(self._indexed()[1])
+
+    def _symbols(self) -> list[tuple[str, str, str, str, int]]:
         q = _PREFIXES + """
 SELECT ?d ?kind ?name ?file ?start WHERE {
     VALUES ?kind { code:Function code:Class }
@@ -382,14 +386,28 @@ SELECT ?site ?status ?tier ?reason ?kind ?path WHERE {
         An exact id wins. Otherwise a dotted *name* is a qualname (``<locals>``
         optional) and an undotted one matches every definition with that bare name.
         """
-        g = self.graph  # triples() lookups: the same rows as a SPARQL query over every definition, several times faster
-        defs = sorted((self._id(d), str(n)) for kind in (_CODE.Function, _CODE.Class)
-                      for d in g.subjects(RDF.type, kind) for n in g.objects(d, _CODE.name))
-        exact = [d for d in defs if d[0] == name]
+        _, _, by_id, by_bare, by_qual = self._indexed()
+        exact = by_id.get(name, [])
         if exact or "." not in name:
-            return exact or [d for d in defs if d[1] == name]
-        plain = name.replace(".<locals>", "")
-        return [d for d in defs if d[0].split("::", 1)[-1].replace(".<locals>", "") == plain]
+            return list(exact or by_bare.get(name, []))
+        return list(by_qual.get(name.replace(".<locals>", ""), []))
+
+    def _indexed(self) -> tuple:
+        """The definitions index, built on first use and again when the graph has changed."""
+        # change check: the triple count. A change that keeps the count the same is not seen; the
+        # engine's users load a graph once and only read it.
+        size = len(self.graph)
+        if self._index is None or self._index[0] != size:
+            g = self.graph  # triples() lookups: the same rows as a SPARQL query over every definition, several times faster
+            defs = sorted((self._id(d), str(n)) for kind in (_CODE.Function, _CODE.Class)
+                          for d in g.subjects(RDF.type, kind) for n in g.objects(d, _CODE.name))
+            by_id, by_bare, by_qual = defaultdict(list), defaultdict(list), defaultdict(list)
+            for d in defs:  # each list keeps the sorted order
+                by_id[d[0]].append(d)
+                by_bare[d[1]].append(d)
+                by_qual[d[0].split("::", 1)[-1].replace(".<locals>", "")].append(d)
+            self._index = (size, self._symbols(), by_id, by_bare, by_qual)
+        return self._index
 
     def _caller_answer(self, target: str, bare: str) -> CallerAnswer:
         """Confirmed callers, possible callers (R19) and the exact / lower-bound label (R23) of one definition."""
