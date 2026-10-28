@@ -74,7 +74,7 @@ poetry run pytest -q
 
 To also test against pinned releases of rich, httpx, click, flask and requests, run
 `ACTE_REAL_REPOS=1 poetry run pytest tests/test_real_repos.py -s`. This is off by default.
-It needs git and network access the first time, and takes about 45 minutes.
+It needs git and network access the first time, and takes about 5 minutes.
 `ACTE_REAL_REPOS=slow` also runs projects marked slow (none are, yet).
 
 ## Usage
@@ -154,8 +154,7 @@ callers, run `callers_of` on a graph built before the change.
 poetry run acte analyze graph.ttl [--top N] [--format text|json]
 ```
 
-`acte analyze GRAPH` helps you find your way around a project you do not know yet. It reads
-a saved graph and prints three things.
+`acte analyze GRAPH` reads a saved graph and prints three things.
 
 First, the functions and classes that the most code depends on. They are ranked with
 PageRank over the resolved calls. Each one comes with `file:line`, its score, and how many
@@ -224,9 +223,9 @@ engine.orphan_functions()
 
 ## Results
 
-PyCG call-graph benchmark (`tests/test_pycg.py`): precision 1.00 and recall 0.50, meaning
-117 of the 233 expected links are found and none of the links found are wrong. One case is
-left out of the precision count, and the test explains why.
+PyCG call-graph benchmark (`tests/test_pycg.py`): 117 of 233 expected links found (recall
+0.50) and 1 wrong link (precision 0.99). The wrong link comes from a decorator that replaces
+`func` with another function: ACTE links calls to `func` itself.
 
 Real projects (`tests/test_real_repos.py`, pinned releases):
 
@@ -236,42 +235,41 @@ Real projects (`tests/test_real_repos.py`, pinned releases):
 | httpx 0.28.1 | 60 | 87.4% | 0.99 | 0.96 |
 | click 8.1.8 | 16 | 84.2% | 0.98 | 0.76 |
 | flask 3.1.0 | 24 | 58.5% | 1.00 | 0.86 |
-| requests 2.34.2 | 19 | 69.6% | 1.00 | 0.86 |
+| requests 2.34.2 | 19 | 78.0% | 1.00 | 0.88 |
 
-Coverage is the share of calls that were resolved, counting every call except those known to
-go outside the project (to Python itself or a library), with jedi on. Precision and recall compare a build without jedi to jedi's own references, over 40
-sampled functions. Jedi misses some references too, so a precision below 1.00 does not
-always mean a wrong link.
+Coverage is the share of calls ACTE resolved, with jedi on, leaving out calls to Python itself
+or a library. Precision and recall compare a build without jedi with jedi's own references on
+40 sampled functions. jedi also misses some references, so some links counted as wrong may be
+right.
 
-Small model test (`eval/`): Qwen 3.6 35B-A3B answered 41 of 41 questions correctly using the
-MCP tools, at temperature 0. The questions are about ACTE's own code and there are only 41,
-so this is a quick sanity check and too small to count as a benchmark.
+Real calls in django: the calls made while django's own test suite ran were recorded and
+compared with ACTE's map of the whole repository, built without jedi. 98.5% of ACTE's links
+were seen to run, and ACTE found 64.4% of the real calls (95% range 63.6 to 65.3). The scripts
+for this check are not in this repository yet.
+
+Small model test (`eval/`): Qwen 3.6 35B-A3B answered all 41 questions about ACTE's own code
+correctly through the MCP tools, at temperature 0. It is a small check: 41 questions on one
+project.
 
 ## Limitations
 
-- Call resolution only works for Python. Java, JavaScript, TypeScript, TSX and Go files give
-  their structure but no call links, and their imports are not kept in the graph yet. In
-  JavaScript and TypeScript, two functions defined inside callbacks in one file can share an id.
-- ACTE only links a call when it is sure of the target. A call that could go to more than one
-  place is kept as ambiguous, and `callers_of` and `blast_radius` then mark their answer as
-  `lower-bound`: there may be more callers.
-- Without jedi, a method call on a variable is resolved only when the variable's type is
-  known, from a type hint or an assignment like `db = Database()`. Attributes set on `self`
-  in another method, chains like `loader.graph.leaf_nodes()`, callbacks, and functions
+- Call resolution works only for Python. Java, JavaScript, TypeScript, TSX and Go files give
+  structure only, without call links or imports. In JavaScript and TypeScript, two functions
+  defined inside callbacks in one file can share an id.
+- ACTE links a call only when it is sure of the target. A call with several possible targets is
+  kept as ambiguous, and `callers_of` and `blast_radius` then mark their answer `lower-bound`.
+- Without jedi, a method call on a variable or attribute is resolved only when its type is
+  known: from a type hint, an assignment like `db = Database()`, or, for `self.db`, the
+  assignments and annotations in the class hierarchy, which must agree. Chains like
+  `loader.graph.leaf_nodes()` are followed for up to 3 attributes. Callbacks and functions
   stored in dicts are not followed.
-- Inherited methods are looked up from the class written in the code, not the class of the
-  object at run time. Calls that may reach an override are listed as possible callers, and
-  the lookup stops at a base class from outside the project, such as `dict`.
-- The dead-code list shows too much: entry points, `__init__` methods, properties, and
-  functions reached only through unresolved calls all appear in `orphan_functions`.
-- jedi finds more calls but is slow: on django's 907-file package the build took 29 minutes
-  with jedi and 20 seconds without (on a shared machine, so the jedi time is on the high side).
-- rdflib keeps the whole graph in memory. The largest project tested is django: 3,030 files,
-  built in 100 seconds without jedi, with 4 GB of memory. Loading a saved graph of that size
-  takes about 95 seconds, and on fastapi (1,223 files) `callers_of` took over a minute per
-  question. Larger projects have not been tried.
-
-The full rules are in [`docs/architecture.md`](docs/architecture.md).
+- Inherited methods are looked up from the class named in the code. Calls that may reach an
+  override in a subclass are listed as possible callers. The lookup stops at a base class from
+  outside the project, such as `dict`.
+- `orphan_functions` lists too much: entry points, `__init__` methods, properties, and functions
+  reached only through unresolved calls.
+- Large projects are slow. On the whole django repository (3,030 Python files), a build without
+  jedi takes about 4 minutes, and opening the saved graph takes over a minute.
 
 ## Design notes
 

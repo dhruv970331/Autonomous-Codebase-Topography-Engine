@@ -68,7 +68,7 @@ matches decides:
 | T3 | `f()` | an import visible from the caller's scope |
 | T3* | `f()` | a `from M import *` |
 | T4 | `C.m()` | a class defined in or imported into the file, and its MRO |
-| T4b | `x.m()` | the one known type of `x` (annotation or `x = C(...)`) whose MRO has method `m` |
+| T4b | `x.m()`, `self.a.m()`, `x.a.b.m()` | the one known type of the receiver (annotation or `x = C(...)`) whose MRO has method `m` |
 | T5 | `mod.f()` | a module alias or dotted module path |
 | TJ | `x.m()` | jedi, optional, only for calls still unknown after T1 to T5 |
 
@@ -79,11 +79,36 @@ own method wins. Otherwise the MRO is walked in order. A method found on a proje
 before any external or unknown base resolves to that class's method, with the same tier.
 Reaching an external or unknown base first leaves the call `unresolved` with reason
 `unknown-base`: the method may live in code ACTE cannot see. `super().m()` in a method of
-`C`, and `super(C, self).m()` where `self` is the method's first parameter, search the MRO
-after `C` (tier T1); neither applies when `super` is rebound. The MRO is the one declared
-from the class the code is written in: a subclass that overrides `m` is not seen from a call
-in the base class, and `super()` follows `C`'s MRO. The class of the object at run time is
-not known.
+`C` searches the MRO after `C` (tier T1). `super(B, y).m()` searches after `B`: in `C`'s MRO
+when `y` is the method's first parameter (`B` must be in it, else the call fails at run time
+and stays unknown), otherwise in `B`'s own MRO, since `y` must be an instance of `B`. None of
+these applies when `super` is rebound. Reaching the end of the MRO this way is `unknown-base`
+too, not `no-match`: in a mixin, the class after `C` at run time is not known. The MRO is the
+one declared from the class the code is written in: a subclass that overrides `m` is not seen
+from a call in the base class, and `super()` follows `C`'s MRO. The class of the object at run
+time is not known.
+
+#### Types of variables and attributes (T4b)
+
+A name's type is the one every binding of it agrees on: an annotation, `x = C(...)`, or a
+function call whose return annotation names a class. A binding that has no type, or two that
+disagree, leave it unknown. A binding to `None` takes no part, unless `None` itself has the
+method called (`__eq__`, `__bool__`): calling a method on `None` fails, so the call only runs
+on the typed value, as with an `Optional[X]` annotation.
+
+The type of `self.a` comes from the bindings of every project class in the method's class's MRO,
+and of every project class that inherits from it, since `self` may be one of those:
+`self.a = ...` in any method, class-level annotations `a: T` (such as dataclass fields), and
+class-level literals (`a = {}` is a `dict`). An outside base is not looked into. The attribute has
+no type when its name is a method, property or nested class in any of these classes, or when it
+has another class-level value other than `None` (`content_type = ForeignKey(...)` is a
+descriptor, whose value on an instance has another type).
+A chain `self.a.b.m()` or `x.a.b.m()` is followed one attribute at a time, for up to 3
+attributes, and stops, unknown, at the first one with no single project class.
+
+A name imported from a project module that only re-imports it from outside the project
+(`from starlette.testclient import TestClient` in `fastapi/testclient.py`) is followed there,
+and its calls are `external`, like those of a direct import.
 
 Every call gets exactly one status:
 
@@ -92,7 +117,8 @@ Every call gets exactly one status:
   (reason `ceiling`).
 - `unresolved`, with a reason: `local` (a variable is called; values are not followed),
   `no-match`, `unknown-receiver` (the type of `x` in `x.m()` is unknown), or `unknown-base`
-  (the method was not found before an external or unknown base in the MRO).
+  (the method was not found before an external or unknown base in the MRO, or `super()` went
+  past the end of the declared MRO).
 - `external`, with a reason: `builtin`, `stdlib`, `third-party` or `jedi-external`.
 
 #### The validation rule
@@ -103,6 +129,13 @@ tier counts as not matching. So when a tier gets it wrong, the call gets no link
 ACTE does not link a call to a function just because it is the only one in the project with
 that name. That shortcut is a common source of wrong links. Files in other languages are parsed, but their calls stay
 `unresolved`.
+
+#### Known limits
+
+- Writes to an attribute from outside its class (`obj.attr = x`) are not seen, so they take no
+  part in the attribute's type. The parser would have to record them.
+- A name bound twice at module level (an import and a later `class` of the same name) is not
+  exported, so calls to it from other modules are `no-match`.
 
 ### Layer 2: Graph construction (`src/acte/rdf_builder.py`)
 

@@ -42,25 +42,25 @@ exist.
       Java and TypeScript. Calls inside JS/TS arrow functions are kept, and
       `const f = () => ...` is a function named `f`.
 
+- [x] Speed of questions on large projects. `callers_of`, `blast_radius` and the health checks
+      use direct lookups instead of large SPARQL queries. On django's main folder, `callers_of`
+      went from 231 s to 0.13 s and the health checks from 102 s to 3.5 s, with the same answers.
+
+- [x] More calls found without jedi: attributes set on `self` in another method (also in base
+      classes and subclasses), attribute chains such as `loader.graph.leaf_nodes()` up to 3
+      attributes, `super(C, self).m()`, and names re-exported from outside the project.
+
+- [x] An accuracy check that does not depend on ACTE or jedi: the calls that really happen
+      while django's own test suite runs.
+
 Measured results are in the README.
 
 ## Next
 
-- [ ] Speed on large projects. `callers_of` takes about a minute per question on fastapi,
-      the health checks take about 8 minutes on django, and loading a saved django graph
-      takes about 95 seconds.
-
-- [ ] Calls ACTE misses today: attribute chains such as `loader.graph.leaf_nodes()`,
-      attributes set on `self` in another method, and two-argument `super(C, self)`.
-
-- [ ] Independent checks of accuracy: calls recorded while django's own tests run, the
-      PyCG and JARVIS hand-written answer keys, and repowise's published call-graph test.
+- [ ] Faster building and opening on large projects.
 
 - [ ] Other languages. Call resolution for Java, JavaScript, TypeScript, TSX and Go, which
       now extract structure only.
-
-- [ ] Faster store. rdflib in memory is fine to about 5,000 files; beyond that, load the
-      Turtle output into a dedicated triplestore.
 
 - [ ] Incremental builds. Skip files whose content has not changed since the last build.
 
