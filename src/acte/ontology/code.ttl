@@ -197,3 +197,8 @@ code:jediVersion a rdf:Property ;
     rdfs:comment "The jedi version that ran the jedi resolution tier, when it ran." ;
     rdfs:domain code:Build ;
     rdfs:range xsd:string .
+
+code:summary a rdf:Property ;
+    rdfs:comment "What acte build counted, as JSON with sorted keys: counts (files, functions, classes, call_sites), coverage, health (rows per health check) and triples (the map's triple count, this one included)." ;
+    rdfs:domain code:Build ;
+    rdfs:range xsd:string .

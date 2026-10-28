@@ -92,13 +92,18 @@ def _counts(graph: Graph) -> tuple[dict, dict]:
 def _summary(graph: Graph) -> tuple[dict, dict[str, list[dict]]]:
     """Print the counts and coverage rate of *graph*; return its coverage and health check results."""
     counts, cov = _counts(graph)
+    _print_counts(counts, cov)
+    return cov, run_checks(graph)
+
+
+def _print_counts(counts: dict, cov: dict) -> None:
+    """Print the counts and coverage rate, as build and stats show them."""
     for label, key in (("files parsed", "files"), ("functions", "functions"), ("classes", "classes"), ("call sites", "call_sites")):
         print(f"{label}: {counts[key]}")
     if cov["no_resolver"]:
         print(f"call sites in languages without call resolution: {cov['no_resolver']}")
     rate = cov["rate"]
     print(f"coverage: {'n/a' if rate is None else f'{rate:.1%}'}")
-    return cov, run_checks(graph)
 
 
 def _row(row: dict) -> dict:
@@ -222,6 +227,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.jobs < 1:
         parser.error("--jobs must be at least 1")
     graph = build(root, not args.no_jedi, args.jobs)
+    counts, cov = _counts(graph)
+    checks = run_checks(graph)
+    # for graph_info, which uses it only while the map still has this many triples (the count includes this one)
+    summary = {"counts": counts, "coverage": cov, "health": {name: len(rows) for name, rows in checks.items()},
+               "triples": len(graph) + 1}
+    graph.add((CODE["build"], CODE.summary, Literal(json.dumps(summary, sort_keys=True), datatype=XSD.string)))
     # Write beside the output then rename, so a failed write never leaves a half-written map.
     # A plain name, not tempfile's: tempfile creates mode 0600, which the rename would keep.
     tmp = Path(args.output).with_name(f".{Path(args.output).name}.{os.getpid()}.tmp")
@@ -232,7 +243,7 @@ def main(argv: list[str] | None = None) -> int:
         tmp.unlink(missing_ok=True)
         raise
     print(f"wrote {args.output}")
-    _, checks = _summary(graph)
+    _print_counts(counts, cov)
     failing = [name for name, rows in checks.items() if rows]
     print(f"health: {'ok' if not failing else ', '.join(failing)}")
     return 1 if failing else 0
