@@ -218,7 +218,15 @@ def main(argv: list[str] | None = None) -> int:
         from acte.impact import run  # imported here: impact imports this module
         return run(root, args.base, args.graph, args.depth, args.limit, args.format, not args.no_jedi)
     graph = build(root, not args.no_jedi)
-    graph.serialize(destination=args.output, format="turtle")
+    # Write beside the output then rename, so a failed write never leaves a half-written map.
+    # A plain name, not tempfile's: tempfile creates mode 0600, which the rename would keep.
+    tmp = Path(args.output).with_name(f".{Path(args.output).name}.{os.getpid()}.tmp")
+    try:
+        graph.serialize(destination=tmp, format="turtle")
+        os.replace(tmp, args.output)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     print(f"wrote {args.output}")
     _, checks = _summary(graph)
     failing = [name for name, rows in checks.items() if rows]
