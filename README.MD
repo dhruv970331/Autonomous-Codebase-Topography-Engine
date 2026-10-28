@@ -90,7 +90,10 @@ poetry run acte stats graph.ttl          # show what a saved graph contains and 
 git tracks, so anything in `.gitignore` is left out. Outside git it skips folders like
 `.venv`, `node_modules` and hidden folders. Names in the graph are relative to `PATH`, for
 example `shop/db.py::Database.connect`, so moving the project does not change the graph.
-Use `--no-jedi` to skip the jedi step. When it finishes, it prints the number of files,
+Use `--no-jedi` to skip the jedi step. `--jobs N` parses files in N processes (default: the
+number of CPUs, at most 8; `--jobs 1` parses in one process). The graph is the same byte for
+byte whatever N is. The graph is written to a temporary file first and then renamed, so a
+build that fails part way leaves the old graph in place. When it finishes, it prints the number of files,
 functions, classes and calls, how many calls it resolved, and the health check results.
 Calls in languages without call resolution, such as Go, are counted on a line of their
 own and left out of the coverage.
@@ -100,6 +103,10 @@ built (folder name, git commit, versions), and the first problem rows for any fa
 check. With `--format json` it prints the same data as one JSON object, with all problem rows.
 
 Both commands exit with code 1 if a health check fails.
+
+`acte build` also stores the counts, coverage and health check results in the graph. The MCP
+tool `graph_info` reads them from there. `acte stats` always works them out again, so it also
+catches a graph that was edited after the build.
 
 ### What does my change break?
 
@@ -185,7 +192,8 @@ summary, gives `file:line` for each result, and stays under about 4,000 characte
 has to cut the list short, it says so. If a name is not found, it suggests close matches. If
 a name has more than one definition, it lists them all and lets the caller choose. With
 `--project`, it warns when the project's current git commit differs from the one the graph
-was built from.
+was built from. It asks git at most once every 5 seconds, so the warning can appear up to
+5 seconds after a new commit.
 
 | Tool | Profile | What it answers |
 |---|---|---|
@@ -199,6 +207,10 @@ was built from.
 | `graph_info` | full | how the graph was built, how much is resolved, and health check results |
 
 `small` is the default and offers the first four tools. `full` offers all eight.
+
+`graph_info` uses the numbers `acte build` stored in the graph. It works them out again if they
+are missing or unreadable, if the graph's triple count has changed since the build, or if a
+different ACTE version built it. The server builds its name index when it opens the graph.
 
 ### Python
 
@@ -269,7 +281,7 @@ project.
 - `orphan_functions` lists too much: entry points, `__init__` methods, properties, and functions
   reached only through unresolved calls.
 - Large projects are slow. On the whole django repository (3,030 Python files), a build without
-  jedi takes about 4 minutes, and opening the saved graph takes over a minute.
+  jedi takes under 3 minutes, and opening the saved graph takes over a minute.
 
 ## Design notes
 
