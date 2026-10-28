@@ -353,6 +353,18 @@ def test_stale_warning_after_a_new_commit(tmp_path, monkeypatch):
         assert _call(missing, tool, **arguments) == _call(plain, tool, **arguments)
 
 
+def test_name_index_is_built_when_the_map_opens(tmp_path, monkeypatch):
+    from acte.sparql_engine import SPARQLEngine
+    root, graph = tmp_path / "proj", tmp_path / "graph.ttl"
+    _write(root, CALLS)
+    _build(root, graph)
+    built = []
+    real = SPARQLEngine._indexed
+    monkeypatch.setattr(SPARQLEngine, "_indexed", lambda self: built.append(self._index is None) or real(self))
+    create_server(graph)
+    assert built == [True]  # built once, before any tool is called
+
+
 def test_stale_check_runs_git_at_most_every_5_seconds(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
     root, graph = tmp_path / "proj", tmp_path / "graph.ttl"

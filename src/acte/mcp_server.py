@@ -136,6 +136,7 @@ def stale_warning(built: str | None, now: str | None) -> str:
 def create_server(graph_path: str | Path, project: str | Path | None = None, profile: str = "small") -> MCPServer:
     """A server over the graph in *graph_path*, loaded once and read under one lock (the SDK runs sync tools on worker threads)."""
     engine = SPARQLEngine.from_turtle(graph_path)
+    engine.symbols()  # builds the name index now, while the map opens, so the first question does not pay for it
     lock = threading.Lock()
     server = MCPServer("acte", version=version("acte"))
     built = engine.graph.value(CODE["build"], CODE.commit)
