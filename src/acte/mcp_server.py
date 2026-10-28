@@ -8,6 +8,7 @@ import difflib
 import functools
 import subprocess
 import threading
+import time
 from collections import Counter, defaultdict
 from importlib.metadata import version
 from pathlib import Path
@@ -138,10 +139,13 @@ def create_server(graph_path: str | Path, project: str | Path | None = None, pro
     lock = threading.Lock()
     server = MCPServer("acte", version=version("acte"))
     built = engine.graph.value(CODE["build"], CODE.commit)
+    checked = [float("-inf"), None]  # (time.monotonic() of the last git check, the HEAD it found): git runs at most every 5 s
 
     def stale() -> str:
         """The warning line to put first when the project has moved on from the graph's commit, else ""."""
-        return stale_warning(built, _head(project) if project and built else None)
+        if project and built and time.monotonic() - checked[0] >= 5:
+            checked[:] = [time.monotonic(), _head(project)]
+        return stale_warning(built, checked[1])
 
     def tool(description: str, full: bool = False):
         """Register the decorated function as a text tool whose answers carry the stale warning; *full*: full profile only."""

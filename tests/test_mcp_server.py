@@ -331,12 +331,15 @@ def test_stale_warning_after_a_new_commit(tmp_path, monkeypatch):
     old = _git(root, "rev-parse", "HEAD")
     graph = tmp_path / "graph.ttl"
     _build(root, graph)
+    now = [1000.0]
+    monkeypatch.setattr(mcp_server.time, "monotonic", lambda: now[0])  # git is asked at most every 5 s
     server = create_server(graph, project=root, profile="full")
     for tool, arguments in CALLS_EACH_TOOL:
         assert not _call(server, tool, **arguments).startswith("Warning")
     _write(root, {"new.py": "x = 1\n"})
     _git(root, "add", ".")
     _git(root, "commit", "-qm", "two")
+    now[0] += 5
     new = _git(root, "rev-parse", "HEAD")
     warning = f"Warning: this map was built at commit {old[:7]} but the project is now at {new[:7]}; answers may be out of date."
     plain = create_server(graph, profile="full")  # no --project: never a warning
@@ -348,6 +351,27 @@ def test_stale_warning_after_a_new_commit(tmp_path, monkeypatch):
     missing = create_server(graph, project=tmp_path / "missing", profile="full")
     for tool, arguments in CALLS_EACH_TOOL:
         assert _call(missing, tool, **arguments) == _call(plain, tool, **arguments)
+
+
+def test_stale_check_runs_git_at_most_every_5_seconds(tmp_path, monkeypatch):
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    root, graph = tmp_path / "proj", tmp_path / "graph.ttl"
+    _write(root, CALLS)
+    _git(root, "init", "-q")
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "one")
+    _build(root, graph)
+    server = create_server(graph, project=root, profile="full")
+    heads, now = [], [1000.0]
+    monkeypatch.setattr(mcp_server, "_head", lambda project: heads.append(project) or "0" * 40)
+    monkeypatch.setattr(mcp_server.time, "monotonic", lambda: now[0])
+    _call(server, "graph_info")
+    now[0] += 4.9
+    _call(server, "graph_info")
+    assert len(heads) == 1
+    now[0] += 0.1
+    _call(server, "graph_info")
+    assert len(heads) == 2
 
 
 def test_text_cuts_whole_lines_within_budget():
