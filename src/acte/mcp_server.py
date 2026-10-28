@@ -6,6 +6,7 @@ plain arguments and returns plain text; the LLM never writes SPARQL.
 
 import difflib
 import functools
+import json
 import subprocess
 import threading
 import time
@@ -16,7 +17,7 @@ from pathlib import Path
 from mcp.server.mcpserver import MCPServer
 from rdflib.namespace import RDF
 
-from acte.health import run_checks
+from acte.health import CHECKS, run_checks
 from acte.rdf_builder import CODE
 from acte.sparql_engine import SPARQLEngine
 
@@ -124,6 +125,23 @@ def _head(project: str | Path) -> str | None:
     except (OSError, subprocess.SubprocessError):
         return None
     return (head.stdout.strip() or None) if head.returncode == 0 else None
+
+
+def _stored_summary(graph) -> tuple[dict, list[str], dict] | None:
+    """The coverage, failing check names and counts `acte build` stored in *graph*, or None when there is no summary,
+    it is not valid JSON, the map's triple count has changed since (an edited map), or another acte version wrote it."""
+    meta = CODE["build"]
+    value = graph.value(meta, CODE.summary)
+    if value is None or str(graph.value(meta, CODE.acteVersion)) != version("acte"):
+        return None
+    try:
+        summary = json.loads(str(value))
+        if summary["triples"] != len(graph):
+            return None
+        counts = {kind: summary["counts"][key] for kind, key in (("File", "files"), ("Function", "functions"), ("Class", "classes"))}
+        return summary["coverage"], [name for name in CHECKS if summary["health"][name]], counts
+    except (ValueError, KeyError, TypeError):  # not JSON, or not the shape this version writes
+        return None
 
 
 def stale_warning(built: str | None, now: str | None) -> str:
@@ -318,9 +336,12 @@ def create_server(graph_path: str | Path, project: str | Path | None = None, pro
         g = engine.graph
         meta = CODE["build"]
         with lock:
-            cov = engine.coverage()
-            failing = [name for name, rows in run_checks(g).items() if rows]
-            counts = {kind: len(set(g.subjects(RDF.type, CODE[kind]))) for kind in ("File", "Function", "Class")}
+            if stored := _stored_summary(g):
+                cov, failing, counts = stored
+            else:
+                cov = engine.coverage()
+                failing = [name for name, rows in run_checks(g).items() if rows]
+                counts = {kind: len(set(g.subjects(RDF.type, CODE[kind]))) for kind in ("File", "Function", "Class")}
             root, acte, jedi = (g.value(meta, CODE[p]) for p in ("root", "acteVersion", "jediVersion"))
         rate = "n/a" if cov["rate"] is None else f"{cov['rate']:.1%}"
         return "\n".join([

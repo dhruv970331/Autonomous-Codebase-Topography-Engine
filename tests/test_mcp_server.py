@@ -7,7 +7,8 @@ import pytest
 from mcp import Client
 
 from acte import mcp_server
-from acte.cli import build
+from acte.cli import build, main
+from acte.health import run_checks
 from acte.mcp_server import create_server
 
 PROJECT = {
@@ -314,6 +315,43 @@ def test_graph_info_counts_other_languages_apart(serve):
         "Calls in languages without call resolution: 2 (not counted in coverage or status)",
     ]
     assert lines[4:] == _call(serve(CALLS, profile="full"), "graph_info").splitlines()[3:]
+
+
+def test_graph_info_uses_the_stored_summary_only_while_it_fits_the_map(tmp_path, monkeypatch, capsys):
+    from rdflib import Graph, Literal
+    from rdflib.namespace import RDF, XSD
+
+    from acte.rdf_builder import CODE
+    _write(tmp_path / "proj", CALLS)
+    main(["build", str(tmp_path / "proj"), "-o", str(tmp_path / "fresh.ttl"), "--no-jedi"])  # the real `acte build`
+    fresh = Graph().parse(tmp_path / "fresh.ttl", format="turtle")
+    summary = fresh.value(CODE["build"], CODE.summary)
+    assert json.loads(str(summary))["triples"] == len(fresh)
+
+    def save(name, remove=(), add=()):
+        g = Graph().parse(tmp_path / "fresh.ttl", format="turtle")
+        for t in remove:
+            g.remove(t)
+        for t in add:
+            g.add(t)
+        g.serialize(tmp_path / name, format="turtle")
+        return tmp_path / name
+    meta = CODE["build"]
+    old = save("old.ttl", remove=[(meta, CODE.summary, None)])  # a map from before code:summary
+    edited = save("edited.ttl", remove=[(CODE["db.py::Database"], RDF.type, CODE.Class)])  # breaks dangling-call-arrows
+    edited_old = save("edited_old.ttl", remove=[(CODE["db.py::Database"], RDF.type, CODE.Class), (meta, CODE.summary, None)])
+    bad = save("bad.ttl", remove=[(meta, CODE.summary, None)], add=[(meta, CODE.summary, Literal("{not json", datatype=XSD.string))])
+    other = save("other.ttl", remove=[(meta, CODE.acteVersion, None)], add=[(meta, CODE.acteVersion, Literal("0.0.0", datatype=XSD.string))])
+
+    checked = []
+    monkeypatch.setattr(mcp_server, "run_checks", lambda g: checked.append(1) or run_checks(g))
+    info = {name: _call(create_server(path, profile="full"), "graph_info")
+            for name, path in (("fresh", tmp_path / "fresh.ttl"), ("old", old), ("edited", edited), ("edited_old", edited_old),
+                               ("bad", bad), ("other", other))}
+    assert len(checked) == 5  # every map but the fresh one is checked live
+    assert info["fresh"] == info["old"] == info["bad"] and info["fresh"].endswith("\nHealth: ok")
+    assert info["edited"] == info["edited_old"] and info["edited"].endswith("\nHealth: failing: dangling-call-arrows")
+    assert info["other"].splitlines()[1:] == info["fresh"].splitlines()[1:]
 
 
 CALLS_EACH_TOOL = [("find_symbol", {"name": "connect"}), ("callers_of", {"name": "zz"}), ("callees_of", {"name": "run"}),
