@@ -10,6 +10,8 @@ from rdflib import BNode, Graph, Namespace
 from rdflib.namespace import RDF, RDFS
 from rdflib.plugins.sparql import prepareQuery
 
+from acte.rdf_builder import query_rows
+
 _CODE_NS = "http://acte.local/code#"
 _CODE = Namespace(_CODE_NS)
 _PREFIXES = f"PREFIX code: <{_CODE_NS}>\n"
@@ -133,7 +135,7 @@ def _rows(graph: Graph, name: str) -> list[dict]:
         if not any(isinstance(n, BNode) for n in suspects):  # a blank node cannot be written in VALUES: run it all
             values = f"WHERE {{\n    VALUES ?{var} {{ {' '.join(sorted(n.n3() for n in suspects))} }}"
             query = _PREFIXES + CHECKS[name].replace("WHERE {", values, 1)
-    return [{k: str(v) for k, v in row.asdict().items()} for row in graph.query(query)]
+    return query_rows(graph, query)
 
 
 def run_checks(graph: Graph) -> dict[str, list[dict]]:

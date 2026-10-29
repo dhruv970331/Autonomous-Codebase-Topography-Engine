@@ -27,7 +27,7 @@ from typing import Any
 from rdflib import Graph, Namespace, URIRef
 from rdflib.namespace import RDF
 
-from acte.rdf_builder import iri, lit, text
+from acte.rdf_builder import iri, lit, query_rows, text
 
 _CODE_NS = "http://acte.local/code#"
 _CODE = Namespace(_CODE_NS)
@@ -198,7 +198,7 @@ SELECT DISTINCT ?callee_name WHERE {{
 }}
 ORDER BY ?callee_name
 """
-        return [str(r.callee_name) for r in self.graph.query(q)]
+        return [text(r["callee_name"]) for r in self.graph.query(q)]
 
     def call_sites(self, caller_id: str) -> list[CallSiteResult]:
         """Return every call made directly in the Function (or File) with id *caller_id*, by line and column."""
@@ -216,10 +216,10 @@ SELECT ?line ?col ?target_name ?receiver ?status ?resolved ?reason WHERE {{
 ORDER BY ?line ?col
 """
         return [
-            CallSiteResult(int(r.line), int(r.col), str(r.target_name),
-                           None if r.receiver is None else str(r.receiver), str(r.status),
-                           None if r.resolved is None else self._id(r.resolved),
-                           None if r.reason is None else str(r.reason))
+            CallSiteResult(int(text(r["line"])), int(text(r["col"])), text(r["target_name"]),
+                           None if r["receiver"] is None else text(r["receiver"]), text(r["status"]),
+                           None if r["resolved"] is None else self._id(r["resolved"]),
+                           None if r["reason"] is None else text(r["reason"]))
             for r in self.graph.query(q)
         ]
 
@@ -236,7 +236,7 @@ SELECT ?name ?start ?end WHERE {{
 ORDER BY ?start
 """
         return [
-            FunctionResult(str(r.name), file_path, int(r.start), int(r.end))
+            FunctionResult(text(r["name"]), file_path, int(text(r["start"])), int(text(r["end"])))
             for r in self.graph.query(q)
         ]
 
@@ -253,7 +253,7 @@ SELECT ?name ?start ?end WHERE {{
 ORDER BY ?start
 """
         return [
-            ClassResult(str(r.name), file_path, int(r.start), int(r.end))
+            ClassResult(text(r["name"]), file_path, int(text(r["start"])), int(text(r["end"])))
             for r in self.graph.query(q)
         ]
 
@@ -271,7 +271,7 @@ SELECT DISTINCT ?dep ?p WHERE {{
 """
         found: dict[str, set[str]] = {}
         for r in self.graph.query(q):
-            found.setdefault(str(r.dep), set()).add(IMPORT_KINDS[str(r.p)])
+            found.setdefault(text(r["dep"]), set()).add(IMPORT_KINDS[text(r["p"])])
         kinds = {d: [k for k in KIND_ORDER if k in ks] for d, ks in found.items() if "module" not in ks}
         return DependenciesAnswer(sorted(found), kinds)
 
@@ -296,7 +296,7 @@ SELECT DISTINCT ?name ?file ?start ?end WHERE {
 ORDER BY ?file ?start
 """
         return [
-            FunctionResult(str(r.name), str(r.file), int(r.start), int(r.end))
+            FunctionResult(text(r["name"]), text(r["file"]), int(text(r["start"])), int(text(r["end"])))
             for r in self.graph.query(q)
         ]
 
@@ -315,7 +315,7 @@ SELECT ?d ?kind ?name ?file ?start WHERE {
 }
 """
         return sorted(
-            (self._id(r.d), self._id(r.kind), str(r.name), str(r.file), int(r.start))
+            (self._id(r["d"]), self._id(r["kind"]), text(r["name"]), text(r["file"]), int(text(r["start"])))
             for r in self.graph.query(q)
         )
 
@@ -325,7 +325,7 @@ SELECT ?d ?kind ?name ?file ?start WHERE {
 SELECT ?path WHERE { ?f a code:File ; code:filePath ?path . }
 ORDER BY ?path
 """
-        return [str(r.path) for r in self.graph.query(q)]
+        return [text(r["path"]) for r in self.graph.query(q)]
 
     def coverage(self) -> dict:
         """Counts per status, tier (resolved only), reason and edge kind, plus total and
@@ -342,10 +342,10 @@ ORDER BY ?path
                       for reason in list(g.objects(site, _CODE.reason)) or [None]
                       for kind in [k for t in g.objects(site, _CODE.resolvedTo) for k in g.objects(t, RDF.type)] or [None]
                       for path in [p for f in g.objects(site, _CODE.inFunction) for p in g.objects(f, _CODE.filePath)] or [None]]
-        rows = [r for r in everything if str(r[4]).endswith(".py")]  # as the resolver: only Python is resolved
+        rows = [r for r in everything if text(r[4]).endswith(".py")]  # as the resolver: only Python is resolved
 
         def count(values):
-            return dict(sorted(Counter(str(v) for v in values if v is not None).items()))
+            return dict(sorted(Counter(text(v) for v in values if v is not None).items()))
         status = count(r[0] for r in rows)
         measured = len(rows) - status.get("external", 0)
         return {
@@ -368,10 +368,7 @@ ORDER BY ?path
         """
         try:
             full_query = _PREFIXES + query if "PREFIX code:" not in query else query
-            return [
-                {str(var): str(val) for var, val in row.asdict().items()}
-                for row in self.graph.query(full_query)
-            ]
+            return query_rows(self.graph, full_query)
         except Exception as e:  # noqa: BLE001 - bad user SPARQL is reported, not raised
             return [{"error": str(e)}]
 
@@ -518,7 +515,7 @@ SELECT ?n (MIN(?s) AS ?start) WHERE {{
 }}
 GROUP BY ?n
 """
-        return {self._id(r.n): int(r.start) for r in self.graph.query(q)}
+        return {self._id(r["n"]): int(text(r["start"])) for r in self.graph.query(q)}
 
     def _callers(self, site_pattern: str, reason: str | None = None) -> list[Caller]:
         """One Caller per CallSite matching *site_pattern* (which binds ?site), by file and line, each with *reason*."""
@@ -533,7 +530,7 @@ SELECT ?caller ?name ?file ?line WHERE {{
 ORDER BY ?file ?line ?caller
 """
         return [
-            Caller(self._id(r.caller), str(r.name), str(r.file), int(r.line), reason)
+            Caller(self._id(r["caller"]), text(r["name"]), text(r["file"]), int(text(r["line"])), reason)
             for r in self.graph.query(q)
         ]
 

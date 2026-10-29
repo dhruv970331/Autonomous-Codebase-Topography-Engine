@@ -35,6 +35,12 @@ def text(term) -> str:
     """An IRI's text, or a literal's value as written in the map."""
     return str(term)
 
+
+def query_rows(graph: Graph, query) -> list[dict[str, str]]:
+    """The rows of a SELECT as {variable: text}, without the variables a row leaves unbound."""
+    result = graph.query(query)
+    return [{str(v): text(row[v]) for v in result.vars if row[v] is not None} for row in result]
+
 # An import's kind (parser EdgeInfo.extra["import_kind"]) -> its (project file, outside module) predicates
 _IMPORT_PREDICATES = {
     "module":      (CODE.importsFrom, CODE.importsExternal),
