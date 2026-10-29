@@ -12,12 +12,10 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from rdflib import Graph
-from rdflib.namespace import RDF
-
 from acte.cli import _git, build
 from acte.mcp_server import _calls, _count, _head, _kinds, stale_warning
-from acte.rdf_builder import CODE, iri
+from acte.rdf_builder import CODE, RDF, Graph, iri, subjects, value
+from acte.rdf_builder import text as term_text  # this module has its own text()
 from acte.sparql_engine import IMPORT_KINDS, KIND_ORDER, BlastAnswer, SPARQLEngine
 
 _HUNK = re.compile(r"^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
@@ -114,12 +112,12 @@ def impact(root: Path, graph: Graph, new: dict[str, set[int]], deleted: dict[str
     spans: dict[str, list[tuple[int, int, str, str, int]]] = {}  # file -> (first line, end, id, kind, lineStart) of each definition
     ends = {}  # file -> its File node's lineEnd
     for kind in ("Function", "Class", "File"):
-        for node in graph.subjects(RDF.type, CODE[kind]):
-            file, start, end, decorated = (graph.value(node, CODE[p]) for p in ("filePath", "lineStart", "lineEnd", "decoratorLine"))
+        for node in subjects(graph, RDF.type, CODE[kind]):
+            file, start, end, decorated = (value(graph, node, CODE[p]) for p in ("filePath", "lineStart", "lineEnd", "decoratorLine"))
             if kind == "File":
-                ends[str(file)] = int(end)
+                ends[term_text(file)] = int(term_text(end))
             else:
-                spans.setdefault(str(file), []).append((int(decorated or start), int(end), engine._id(node), kind, int(start)))
+                spans.setdefault(term_text(file), []).append((int(term_text(decorated or start)), int(term_text(end)), engine._id(node), kind, int(term_text(start))))
     new = {f: set(n) for f, n in new.items()}
     for f in untracked:  # all of an untracked file is new
         if f in ends:
@@ -160,8 +158,8 @@ def impact(root: Path, graph: Graph, new: dict[str, set[int]], deleted: dict[str
     for f in sorted(module_files):
         kinds: dict[str, set[str]] = {}
         for p, kind in _IMPORTS.items():
-            for s in graph.subjects(p, _file(graph, f)):
-                kinds.setdefault(str(graph.value(s, CODE.filePath)), set()).add(kind)
+            for s in subjects(graph, p, _file(graph, f)):
+                kinds.setdefault(term_text(value(graph, s, CODE.filePath)), set()).add(kind)
         importers = sorted(kinds)
         seen |= set(importers)
         listed = importers[:limit]
@@ -172,7 +170,7 @@ def impact(root: Path, graph: Graph, new: dict[str, set[int]], deleted: dict[str
 
 def _file(graph: Graph, path: str):
     """The File node whose filePath is *path*."""
-    return next(f for f in graph.subjects(RDF.type, CODE.File) if str(graph.value(f, CODE.filePath)) == path)
+    return next(f for f in subjects(graph, RDF.type, CODE.File) if term_text(value(graph, f, CODE.filePath)) == path)
 
 
 def text(report: Report) -> str:
@@ -218,7 +216,7 @@ def run(root: Path, base: str, graph_path: str | None, depth: int, limit: int, f
         except (OSError, SyntaxError, UnicodeDecodeError) as exc:  # rdflib's turtle BadSyntax is a SyntaxError
             print(f"acte impact: cannot read {graph_path}: {exc}", file=sys.stderr)
             return 2
-        print(stale_warning(graph.value(CODE["build"], CODE.commit), _head(root)), end="", file=sys.stderr)
+        print(stale_warning(value(graph, CODE["build"], CODE.commit), _head(root)), end="", file=sys.stderr)
     else:
         graph = build(root, use_jedi)
     report = impact(root, graph, *lines, base, depth, limit)

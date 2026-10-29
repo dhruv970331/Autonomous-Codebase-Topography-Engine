@@ -10,9 +10,8 @@ from collections import Counter
 from dataclasses import dataclass
 
 import networkx as nx
-from rdflib import Graph
 
-from acte.rdf_builder import text
+from acte.rdf_builder import Graph, text
 from acte.sparql_engine import _IMPORTS, _PREFIXES, SPARQLEngine
 
 

@@ -9,8 +9,8 @@ import urllib.parse
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
-from rdflib import Graph, Literal, Namespace, URIRef
-from rdflib.namespace import RDF, XSD
+from rdflib import BNode, Graph, Literal, Namespace, URIRef
+from rdflib.namespace import RDF, RDFS, XSD  # noqa: F401 - RDFS is for health.py
 
 from acte.parser import CodeParser, EdgeInfo, NodeInfo, ParseResult
 from acte.resolver import CallResolution, Resolution, SymbolIndex, resolve
@@ -34,6 +34,49 @@ def iri(text: str) -> URIRef:
 def text(term) -> str:
     """An IRI's text, or a literal's value as written in the map."""
     return str(term)
+
+
+def is_blank(term) -> bool:
+    return isinstance(term, BNode)
+
+
+def nt(term) -> str:
+    """*term* as N-Triples and SPARQL write it, e.g. ``<http://...>``."""
+    return term.n3()
+
+
+# Lookups and edits. None matches anything; remove() takes away every fact matching the pattern.
+def new_graph() -> Graph:
+    return Graph()
+
+
+def triples(graph: Graph, s=None, p=None, o=None):
+    return graph.triples((s, p, o))
+
+
+def subjects(graph: Graph, p=None, o=None):
+    return graph.subjects(p, o)
+
+
+def objects(graph: Graph, s=None, p=None):
+    return graph.objects(s, p)
+
+
+def value(graph: Graph, s, p):
+    """One object of (s, p), or None."""
+    return graph.value(s, p)
+
+
+def has(graph: Graph, s=None, p=None, o=None) -> bool:
+    return (s, p, o) in graph
+
+
+def add(graph: Graph, s, p, o) -> None:
+    graph.add((s, p, o))
+
+
+def remove(graph: Graph, s=None, p=None, o=None) -> None:
+    graph.remove((s, p, o))
 
 
 def query_rows(graph: Graph, query) -> list[dict[str, str]]:

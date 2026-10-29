@@ -15,10 +15,9 @@ from importlib.metadata import version
 from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
-from rdflib.namespace import RDF
 
 from acte.health import CHECKS, run_checks
-from acte.rdf_builder import CODE
+from acte.rdf_builder import CODE, RDF, subjects, text, value
 from acte.sparql_engine import SPARQLEngine
 
 _BUDGET = 4000  # characters per answer, about 1,000 tokens
@@ -131,11 +130,11 @@ def _stored_summary(graph) -> tuple[dict, list[str], dict] | None:
     """The coverage, failing check names and counts `acte build` stored in *graph*, or None when there is no summary,
     it is not valid JSON, the map's triple count has changed since (an edited map), or another acte version wrote it."""
     meta = CODE["build"]
-    value = graph.value(meta, CODE.summary)
-    if value is None or str(graph.value(meta, CODE.acteVersion)) != version("acte"):
+    stored = value(graph, meta, CODE.summary)
+    if stored is None or text(value(graph, meta, CODE.acteVersion)) != version("acte"):
         return None
     try:
-        summary = json.loads(str(value))
+        summary = json.loads(text(stored))
         if summary["triples"] != len(graph):
             return None
         counts = {kind: summary["counts"][key] for kind, key in (("File", "files"), ("Function", "functions"), ("Class", "classes"))}
@@ -146,9 +145,9 @@ def _stored_summary(graph) -> tuple[dict, list[str], dict] | None:
 
 def stale_warning(built: str | None, now: str | None) -> str:
     """The warning line to put first when the project is at commit *now* but the graph was built at *built*, else ""."""
-    if not built or now is None or now == str(built):
+    if not built or now is None or now == text(built):
         return ""
-    return f"Warning: this map was built at commit {built[:7]} but the project is now at {now[:7]}; answers may be out of date.\n"
+    return f"Warning: this map was built at commit {text(built)[:7]} but the project is now at {now[:7]}; answers may be out of date.\n"
 
 
 def create_server(graph_path: str | Path, project: str | Path | None = None, profile: str = "small") -> MCPServer:
@@ -157,7 +156,7 @@ def create_server(graph_path: str | Path, project: str | Path | None = None, pro
     engine.symbols()  # builds the name index now, while the map opens, so the first question does not pay for it
     lock = threading.Lock()
     server = MCPServer("acte", version=version("acte"))
-    built = engine.graph.value(CODE["build"], CODE.commit)
+    built = value(engine.graph, CODE["build"], CODE.commit)
     checked = [float("-inf"), None]  # (time.monotonic() of the last git check, the HEAD it found): git runs at most every 5 s
 
     def stale() -> str:
@@ -341,11 +340,11 @@ def create_server(graph_path: str | Path, project: str | Path | None = None, pro
             else:
                 cov = engine.coverage()
                 failing = [name for name, rows in run_checks(g).items() if rows]
-                counts = {kind: len(set(g.subjects(RDF.type, CODE[kind]))) for kind in ("File", "Function", "Class")}
-            root, acte, jedi = (g.value(meta, CODE[p]) for p in ("root", "acteVersion", "jediVersion"))
+                counts = {kind: len(set(subjects(g, RDF.type, CODE[kind]))) for kind in ("File", "Function", "Class")}
+            root, acte, jedi = (None if (v := value(g, meta, CODE[p])) is None else text(v) for p in ("root", "acteVersion", "jediVersion"))
         rate = "n/a" if cov["rate"] is None else f"{cov['rate']:.1%}"
         return "\n".join([
-            f"graph_info: {root}, commit {str(built)[:7] if built else 'unknown'}, built by acte {acte}"
+            f"graph_info: {root}, commit {text(built)[:7] if built else 'unknown'}, built by acte {acte}"
             + (f" with jedi {jedi}" if jedi else " without jedi"),
             f"Size: {counts['File']} files, {counts['Function']} functions, {counts['Class']} classes, {cov['total']} calls",
             f"Coverage: {rate} of calls resolved (calls to outside code not counted)",

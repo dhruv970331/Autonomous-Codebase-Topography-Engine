@@ -24,13 +24,22 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from rdflib import Graph, Namespace, URIRef
-from rdflib.namespace import RDF
-
-from acte.rdf_builder import iri, lit, query_rows, text
+from acte.rdf_builder import (
+    CODE,
+    RDF,
+    Graph,
+    has,
+    iri,
+    lit,
+    new_graph,
+    nt,
+    objects,
+    query_rows,
+    subjects,
+    text,
+)
 
 _CODE_NS = "http://acte.local/code#"
-_CODE = Namespace(_CODE_NS)
 _PREFIXES = (
     f"PREFIX code: <{_CODE_NS}>\n"
     "PREFIX xsd:  <http://www.w3.org/2001/XMLSchema#>\n"
@@ -144,7 +153,7 @@ class SPARQLEngine:
     """
 
     def __init__(self, graph: Graph | None = None) -> None:
-        self.graph: Graph = graph if graph is not None else Graph()
+        self.graph: Graph = graph if graph is not None else new_graph()
         self._index: tuple | None = None  # (graph size, symbols, by id, by bare name, by qualname), see _indexed()
 
     @classmethod
@@ -335,13 +344,13 @@ ORDER BY ?path
         languages with call resolution are measured; no_resolver counts the others, total all."""
         # triples() lookups give one row per combination of values, as the OPTIONALs of the old query
         # (kept in the tests as an oracle) did: rdflib's SPARQL engine took 49 s for it on django
-        g, edges = self.graph, {_CODE.Function: "calls", _CODE.Class: "instantiates"}
+        g, edges = self.graph, {CODE.Function: "calls", CODE.Class: "instantiates"}
         everything = [(status, tier, reason, kind, path)
-                      for site in g.subjects(RDF.type, _CODE.CallSite) for status in g.objects(site, _CODE.status)
-                      for tier in list(g.objects(site, _CODE.tier)) or [None]
-                      for reason in list(g.objects(site, _CODE.reason)) or [None]
-                      for kind in [k for t in g.objects(site, _CODE.resolvedTo) for k in g.objects(t, RDF.type)] or [None]
-                      for path in [p for f in g.objects(site, _CODE.inFunction) for p in g.objects(f, _CODE.filePath)] or [None]]
+                      for site in subjects(g, RDF.type, CODE.CallSite) for status in objects(g, site, CODE.status)
+                      for tier in list(objects(g, site, CODE.tier)) or [None]
+                      for reason in list(objects(g, site, CODE.reason)) or [None]
+                      for kind in [k for t in objects(g, site, CODE.resolvedTo) for k in objects(g, t, RDF.type)] or [None]
+                      for path in [p for f in objects(g, site, CODE.inFunction) for p in objects(g, f, CODE.filePath)] or [None]]
         rows = [r for r in everything if text(r[4]).endswith(".py")]  # as the resolver: only Python is resolved
 
         def count(values):
@@ -395,8 +404,8 @@ ORDER BY ?path
         size = len(self.graph)
         if self._index is None or self._index[0] != size:
             g = self.graph  # triples() lookups: the same rows as a SPARQL query over every definition, several times faster
-            defs = sorted((self._id(d), str(n)) for kind in (_CODE.Function, _CODE.Class)
-                          for d in g.subjects(RDF.type, kind) for n in g.objects(d, _CODE.name))
+            defs = sorted((self._id(d), text(n)) for kind in (CODE.Function, CODE.Class)
+                          for d in subjects(g, RDF.type, kind) for n in objects(g, d, CODE.name))
             by_id, by_bare, by_qual = defaultdict(list), defaultdict(list), defaultdict(list)
             for d in defs:  # each list keeps the sorted order
                 by_id[d[0]].append(d)
@@ -422,10 +431,10 @@ ORDER BY ?path
         # The sites are picked with triples(), each as often as the SPARQL pattern it replaces matched it: rdflib
         # evaluated the tier and receiver literals over every call site first (about 3 s per call on django).
         g = self.graph
-        sites = [s for t in self._overridden(target) for s in g.subjects(_CODE.resolvedTo, t) for tier in g.objects(s, _CODE.tier)
-                 for r in ([None] if tier in (lit("T4b"), lit("TJ")) else g.objects(s, _CODE.receiver) if tier == lit("T1") else [])
+        sites = [s for t in self._overridden(target) for s in subjects(g, CODE.resolvedTo, t) for tier in objects(g, s, CODE.tier)
+                 for r in ([None] if tier in (lit("T4b"), lit("TJ")) else objects(g, s, CODE.receiver) if tier == lit("T1") else [])
                  if r is None or r in (lit("self"), lit("cls"))]
-        override = self._callers(f"VALUES ?site {{ {' '.join(s.n3() for s in sites)} }}", "override") if sites else []
+        override = self._callers(f"VALUES ?site {{ {' '.join(nt(s) for s in sites)} }}", "override") if sites else []
         if target.endswith(".__init__"):  # a subclass whose MRO reaches an outside or unknown base before any __init__
             possible += self._callers(f"?site code:initUnknown true ; code:resolvedTo/code:inherits+ {self._uri(cls)} .", "unknown-base")
         possible = sorted(possible + override, key=lambda c: (c.file_path, c.line, c.id))
@@ -435,29 +444,29 @@ ORDER BY ?path
         # (counted with triples(): SPARQL took 0.06 s per count)
         for status, reason in (("unresolved", "unknown-receiver"), ("unresolved", "unknown-base"), ("ambiguous", "ceiling")):
             reasons[reason] = listed[reason] + sum(
-                1 for n in names for site in g.subjects(_CODE.targetName, lit(n))
-                if (site, _CODE.status, lit(status)) in g and (site, _CODE.reason, lit(reason)) in g)
+                1 for n in names for site in subjects(g, CODE.targetName, lit(n))
+                if has(g, site, CODE.status, lit(status)) and has(g, site, CODE.reason, lit(reason)))
         reasons = {k: v for k, v in reasons.items() if v}
         return CallerAnswer(target, callers, possible, "lower-bound" if reasons else "exact", reasons)
 
-    def _overridden(self, target: str) -> list[URIRef]:
+    def _overridden(self, target: str) -> list:
         """Every Function of *target*'s name in a class its class reaches by ``code:inherits+``, other than *target*.
 
         Walked with triples() lookups: as one SPARQL pattern, rdflib evaluated ``code:inherits+``
         from every node in the graph (about 65 s on fastapi)."""
         g, uri = self.graph, iri(self._uri(target)[1:-1])
         found = []
-        for sub in g.subjects(_CODE.contains, uri):
-            if (sub, RDF.type, _CODE.Class) not in g:
+        for sub in subjects(g, CODE.contains, uri):
+            if not has(g, sub, RDF.type, CODE.Class):
                 continue
             bases, todo = set(), [sub]  # one or more steps, as inherits+: sub itself only through a cycle
             while todo:
-                for b in g.objects(todo.pop(), _CODE.inherits):
+                for b in objects(g, todo.pop(), CODE.inherits):
                     if b not in bases:
                         bases.add(b)
                         todo.append(b)
-            found += [t for m in g.objects(uri, _CODE.name) for base in bases for t in g.objects(base, _CODE.contains)
-                      if t != uri and (t, RDF.type, _CODE.Function) in g and (t, _CODE.name, m) in g]
+            found += [t for m in objects(g, uri, CODE.name) for base in bases for t in objects(g, base, CODE.contains)
+                      if t != uri and has(g, t, RDF.type, CODE.Function) and has(g, t, CODE.name, m)]
         return found
 
     def _blast(self, target: str, bare: str, depth: int, limit: int) -> BlastAnswer:
