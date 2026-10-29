@@ -505,14 +505,16 @@ ORDER BY ?path
                            len(affected), len(affected) > limit, depth, "lower-bound" if reasons else "exact", reasons)
 
     def _line_starts(self, ids: list[str]) -> dict[str, int]:
-        """Return the lineStart of each node in *ids*."""
+        """Return the lineStart of each node in *ids*: the smallest, for an id defined more than once."""
         if not ids:
             return {}
+        # MIN: an id defined twice (both branches of an if) has two lineStarts, and the row order depends on the store
         q = _PREFIXES + f"""
-SELECT ?n ?start WHERE {{
+SELECT ?n (MIN(?s) AS ?start) WHERE {{
     VALUES ?n {{ {" ".join(self._uri(i) for i in ids)} }}
-    ?n code:lineStart ?start .
+    ?n code:lineStart ?s .
 }}
+GROUP BY ?n
 """
         return {self._id(r.n): int(r.start) for r in self.graph.query(q)}
 

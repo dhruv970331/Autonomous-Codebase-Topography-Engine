@@ -2,6 +2,7 @@ from collections import Counter
 from pathlib import Path
 
 import pytest
+from rdflib import Graph
 from rdflib.namespace import RDF
 
 from acte.parser import CodeParser
@@ -223,6 +224,25 @@ def test_blast_radius_ranks_by_in_degree_and_truncates(tmp_path):
     assert ([i.name for i in cut.affected], cut.total, cut.truncated) == (["b"], 5, True)
     assert engine.blast_radius("t", depth=0)[0].depth == 1
     assert engine.blast_radius("t", depth=99)[0].depth == 10
+
+
+def test_blast_radius_tie_order_does_not_depend_on_the_store():
+    """An id defined in both branches of an if has two lineStarts: ranking uses the smallest, whatever the fact order."""
+    root = Path(__file__).parent / "data" / "twice_defined"
+    graph = build_graph([root / "app.py"], root, use_jedi=False)
+    alpha = f"{root}/app.py::alpha"
+    assert [s[4] for s in SPARQLEngine(graph=graph).symbols() if s[0] == alpha] == [9, 15]
+    reversed_graph = Graph()
+    for triple in reversed(list(graph)):
+        reversed_graph.add(triple)
+    answers = []
+    for g in (graph, reversed_graph):
+        engine = SPARQLEngine(graph=g)
+        assert engine._line_starts([alpha]) == {alpha: 9}
+        [answer] = engine.blast_radius("target", depth=1)
+        answers.append(answer)
+    assert [i.name for i in answers[0].affected] == ["alpha", "beta"]  # alpha's line 9 is before beta's line 12
+    assert answers[0] == answers[1]
 
 
 def test_blast_radius_mutual_recursion_terminates(tmp_path):
