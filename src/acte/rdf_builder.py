@@ -18,6 +18,23 @@ from acte.resolver import CallResolution, Resolution, SymbolIndex, resolve
 # Formal namespace for the codebase topography ontology
 CODE = Namespace("http://acte.local/code#")
 
+
+# Terms of a map. Every module makes and reads terms through these, so the store behind them can change in one place.
+def lit(value: str | int | bool) -> Literal:
+    """A literal typed by its Python type: xsd:boolean, xsd:integer or xsd:string."""
+    datatype = XSD.boolean if isinstance(value, bool) else XSD.integer if isinstance(value, int) else XSD.string
+    return Literal(value, datatype=datatype)
+
+
+def iri(text: str) -> URIRef:
+    """The node with the full IRI *text*."""
+    return URIRef(text)
+
+
+def text(term) -> str:
+    """An IRI's text, or a literal's value as written in the map."""
+    return str(term)
+
 # An import's kind (parser EdgeInfo.extra["import_kind"]) -> its (project file, outside module) predicates
 _IMPORT_PREDICATES = {
     "module":      (CODE.importsFrom, CODE.importsExternal),
@@ -96,7 +113,7 @@ class KnowledgeGraphBuilder:
         """Encode an arbitrary code identifier into a valid RDF URI."""
         # "#" is encoded: the namespace's "#" must stay the only one in the IRI.
         safe = urllib.parse.quote(identifier, safe="/:.@")
-        return URIRef(CODE[safe])
+        return iri(CODE[safe])
 
     def _add_node(self, node: NodeInfo) -> None:
         uri = self._make_uri(self._node_id(node))
@@ -112,15 +129,15 @@ class KnowledgeGraphBuilder:
             self.graph.add((uri, RDF.type, rdf_type))
 
         # Literal properties
-        self.graph.add((uri, CODE.name,      Literal(node.name,      datatype=XSD.string)))
-        self.graph.add((uri, CODE.filePath,  Literal(node.file_path, datatype=XSD.string)))
-        self.graph.add((uri, CODE.lineStart, Literal(node.line_start, datatype=XSD.integer)))
-        self.graph.add((uri, CODE.lineEnd,   Literal(node.line_end,   datatype=XSD.integer)))
+        self.graph.add((uri, CODE.name,      lit(node.name)))
+        self.graph.add((uri, CODE.filePath,  lit(node.file_path)))
+        self.graph.add((uri, CODE.lineStart, lit(node.line_start)))
+        self.graph.add((uri, CODE.lineEnd,   lit(node.line_end)))
         if node.decorator_line is not None:
-            self.graph.add((uri, CODE.decoratorLine, Literal(node.decorator_line, datatype=XSD.integer)))
+            self.graph.add((uri, CODE.decoratorLine, lit(node.decorator_line)))
 
         if node.language:
-            self.graph.add((uri, CODE.language, Literal(node.language, datatype=XSD.string)))
+            self.graph.add((uri, CODE.language, lit(node.language)))
 
     def _add_edge(self, edge: EdgeInfo, index: SymbolIndex | None = None) -> None:
         source_uri = self._make_uri(edge.source)
@@ -133,7 +150,7 @@ class KnowledgeGraphBuilder:
             if len(files) == 1:
                 self.graph.add((source_uri, project, self._make_uri(files[0])))
             elif not files and not edge.target.startswith("."):  # a relative import is inside the project, never external
-                self.graph.add((source_uri, external, Literal(edge.target, datatype=XSD.string)))
+                self.graph.add((source_uri, external, lit(edge.target)))
             # several files: ambiguous, so no arrow
 
     def _add_call(self, r: CallResolution) -> None:
@@ -144,28 +161,28 @@ class KnowledgeGraphBuilder:
         g = self.graph
         g.add((uri, RDF.type, CODE.CallSite))
         g.add((uri, CODE.inFunction, caller))
-        g.add((uri, CODE.line, Literal(call.line, datatype=XSD.integer)))
-        g.add((uri, CODE.column, Literal(call.col, datatype=XSD.integer)))
-        g.add((uri, CODE.targetName, Literal(call.target_name, datatype=XSD.string)))
+        g.add((uri, CODE.line, lit(call.line)))
+        g.add((uri, CODE.column, lit(call.col)))
+        g.add((uri, CODE.targetName, lit(call.target_name)))
         if call.receiver is not None:
-            g.add((uri, CODE.receiver, Literal(call.receiver, datatype=XSD.string)))
-        g.add((uri, CODE.status, Literal(r.status, datatype=XSD.string)))
+            g.add((uri, CODE.receiver, lit(call.receiver)))
+        g.add((uri, CODE.status, lit(r.status)))
         if r.reason:
-            g.add((uri, CODE.reason, Literal(r.reason, datatype=XSD.string)))
+            g.add((uri, CODE.reason, lit(r.reason)))
         if r.status == "resolved":
             target = self._make_uri(r.target)
-            g.add((uri, CODE.tier, Literal(r.tier, datatype=XSD.string)))
+            g.add((uri, CODE.tier, lit(r.tier)))
             g.add((uri, CODE.resolvedTo, target))
             if r.init:
                 g.add((uri, CODE.initTarget, self._make_uri(r.init)))
             if r.init_unknown:
-                g.add((uri, CODE.initUnknown, Literal(True, datatype=XSD.boolean)))
+                g.add((uri, CODE.initUnknown, lit(True)))
             if r.recursive:
-                g.add((uri, CODE.recursive, Literal(True, datatype=XSD.boolean)))
+                g.add((uri, CODE.recursive, lit(True)))
             else:  # R11: a recursive call keeps its record but draws no self-edge
                 g.add((caller, CODE[r.edge], target))
         elif r.status == "ambiguous":
-            g.add((uri, CODE.candidateCount, Literal(r.candidate_count, datatype=XSD.integer)))
+            g.add((uri, CODE.candidateCount, lit(r.candidate_count)))
             for c in r.candidates:
                 g.add((uri, CODE.candidate, self._make_uri(c)))
 

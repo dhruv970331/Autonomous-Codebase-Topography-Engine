@@ -16,15 +16,15 @@ from dataclasses import asdict
 from importlib.metadata import version
 from pathlib import Path
 
-from rdflib import Graph, Literal
-from rdflib.namespace import RDF, XSD
+from rdflib import Graph
+from rdflib.namespace import RDF
 
 from acte import resolver
 from acte.analysis import import_cycles, rank, subsystems
 from acte.health import run_checks
 from acte.mcp_server import create_server
 from acte.parser import EXTENSION_TO_LANGUAGE
-from acte.rdf_builder import CODE, build_graph
+from acte.rdf_builder import CODE, build_graph, lit, text
 from acte.sparql_engine import SPARQLEngine
 
 # skipped when walking a directory that is not in a git work tree; hidden dirs are skipped too
@@ -73,12 +73,12 @@ def build(root: Path, use_jedi: bool = True, jobs: int = 1) -> Graph:
         graph = build_graph([Path(f) for f in files], Path("."), use_jedi, jobs)
     meta = CODE["build"]
     graph.add((meta, RDF.type, CODE.Build))
-    graph.add((meta, CODE.root, Literal(root.resolve().name, datatype=XSD.string)))
-    graph.add((meta, CODE.acteVersion, Literal(version("acte"), datatype=XSD.string)))
+    graph.add((meta, CODE.root, lit(root.resolve().name)))
+    graph.add((meta, CODE.acteVersion, lit(version("acte"))))
     if commit:
-        graph.add((meta, CODE.commit, Literal(commit, datatype=XSD.string)))
+        graph.add((meta, CODE.commit, lit(commit)))
     if use_jedi and resolver.jedi:  # the resolver runs tier TJ exactly when both hold
-        graph.add((meta, CODE.jediVersion, Literal(resolver.jedi.__version__, datatype=XSD.string)))
+        graph.add((meta, CODE.jediVersion, lit(resolver.jedi.__version__)))
     return graph
 
 
@@ -114,7 +114,7 @@ def _row(row: dict) -> dict:
 def _stats(graph: Graph, fmt: str = "text") -> int:
     """Print the build metadata, summary, coverage breakdown and health of *graph*; 1 if a health check fails."""
     meta = CODE["build"]
-    built = {prop: str(value) for prop in ("root", "commit", "acteVersion", "jediVersion")
+    built = {prop: text(value) for prop in ("root", "commit", "acteVersion", "jediVersion")
              if (value := graph.value(meta, CODE[prop])) is not None}
     if fmt == "json":
         counts, cov = _counts(graph)
@@ -232,7 +232,7 @@ def main(argv: list[str] | None = None) -> int:
     # for graph_info, which uses it only while the map still has this many triples (the count includes this one)
     summary = {"counts": counts, "coverage": cov, "health": {name: len(rows) for name, rows in checks.items()},
                "triples": len(graph) + 1}
-    graph.add((CODE["build"], CODE.summary, Literal(json.dumps(summary, sort_keys=True), datatype=XSD.string)))
+    graph.add((CODE["build"], CODE.summary, lit(json.dumps(summary, sort_keys=True))))
     # Write beside the output then rename, so a failed write never leaves a half-written map.
     # A plain name, not tempfile's: tempfile creates mode 0600, which the rename would keep.
     tmp = Path(args.output).with_name(f".{Path(args.output).name}.{os.getpid()}.tmp")

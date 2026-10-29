@@ -12,16 +12,16 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from rdflib import Graph, URIRef
+from rdflib import Graph
 from rdflib.namespace import RDF
 
 from acte.cli import _git, build
 from acte.mcp_server import _calls, _count, _head, _kinds, stale_warning
-from acte.rdf_builder import CODE
+from acte.rdf_builder import CODE, iri
 from acte.sparql_engine import IMPORT_KINDS, KIND_ORDER, BlastAnswer, SPARQLEngine
 
 _HUNK = re.compile(r"^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
-_IMPORTS = {URIRef(p): kind for p, kind in IMPORT_KINDS.items() if not p.endswith("External")}  # of a project file, by kind
+_IMPORTS = {iri(p): kind for p, kind in IMPORT_KINDS.items() if not p.endswith("External")}  # of a project file, by kind
 _HEADER = ("def ", "async def ", "class ", "@")  # a removed Python line starting so began a definition
 
 

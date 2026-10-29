@@ -24,8 +24,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from rdflib import Graph, Literal, Namespace, URIRef
-from rdflib.namespace import RDF, XSD
+from rdflib import Graph, Namespace, URIRef
+from rdflib.namespace import RDF
+
+from acte.rdf_builder import iri, lit, text
 
 _CODE_NS = "http://acte.local/code#"
 _CODE = Namespace(_CODE_NS)
@@ -422,10 +424,10 @@ ORDER BY ?path
         # or jedi, may run target when the object is of target's class
         # The sites are picked with triples(), each as often as the SPARQL pattern it replaces matched it: rdflib
         # evaluated the tier and receiver literals over every call site first (about 3 s per call on django).
-        g, xsd = self.graph, lambda v: Literal(v, datatype=XSD.string)
+        g = self.graph
         sites = [s for t in self._overridden(target) for s in g.subjects(_CODE.resolvedTo, t) for tier in g.objects(s, _CODE.tier)
-                 for r in ([None] if tier in (xsd("T4b"), xsd("TJ")) else g.objects(s, _CODE.receiver) if tier == xsd("T1") else [])
-                 if r is None or r in (xsd("self"), xsd("cls"))]
+                 for r in ([None] if tier in (lit("T4b"), lit("TJ")) else g.objects(s, _CODE.receiver) if tier == lit("T1") else [])
+                 if r is None or r in (lit("self"), lit("cls"))]
         override = self._callers(f"VALUES ?site {{ {' '.join(s.n3() for s in sites)} }}", "override") if sites else []
         if target.endswith(".__init__"):  # a subclass whose MRO reaches an outside or unknown base before any __init__
             possible += self._callers(f"?site code:initUnknown true ; code:resolvedTo/code:inherits+ {self._uri(cls)} .", "unknown-base")
@@ -436,8 +438,8 @@ ORDER BY ?path
         # (counted with triples(): SPARQL took 0.06 s per count)
         for status, reason in (("unresolved", "unknown-receiver"), ("unresolved", "unknown-base"), ("ambiguous", "ceiling")):
             reasons[reason] = listed[reason] + sum(
-                1 for n in names for site in g.subjects(_CODE.targetName, xsd(n))
-                if (site, _CODE.status, xsd(status)) in g and (site, _CODE.reason, xsd(reason)) in g)
+                1 for n in names for site in g.subjects(_CODE.targetName, lit(n))
+                if (site, _CODE.status, lit(status)) in g and (site, _CODE.reason, lit(reason)) in g)
         reasons = {k: v for k, v in reasons.items() if v}
         return CallerAnswer(target, callers, possible, "lower-bound" if reasons else "exact", reasons)
 
@@ -446,7 +448,7 @@ ORDER BY ?path
 
         Walked with triples() lookups: as one SPARQL pattern, rdflib evaluated ``code:inherits+``
         from every node in the graph (about 65 s on fastapi)."""
-        g, uri = self.graph, URIRef(self._uri(target)[1:-1])
+        g, uri = self.graph, iri(self._uri(target)[1:-1])
         found = []
         for sub in g.subjects(_CODE.contains, uri):
             if (sub, RDF.type, _CODE.Class) not in g:
@@ -537,7 +539,7 @@ ORDER BY ?file ?line ?caller
 
     def _id(self, uri: Any) -> str:
         """Return the code identifier a node URI encodes (inverse of ``_uri``)."""
-        return urllib.parse.unquote(str(uri)[len(_CODE_NS):])
+        return urllib.parse.unquote(text(uri)[len(_CODE_NS):])
 
     def _uri(self, identifier: str) -> str:
         """Return a SPARQL inline URI for *identifier*, e.g. ``<code:foo>``."""
