@@ -79,6 +79,16 @@ def remove(graph: Graph, s=None, p=None, o=None) -> None:
     graph.remove((s, p, o))
 
 
+def load(path: str | Path) -> Graph:
+    """The map in the Turtle file at *path*."""
+    return Graph().parse(str(path), format="turtle")
+
+
+def save(graph: Graph, path: str | Path) -> None:
+    """Write *graph* to *path* as Turtle."""
+    graph.serialize(destination=str(path), format="turtle")
+
+
 def query_rows(graph: Graph, query) -> list[dict[str, str]]:
     """The rows of a SELECT as {variable: text}, without the variables a row leaves unbound."""
     result = graph.query(query)
@@ -106,7 +116,7 @@ class KnowledgeGraphBuilder:
         for path in repo_files:
             result = parser.parse_file(path)
             builder.build(result.nodes, result.edges)   # accumulates across calls
-        builder.serialize("graph.ttl")
+        save(builder.graph, "graph.ttl")
 
     Call reset() between runs if you need a clean graph without creating a new
     instance (e.g. in tests or repeated ingestion jobs).
@@ -145,10 +155,6 @@ class KnowledgeGraphBuilder:
         """Clear all triples and start fresh, preserving namespace bindings."""
         self.graph = Graph()
         self.graph.bind("code", CODE)
-
-    def serialize(self, filepath: str | Path, format: str = "turtle") -> None:
-        """Export the graph to disk (default: Turtle)."""
-        self.graph.serialize(destination=str(filepath), format=format)
 
     # ------------------------------------------------------------------
     # Internal helpers

@@ -316,7 +316,7 @@ def test_coverage_matches_report_and_survives_turtle(tmp_path, use_jedi):
     coverage = SPARQLEngine(graph=graph).coverage()
     assert coverage == {k: report[k] for k in ("edge", "no_resolver", "rate", "reason", "status", "tier", "total")}
     graph.serialize(tmp_path / "g.ttl", format="turtle")
-    assert SPARQLEngine.from_turtle(tmp_path / "g.ttl").coverage() == coverage
+    assert SPARQLEngine.open(tmp_path / "g.ttl").coverage() == coverage
 
 
 MIXED = (

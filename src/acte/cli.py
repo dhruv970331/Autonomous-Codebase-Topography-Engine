@@ -28,6 +28,8 @@ from acte.rdf_builder import (
     add,
     build_graph,
     lit,
+    load,
+    save,
     subjects,
     text,
     value,
@@ -215,7 +217,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "analyze" and args.top < 1:
             parser.error("--top must be at least 1")
         try:
-            graph = Graph().parse(args.graph, format="turtle")
+            graph = load(args.graph)
         except (OSError, SyntaxError, UnicodeDecodeError) as exc:  # rdflib's turtle BadSyntax is a SyntaxError
             parser.error(f"cannot read {args.graph}: {exc}")
         if args.command == "stats":
@@ -244,7 +246,7 @@ def main(argv: list[str] | None = None) -> int:
     # A plain name, not tempfile's: tempfile creates mode 0600, which the rename would keep.
     tmp = Path(args.output).with_name(f".{Path(args.output).name}.{os.getpid()}.tmp")
     try:
-        graph.serialize(destination=tmp, format="turtle")
+        save(graph, tmp)
         os.replace(tmp, args.output)
     except BaseException:
         tmp.unlink(missing_ok=True)

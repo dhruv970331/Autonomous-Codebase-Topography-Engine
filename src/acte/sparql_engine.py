@@ -31,6 +31,7 @@ from acte.rdf_builder import (
     has,
     iri,
     lit,
+    load,
     new_graph,
     nt,
     objects,
@@ -145,7 +146,7 @@ class SPARQLEngine:
     """Executes deterministic multi-hop queries against the ACTE knowledge graph.
 
     Typical usage — load from a serialised Turtle file:
-        engine = SPARQLEngine.from_turtle("graph.ttl")
+        engine = SPARQLEngine.open("graph.ttl")
         hits = engine.blast_radius("db_connect")
 
     Or inject a live rdflib Graph directly (useful in tests / Colab):
@@ -157,11 +158,9 @@ class SPARQLEngine:
         self._index: tuple | None = None  # (graph size, symbols, by id, by bare name, by qualname), see _indexed()
 
     @classmethod
-    def from_turtle(cls, path: str | Path) -> "SPARQLEngine":
-        """Load a serialised Turtle (.ttl) file and return a ready engine."""
-        g = Graph()
-        g.parse(str(path), format="turtle")
-        return cls(graph=g)
+    def open(cls, path: str | Path) -> "SPARQLEngine":
+        """Load a map written by ``acte build`` and return a ready engine."""
+        return cls(graph=load(path))
 
     # ------------------------------------------------------------------
     # Named queries

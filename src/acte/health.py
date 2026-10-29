@@ -15,6 +15,7 @@ from acte.rdf_builder import (
     Graph,
     has,
     is_blank,
+    load,
     nt,
     objects,
     query_rows,
@@ -28,7 +29,7 @@ _PREFIXES = f"PREFIX code: <{_CODE_NS}>\n"
 _STATUSES = '"resolved", "ambiguous", "unresolved", "external"'
 _STATUS_SET = {"resolved", "ambiguous", "unresolved", "external"}
 
-_ONTOLOGY = Graph().parse(files("acte") / "ontology" / "code.ttl", format="turtle")
+_ONTOLOGY = load(files("acte") / "ontology" / "code.ttl")
 _DECLARED = sorted(set(subjects(_ONTOLOGY, RDF.type, RDFS.Class)) | set(subjects(_ONTOLOGY, RDF.type, RDF.Property)))
 _DECLARED_SET = set(_DECLARED)
 
