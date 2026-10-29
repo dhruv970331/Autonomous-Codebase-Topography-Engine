@@ -7,7 +7,7 @@ Used by `rdf_builder.build_graph`.
 import builtins
 import sys
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from acte.parser import (
@@ -25,6 +25,7 @@ except ImportError:  # jedi is optional (D7): without it tier TJ is skipped
     jedi = None
 
 CANDIDATE_CEILING = 100
+CHAIN_LIMIT = 3  # attributes followed in `x.a.b.m()`; every chain T10 found on django has at most 2
 _BUILTINS = set(dir(builtins))
 _NOT_BINDING_KINDS = {"global", "nonlocal", "attr"}
 
@@ -95,6 +96,21 @@ class SymbolIndex:
         self.bases = {n.qualified_id: [r for r in (self._base(n, b) for b in n.bases) if r] for n in nodes if n.kind == "Class" and n.bases is not None}
         for cls in sorted(self.bases):
             self._linearize(cls, frozenset())
+        self.children: dict[str, list[str]] = defaultdict(list)  # class -> the project classes that name it as a base
+        for cls, bases in sorted(self.bases.items()):
+            for b in dict.fromkeys(bases):
+                if b in self.by_class:
+                    self.children[b].append(cls)
+
+    def subclasses(self, cls: str) -> list[str]:
+        """Every project class that inherits from *cls* through declared bases, at any depth, sorted."""
+        found, todo = set(), [cls]
+        while todo:
+            for c in self.children.get(todo.pop(), []):
+                if c not in found and c != cls:
+                    found.add(c)
+                    todo.append(c)
+        return sorted(found)
 
     def _base(self, n: NodeInfo, base: str) -> str | None:
         """Look up a base as written the way a type name is, from the scope the class statement runs in.
@@ -263,7 +279,11 @@ def _jedi_tier(index: SymbolIndex, resolved: list[CallResolution]) -> tuple[list
         col = len(lines[call.file_path][call.line - 1][: call.col].decode("utf-8"))  # CallSite.col counts UTF-8 bytes, jedi characters
         ids, external, other = set(), False, False
         try:
-            found = scripts[call.file_path].goto(call.line, col, follow_imports=True)
+            try:
+                found = scripts[call.file_path].goto(call.line, col, follow_imports=True)
+            except KeyError:  # parso drops files unused for 10 minutes once it holds over 600: parse this one again, once
+                scripts[call.file_path] = jedi.Script(path=call.file_path, project=project)
+                found = scripts[call.file_path].goto(call.line, col, follow_imports=True)
         except Exception:  # noqa: BLE001 -- a jedi failure on one call must not stop the run; it is counted
             errors += 1
             out.append(r)
@@ -313,9 +333,9 @@ def _resolve_receiver(index: SymbolIndex, call: CallSite, typed: bool = True) ->
     parts, name, file = call.receiver.split("."), call.target_name, call.file_path
     unknown = CallResolution(call, "unresolved", reason="unknown-receiver")
     if not all(p.isidentifier() for p in parts):  # a literal, call or subscript: values are not followed (N2)
-        cls = _super_class(index, call)
-        if cls:
-            return _on_class(index, call, cls, "T1", after=True)
+        found = _super_class(index, call)
+        if found:
+            return _on_class(index, call, found[0], "T1", after=found[1])
         callee = call.receiver[:-1].split("(")[0]
         if typed and call.receiver.endswith(")") and call.receiver.count("(") == 1 and all(p.isidentifier() for p in callee.split(".")):
             return _typed(index, call, callee, False, call.caller_id)  # R24a: `C(...).m()`
@@ -325,17 +345,21 @@ def _resolve_receiver(index: SymbolIndex, call: CallSite, typed: bool = True) ->
     cls = _self_class(index, scope, head) if scope else None
     if cls and not rest:
         return _on_class(index, call, cls, "T1")
-    if cls and typed and head == "self" and len(rest) == 1:  # `self.attr`: its types are looked up from C's file
-        return _typed(index, call, *_one_type(index.locals.get(cls, {}).get(f"self.{rest[0]}", [])), cls.split("::")[0])
+    if cls and typed and head == "self" and len(rest) <= CHAIN_LIMIT:  # `self.a.m()`, `self.a.b.m()`
+        return _on_attributes(index, call, cls, rest)
     if cls:
         return unknown
     local, imports = _bindings(index, scope, head) if scope else ([], [])
     if any(b.kind not in ("def", "class") for b in local):
         # a variable: T4b when its type is certain; an import or `*` export of the same name makes it uncertain
-        certain = typed and not rest and not imports and not (scope == file and _star_exports(index, head, file)[0])
-        return _typed(index, call, *_one_type(index.locals[scope][head]), scope) if certain else unknown
+        certain = typed and len(rest) <= CHAIN_LIMIT and not imports and not (scope == file and _star_exports(index, head, file)[0])
+        if not certain or not rest:
+            return _typed(index, call, *_one_type(index.locals[scope][head], name), scope) if certain else unknown
+        type_name, _ = _one_type(index.locals[scope][head], rest[0])
+        start = _class_of(index, type_name, scope) if type_name else None
+        return _on_attributes(index, call, start, rest) if start else unknown
     if typed and not rest and not local and len(imports) == 1 and not (scope in (None, file) and _star_exports(index, head, file)[0]):
-        variable = _imported_variable(index, imports[0], file)
+        variable = _imported_variable(index, imports[0], file, name)
         if variable:  # T4b on a variable another project module binds
             return _typed(index, call, *variable)
     defs = {f"{file}::{head}" if scope == file else f"{scope}.<locals>.{head}" for b in local}
@@ -350,8 +374,12 @@ def _resolve_receiver(index: SymbolIndex, call: CallSite, typed: bool = True) ->
                 ambiguous |= len(files) > 1
             elif index.module_files(submodule, file):  # `from pkg import sub`
                 modules.add(submodule)
-            elif files or b.module.startswith("."):  # a project name that is not a definition (a variable)
-                misses.add("unknown-receiver")
+            elif files or b.module.startswith("."):  # a project name that is not a definition
+                outside = _follow_import(index, b, file) if files else None
+                if outside and outside[0] == "external":  # re-exported from outside the project
+                    external.add("stdlib" if outside[1].split(".")[0] in sys.stdlib_module_names else "third-party")
+                else:
+                    misses.add("unknown-receiver")  # a variable
             else:
                 external.add("stdlib" if b.module.split(".")[0] in sys.stdlib_module_names else "third-party")
         elif files:  # `import a.b` binds module `a`; `import a.b as m` binds `a.b`
@@ -401,33 +429,122 @@ def _resolve_receiver(index: SymbolIndex, call: CallSite, typed: bool = True) ->
     return CallResolution(call, "unresolved", reason=next(iter(misses)) if len(misses) == 1 else "unknown-receiver")
 
 
-def _imported_variable(index: SymbolIndex, b: ImportBinding, file: str) -> tuple[str | None, bool, str] | None:
-    """Follow ``from M import name`` (re-imports too, at most 10 hops) to a module-level variable:
-    its type (``_one_type``) and the file it is bound in. None when the name is not one such variable."""
-    seen = set()
+def _imported_variable(index: SymbolIndex, b: ImportBinding, file: str, method: str) -> tuple[str | None, bool, str] | None:
+    """Follow ``from M import name`` (re-imports too) to a module-level variable: its type for a call of *method*
+    on it (``_one_type``) and the file it is bound in. None when the name is not one such variable."""
+    found = _follow_import(index, b, file)
+    if found is None or found[0] != "variable":
+        return None
+    _, file, name = found
+    return *_one_type(index.locals[file][name], method), file
+
+
+def _follow_import(index: SymbolIndex, b: ImportBinding, file: str) -> tuple[str, str, str] | None:
+    """Follow ``from M import name`` in *file* through the project modules that re-import it (at most 10 hops):
+    ("variable", file, name) for a module-level variable of a project module, ("external", module, name) for an
+    import from outside the project (``from starlette.testclient import TestClient`` in fastapi/testclient.py),
+    None for anything else: a definition or a name a ``*`` import may bind (the ladder's own business), a module,
+    two bindings of the name, two matching files, a cycle, or an outside import in a module with a ``*`` import."""
+    seen, stars = set(), False
     for _ in range(10):
         files = [] if b.is_module_alias else index.module_files(b.module, file)
+        if seen and not files and not b.is_module_alias and not b.module.startswith("."):
+            return None if stars else ("external", b.module, b.imported_name)
         submodule = b.module + ("" if b.module.endswith(".") else ".") + b.imported_name
         if len(files) != 1 or (files[0], b.imported_name) in seen or index.module_files(submodule, file):
             return None
         file, name = files[0], b.imported_name
         seen.add((file, name))
         if name in index.exports[file] or _star_exports(index, name, file)[0]:
-            return None  # a definition, or a name a `*` import may bind: the ladder's own business
+            return None
+        stars |= bool(index.star_imports.get(file))  # an outside `from m import *` may rebind the name
         local, imports = _bindings(index, file, name)
         if local and not imports:
-            return *_one_type(index.locals[file][name]), file
+            return "variable", file, name
         if local or len(imports) != 1:
             return None
         b = imports[0]
     return None
 
 
-def _one_type(bindings: list[LocalBinding]) -> tuple[str | None, bool]:
-    """The type every binding of a name agrees on (None when one is untyped or two disagree, R7), and whether an annotation says so."""
-    bindings = [b for b in bindings if b.kind not in ("del", "global", "nonlocal")]
+def _one_type(bindings: list[LocalBinding], method: str) -> tuple[str | None, bool]:
+    """The type every binding of a name agrees on for a call of *method* on it (None when one is untyped or two
+    disagree, R7), and whether an annotation says so. A binding to None takes no part unless None has *method*:
+    calling it on None fails, so the call only runs on one of the other values."""
+    bindings = _holding(bindings, method)
     types = {b.type_name for b in bindings}
     return types.pop() if len(types) == 1 else None, any(b.kind in ("param", "annotation") for b in bindings)
+
+
+def _holding(bindings: list[LocalBinding], method: str) -> list[LocalBinding]:
+    """The bindings whose value *method* may be called on (see _one_type)."""
+    return [b for b in bindings if b.kind not in ("del", "global", "nonlocal") and not (b.is_none and not hasattr(None, method))]
+
+
+def _on_attributes(index: SymbolIndex, call: CallSite, cls: str, attrs: list[str]) -> CallResolution:
+    """T4b on ``x.a.b.m()`` once the project class *cls* of ``x`` is known: the type of each attribute in turn
+    (_attr_type); unknown-receiver at the first one that has no certain project class."""
+    for i, attr in enumerate(attrs[:-1]):
+        type_name, _, file = _attr_type(index, cls, attr, attrs[i + 1])
+        cls = _class_of(index, type_name, file) if type_name else None
+        if cls is None:
+            return CallResolution(call, "unresolved", reason="unknown-receiver")
+    return _typed(index, call, *_attr_type(index, cls, attrs[-1], call.target_name))
+
+
+def _attr_type(index: SymbolIndex, cls: str, attr: str, method: str) -> tuple[str | None, bool, str]:
+    """The type of attribute *attr* of an instance of project class *cls*, for a call of *method* on it, as
+    _typed takes it: (type name, annotated, the file to look it up from). The name is None when it is not certain.
+
+    The bindings are ``self.attr = ...`` in any method and the class-level annotations ``attr: T`` of every project
+    class in cls's MRO, and of every project class that inherits from cls, since the instance may be one of those;
+    an outside base is not looked into, as everywhere in T4b. A class-level literal (``{}``, ``()``, ``0``) binds its
+    builtin type. They must agree as in _one_type, and when they are in several files their type names must name
+    the same project class. A name that is a method, property or nested class in any of these classes, any other
+    class-level value except None (``attr = ForeignKey(...)``, often a descriptor whose value on an instance has
+    another type), a class-level import, or a broken MRO gives None."""
+    # shortcut: writes from outside the class (`obj.attr = x`) are not seen; the parser would have to record them
+    unknown = None, False, cls.split("::")[0]
+    mro = index.mro.get(cls)
+    if mro is None:
+        return unknown
+    bindings = []
+    for c in [k for k in mro if isinstance(k, str)] + index.subclasses(cls):
+        level = [replace(b, type_name=b.literal) if b.literal else b for b in index.locals.get(c, {}).get(attr, [])]
+        # a class-level None is a default, as in _one_type; a literal is no descriptor
+        values = [b for b in level if b.kind != "annotation" and not b.is_none and not b.literal]
+        if f"{c}.{attr}" in index.by_id or attr in index.imports.get(c, {}) or values:
+            return unknown
+        bindings += index.locals.get(c, {}).get(f"self.{attr}", []) + level
+    bindings = _holding(bindings, method)
+    by_file = defaultdict(set)  # file -> the type names bound there
+    for b in bindings:
+        by_file[b.file_path].add(b.type_name)
+    if not by_file or any(len(types) != 1 or None in types for types in by_file.values()):
+        return unknown
+    if len(by_file) > 1:
+        named = {_class_of(index, next(iter(types)), file) for file, types in by_file.items()}
+        if len(named) != 1 or None in named:
+            return unknown
+    file, types = min(by_file.items())
+    return next(iter(types)), any(b.kind == "annotation" for b in bindings), file
+
+
+def _class_of(index: SymbolIndex, type_name: str, scope: str) -> str | None:
+    """The one project class *type_name* names, looked up from *scope*; a project function gives its return
+    annotation's class (one hop, as in _typed). None for anything else."""
+    for _ in range(2):
+        receiver, _, name = type_name.rpartition(".")
+        found = _resolve_call(index, CallSite(scope, name, receiver or None, scope.split("::")[0], 0, 0), typed=False)
+        if found.status != "resolved":
+            return None
+        node = index.by_id[found.target]
+        if node.kind == "Class":
+            return found.target
+        if not node.return_type:
+            return None
+        type_name, scope = node.return_type, node.file_path
+    return None
 
 
 def _typed(index: SymbolIndex, call: CallSite, type_name: str | None, annotated: bool, scope: str, hop: bool = True) -> CallResolution:
@@ -457,13 +574,14 @@ def _typed(index: SymbolIndex, call: CallSite, type_name: str | None, annotated:
     return _pick(index, call, ids, found.status == "ambiguous", "T4b")
 
 
-def _method(index: SymbolIndex, cls: str, name: str, after: bool = False) -> tuple[str | None, str | None]:
-    """Method *name* of class *cls*, or of the classes after it in its MRO (``super()``: *after*), as (id, None).
+def _method(index: SymbolIndex, cls: str, name: str, after: str | None = None) -> tuple[str | None, str | None]:
+    """Method *name* of class *cls* through its MRO, as (id, None); with *after* (``super()``), only the classes
+    after *after* in cls's MRO, which the caller has checked holds it.
     Not found: (None, "no-match"), or (None, "unknown-base") once an external or unknown base, or a broken MRO, could hold it."""
-    if not after and name in index.by_class[cls]:
+    if after is None and name in index.by_class[cls]:
         return index.by_class[cls][name], None
     mro = index.mro.get(cls)
-    for c in mro[1:] if mro else []:
+    for c in mro[mro.index(after if after else cls) + 1:] if mro else []:
         if not isinstance(c, str):
             return None, "unknown-base"
         if name in index.by_class[c]:
@@ -471,28 +589,42 @@ def _method(index: SymbolIndex, cls: str, name: str, after: bool = False) -> tup
     return None, "no-match" if mro else "unknown-base"
 
 
-def _on_class(index: SymbolIndex, call: CallSite, cls: str, tier: str, after: bool = False) -> CallResolution:
+def _on_class(index: SymbolIndex, call: CallSite, cls: str, tier: str, after: str | None = None) -> CallResolution:
     target, reason = _method(index, cls, call.target_name, after)
+    if after and reason == "no-match":  # super() past the declared MRO: at run time a mixin's next class may hold it
+        reason = "unknown-base"
     return _pick(index, call, {target}, False, tier) if target else CallResolution(call, "unresolved", reason=reason)
 
 
-def _super_class(index: SymbolIndex, call: CallSite) -> str | None:
-    """The class C of ``super().m()`` in a method of C, or of ``super(C, self).m()`` where ``self`` is a method's
-    first parameter in C; None for anything else, or when ``super`` is not the builtin."""
+def _super_class(index: SymbolIndex, call: CallSite) -> tuple[str, str] | None:
+    """(C, B) for a ``super`` receiver whose method is looked up in C's MRO after B; None for anything else,
+    or when ``super`` is not the builtin.
+
+    ``super().m()`` in a method of C is (C, C). ``super(B, y).m()`` needs B to name a project class: when ``y`` is
+    the first parameter of a method of C (``self``/``cls``) B must be in C's MRO, else it is (B, B), since ``y`` must
+    be an instance of B; as for ``super()``, the MRO is the declared one, not that of the object at run time."""
     receiver, caller, file = call.receiver, call.caller_id, call.file_path
     if not (receiver.startswith("super(") and receiver.endswith(")")) or _binding_scope(index, "super", caller, file):
         return None
     args = receiver[6:-1].split(",") if receiver[6:-1] else []
     if not args:  # zero-argument super() uses the method's own first parameter
         firsts = set(index.first_params.get(caller, []))
-        return _self_class(index, caller, firsts.pop()) if len(firsts) == 1 else None
+        cls = _self_class(index, caller, firsts.pop()) if len(firsts) == 1 else None
+        return (cls, cls) if cls else None
     if len(args) != 2 or not args[1].isidentifier() or not all(p.isidentifier() for p in args[0].split(".")):
+        return None
+    named, _, name = args[0].rpartition(".")
+    found = _resolve_call(index, CallSite(caller, name, named or None, file, call.line, call.col), typed=False)
+    if found.status != "resolved" or index.by_id[found.target].kind != "Class":
         return None
     scope = _binding_scope(index, args[1], caller, file)
     cls = _self_class(index, scope, args[1]) if scope else None
-    named, _, name = args[0].rpartition(".")
-    found = _resolve_call(index, CallSite(caller, name, named or None, file, call.line, call.col), typed=False)
-    return cls if found.status == "resolved" and found.target == cls else None
+    if cls is None:
+        return found.target, found.target
+    mro = index.mro.get(cls)
+    if mro is not None and found.target not in mro:  # a TypeError at run time
+        return None
+    return cls, found.target
 
 
 def _self_class(index: SymbolIndex, scope: str, name: str) -> str | None:
@@ -568,6 +700,10 @@ def _decide(index: SymbolIndex, call: CallSite, scope: str) -> CallResolution:
                 external.add("stdlib" if b.module.split(".")[0] in sys.stdlib_module_names else "third-party")
             continue
         hits = set() if b.is_module_alias else {index.exports[f][b.imported_name] for f in files if b.imported_name in index.exports[f]}
+        outside = None if hits or b.is_module_alias else _follow_import(index, b, file)
+        if outside and outside[0] == "external":  # a project module re-exports a name from outside the project
+            external.add("stdlib" if outside[1].split(".")[0] in sys.stdlib_module_names else "third-party")
+            continue
         unmatched |= not hits  # a module, or a name that is not a project definition
         ids |= hits
         ambiguous |= len(files) > 1

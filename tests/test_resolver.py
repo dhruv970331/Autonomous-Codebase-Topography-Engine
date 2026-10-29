@@ -658,7 +658,7 @@ def test_typed_receivers(tmp_path):
     assert calls[("use.py::s", "connect")] == ("resolved", "T4b", "shop/db.py::Database.connect", None)  # R24c
     assert calls[("use.py::s", "close")] == ("unresolved", None, None, "no-match")
     assert calls[("use.py::t", "connect")] == ("unresolved", None, None, "unknown-receiver")  # two classes
-    assert calls[("use.py::u", "connect")] == ("unresolved", None, None, "unknown-receiver")  # later None
+    assert calls[("use.py::u", "connect")] == ("resolved", "T4b", "shop/db.py::Database.connect", None)  # None has no connect
     assert calls[("use.py::v", "connect")] == ("unresolved", None, None, "unknown-receiver")  # later untyped make()
     assert calls[("use.py::w", "get")] == ("external", None, None, "builtin")  # dict is a builtin class
     assert calls[("use.py::w", "connect")] == ("unresolved", None, None, "unknown-receiver")  # max is a builtin function
@@ -769,6 +769,33 @@ def test_jedi_errors_are_counted(tmp_path, monkeypatch):
     assert _calls(tmp_path, JEDI_FILES, use_jedi=True) == plain  # every call keeps its ladder result
     asked = sum(r.reason == "unknown-receiver" for r in resolution.calls)
     assert resolution.report()["jedi_errors"] == asked == 11
+
+
+def test_jedi_lookup_survives_parso_dropping_the_file(tmp_path, monkeypatch):
+    """parso drops files unused for 10 minutes once it holds over 600; a Script made before then fails with KeyError."""
+    jedi = pytest.importorskip("jedi")
+    import parso.cache
+
+    made = []
+    init = jedi.Script.__init__
+
+    def first_script_loses_its_file(self, *args, **kwargs):
+        init(self, *args, **kwargs)
+        if not made:
+            parso.cache.parser_cache.clear()
+        made.append(self)
+
+    monkeypatch.setattr(jedi.Script, "__init__", first_script_loses_its_file)
+    files = {
+        "a.py": "class A:\n    def m(self):\n        pass\n",
+        "b.py": "from a import A\n\n\ndef make():\n    return A()\n\n\ndef g():\n    x = make()\n    x.m()\n",
+    }
+    for rel, code in files.items():
+        (tmp_path / rel).write_text(code)
+    resolution = resolve([CodeParser().parse_file(tmp_path / rel) for rel in sorted(files)], tmp_path)
+    m = next(r for r in resolution.calls if r.call.target_name == "m")
+    assert (m.status, m.tier, m.target, resolution.jedi_errors) == ("resolved", "TJ", f"{tmp_path}/a.py::A.m", 0)
+    assert len(made) == 2  # one more Script for the retry
 
 
 def test_jedi_definition_outside_the_parsed_files_is_external(tmp_path):
@@ -907,10 +934,11 @@ def test_super_calls(tmp_path):
     })
     for caller in ("B.m", "B.two", "B.k", "C.m"):
         assert calls[(f"s.py::{caller}", "m")] == ("resolved", "T1", "s.py::A.m", None), caller
-    assert calls[("s.py::B.none", "n")] == ("unresolved", None, None, "no-match")
+    assert calls[("s.py::B.none", "n")] == ("unresolved", None, None, "unknown-base")  # a class after B at run time may have n
     assert calls[("s.py::C.k", "keys")] == ("unresolved", None, None, "unknown-base")
-    for caller in ("B.nested.<locals>.f", "B.other", "free"):  # zero-argument super() in a nested function; super(A, self) in B; no class
+    for caller in ("B.nested.<locals>.f", "free"):  # zero-argument super() in a nested function; no class
         assert calls[(f"s.py::{caller}", "m")] == ("unresolved", None, None, "unknown-receiver"), caller
+    assert calls[("s.py::B.other", "m")] == ("unresolved", None, None, "unknown-base")  # super(A, self) in B: nothing after A
     assert calls[("t.py::B.m", "m")] == ("unresolved", None, None, "unknown-receiver")  # super is not the builtin
 
 
@@ -922,6 +950,204 @@ def test_super_with_explicit_class_in_a_closure(tmp_path):
         ),
     })
     assert calls[("s.py::B.m.<locals>.f", "m")] == ("resolved", "T1", "s.py::A.m", None)
+
+
+def test_attribute_types_come_from_the_whole_project_mro(tmp_path):
+    calls = _calls(tmp_path, {
+        # django/core/management/base.py and its commands: self.stdout is set in BaseCommand only
+        "base.py": (
+            "class OutputWrapper:\n    def write(self, msg):\n        pass\n\n\n"
+            "class Field:\n    def check(self):\n        pass\n\n    def get_internal_type(self):\n        pass\n\n\n"
+            "class BaseCommand:\n    def __init__(self):\n        self.stdout = OutputWrapper()\n"
+            "        self.both = Field()\n        self.loose = make()\n"
+        ),
+        "cmd.py": (
+            "from base import BaseCommand, Field, OutputWrapper\n\n\n"
+            "class Command(BaseCommand):\n    def handle(self):\n        self.stdout.write('x')\n        self.both.check()\n"
+            "\n    def loose_use(self):\n        self.loose.check()\n\n    def later(self):\n        self.both = OutputWrapper()\n        self.loose = Field()\n"
+        ),
+        # fastapi/routing.py: dataclass fields annotated in the class body, an outside base
+        "routing.py": (
+            "from dataclasses import dataclass\n\nfrom starlette.routing import BaseRoute\n\n\n"
+            "class Router:\n    def matches(self, scope):\n        pass\n\n\n"
+            "@dataclass\nclass Included(BaseRoute):\n    original: 'Router'\n    count: int = 0\n\n"
+            "    def matches(self, scope):\n        return self.original.matches(scope)\n"
+        ),
+        # django/contrib/admin/models.py:184: a class-level value is a descriptor, not the type on an instance
+        "models.py": (
+            "from base import Field\n\n\n"
+            "class ForeignKey(Field):\n    pass\n\n\n"
+            "class LogEntry:\n    content_type = ForeignKey()\n\n    def get_edited_object(self):\n        return self.content_type.check()\n\n\n"
+            # django/db/models/fields/generated.py: a class-level None default, set on the instance later
+            "class Generated:\n    _query = None\n\n    def contribute(self):\n        self._query = Field()\n\n"
+            "    def referenced_fields(self):\n        return self._query.get_internal_type()\n"
+        ),
+        # django/db/models/expressions.py: output_field is a cached_property and also assigned
+        "expressions.py": (
+            "from functools import cached_property\n\nfrom base import Field\n\n\n"
+            "class BaseExpression:\n    @cached_property\n    def output_field(self):\n        return Field()\n\n\n"
+            "class Value(BaseExpression):\n    def __init__(self):\n        self.output_field = Field()\n\n"
+            "    def as_sql(self):\n        return self.output_field.get_internal_type()\n"
+        ),
+    })
+    assert calls[("cmd.py::Command.handle", "write")] == ("resolved", "T4b", "base.py::OutputWrapper.write", None)  # set in a base
+    assert calls[("routing.py::Included.matches", "matches")] == ("resolved", "T4b", "routing.py::Router.matches", None)
+    assert calls[("cmd.py::Command.handle", "check")] == ("unresolved", None, None, "unknown-receiver")  # Field and OutputWrapper
+    assert calls[("cmd.py::Command.loose_use", "check")] == ("unresolved", None, None, "unknown-receiver")  # make() is untyped
+    assert calls[("models.py::LogEntry.get_edited_object", "check")] == ("unresolved", None, None, "unknown-receiver")
+    assert calls[("models.py::Generated.referenced_fields", "get_internal_type")] == ("resolved", "T4b", "base.py::Field.get_internal_type", None)
+    assert calls[("expressions.py::Value.as_sql", "get_internal_type")] == ("unresolved", None, None, "unknown-receiver")
+
+
+def test_attribute_types_count_subclasses_and_class_level_literals(tmp_path):
+    calls = _calls(tmp_path, {
+        "ab.py": "class A:\n    def m(self):\n        pass\n\n\nclass B:\n    def m(self):\n        pass\n",
+        # Sub().f() runs B.m: a subclass may set the attribute the base class uses
+        "base.py": (
+            "from ab import A, B\n\n\n"
+            "class Base:\n    def __init__(self):\n        self.x = A()\n\n    def set_y(self):\n        self.y = A()\n\n"
+            "    def set_z(self):\n        self.z = A()\n\n"
+            "    def f(self):\n        self.x.m()\n\n    def g(self):\n        self.y.m()\n\n    def h(self):\n        self.z.m()\n\n\n"
+            "class Sub(Base):\n    def __init__(self):\n        self.x = B()\n\n    def set_y(self):\n        self.y = A()\n\n\n"
+            "class Other(Sub):\n    def z(self):\n        pass\n"
+        ),
+        # django/contrib/gis/db/backends/postgis/introspection.py:67 and indexes.py:374
+        "lit.py": (
+            "class Introspection:\n    oid_lookup = {}\n    wrappers = (int, str)\n    lookup = {}\n\n"
+            "    def fill(self):\n        self.oid_lookup = dict()\n        self.wrappers = tuple()\n        self.lookup = []\n\n"
+            "    def get(self):\n        return self.oid_lookup.get(1)\n\n    def where(self):\n        return self.wrappers.index(int)\n\n"
+            "    def keys(self):\n        return self.lookup.keys()\n"
+        ),
+    })
+    assert calls[("base.py::Base.f", "m")] == ("unresolved", None, None, "unknown-receiver")  # A in Base, B in Sub
+    assert calls[("base.py::Base.g", "m")] == ("resolved", "T4b", "ab.py::A.m", None)  # both A
+    assert calls[("base.py::Base.h", "m")] == ("unresolved", None, None, "unknown-receiver")  # z is a method in Other
+    assert calls[("lit.py::Introspection.get", "get")] == ("external", None, None, "builtin")
+    assert calls[("lit.py::Introspection.where", "index")] == ("external", None, None, "builtin")
+    assert calls[("lit.py::Introspection.keys", "keys")] == ("unresolved", None, None, "unknown-receiver")  # a dict and a list
+
+
+def test_names_a_project_module_re_exports_from_outside_are_external(tmp_path):
+    calls = _calls(tmp_path, {
+        "pkg/__init__.py": "from pkg.testclient import TestClient\n",
+        # fastapi/testclient.py
+        "pkg/testclient.py": "from starlette.testclient import TestClient as TestClient  # noqa\n",
+        "pkg/concurrency.py": "from contextlib import asynccontextmanager\n",
+        "pkg/compat.py": "try:\n    from ujson import dumps\nexcept ImportError:\n    from json import dumps\n",
+        "pkg/star.py": "from json import loads\nfrom os import *\n",
+        "tests/test_app.py": (
+            "from pkg import TestClient\nfrom pkg.concurrency import asynccontextmanager\n"
+            "from pkg.compat import dumps\nfrom pkg.star import loads\n\n\n"
+            "def test_a():\n    client = TestClient(app)\n    asynccontextmanager(f)\n    dumps(1)\n    loads('1')\n\n\n"
+            "def test_b(client: TestClient):\n    client.get('/')\n"
+        ),
+        "pkg/rel.py": "from .testclient import TestClient\n\n\ndef make():\n    return TestClient.create()\n",
+    })
+    assert calls[("tests/test_app.py::test_a", "TestClient")] == ("external", None, None, "third-party")
+    assert calls[("tests/test_app.py::test_a", "asynccontextmanager")] == ("external", None, None, "stdlib")
+    assert calls[("tests/test_app.py::test_b", "get")] == ("external", None, None, "third-party")  # annotated with the re-export
+    assert calls[("pkg/rel.py::make", "create")] == ("external", None, None, "third-party")
+    assert calls[("tests/test_app.py::test_a", "dumps")] == ("unresolved", None, None, "no-match")  # two imports of dumps
+    assert calls[("tests/test_app.py::test_a", "loads")] == ("unresolved", None, None, "no-match")  # `from os import *` after it
+
+
+def test_attribute_chains(tmp_path):
+    calls = _calls(tmp_path, {
+        "graph.py": "class Node:\n    def key(self):\n        pass\n\n\nclass MigrationGraph:\n    def __init__(self):\n        self.root = Node()\n\n"
+                    "    def leaf_nodes(self):\n        pass\n",
+        "loader.py": (
+            "from functools import cached_property\n\nfrom graph import MigrationGraph\n\n\n"
+            "class MigrationLoader:\n    def __init__(self):\n        self.graph = None\n\n"
+            "    def build_graph(self):\n        self.graph = MigrationGraph()\n\n"
+            "    @cached_property\n    def cached(self):\n        return MigrationGraph()\n"
+        ),
+        # django/core/management/commands/makemigrations.py:272
+        "makemigrations.py": (
+            "from loader import MigrationLoader\n\n\n"
+            "class Holder:\n    def __init__(self):\n        self.inner = Command()\n\n\n"
+            "class Command:\n    def __init__(self):\n        self.loader = MigrationLoader()\n        self.other = make()\n\n"
+            "    def write_to_last_migration_files(self):\n        loader = MigrationLoader()\n        loader.graph.leaf_nodes()\n\n"
+            "    def on_self(self):\n        self.loader.graph.leaf_nodes()\n\n"
+            "    def three(self):\n        self.loader.graph.root.key()\n\n"
+            "    def untyped_hop(self):\n        self.other.graph.leaf_nodes()\n\n"
+            "    def through_property(self):\n        self.loader.cached.leaf_nodes()\n\n\n"
+            "def four(h: Holder):\n    h.inner.loader.graph.root.key()\n"
+        ),
+    })
+    target = ("resolved", "T4b", "graph.py::MigrationGraph.leaf_nodes", None)
+    assert calls[("makemigrations.py::Command.write_to_last_migration_files", "leaf_nodes")] == target
+    assert calls[("makemigrations.py::Command.on_self", "leaf_nodes")] == target
+    assert calls[("makemigrations.py::Command.three", "key")] == ("resolved", "T4b", "graph.py::Node.key", None)
+    for caller, name in (("Command.untyped_hop", "leaf_nodes"), ("Command.through_property", "leaf_nodes"), ("four", "key")):
+        assert calls[(f"makemigrations.py::{caller}", name)] == ("unresolved", None, None, "unknown-receiver"), caller
+
+
+def test_none_takes_no_part_in_the_type_unless_none_has_the_method(tmp_path):
+    calls = _calls(tmp_path, {
+        # django/utils/translation/trans_real.py:265: self._catalog is None at first, a TranslationCatalog later
+        "trans.py": (
+            "import gettext as gettext_module\n\n\n"
+            "class TranslationCatalog:\n    def update(self, trans):\n        pass\n\n\n"
+            "class DjangoTranslation(gettext_module.GNUTranslations):\n"
+            "    def __init__(self):\n        self._catalog = None\n\n"
+            "    def merge(self, other):\n        if self._catalog is None:\n            self._catalog = TranslationCatalog()\n"
+            "        else:\n            self._catalog.update(other)\n\n"
+            "    def same(self, other):\n        return self._catalog.__eq__(other)\n"
+        ),
+        "use.py": (
+            "from trans import TranslationCatalog\n\n\n"
+            "def f(flag):\n    cat = None\n    if flag:\n        cat = TranslationCatalog()\n    cat.update(1)\n    cat.__bool__()\n\n\n"
+            "def g():\n    cat = None\n    cat.update(1)\n"
+        ),
+    })
+    assert calls[("trans.py::DjangoTranslation.merge", "update")] == ("resolved", "T4b", "trans.py::TranslationCatalog.update", None)
+    assert calls[("use.py::f", "update")] == ("resolved", "T4b", "trans.py::TranslationCatalog.update", None)
+    # None has __eq__ and __bool__ too
+    assert calls[("trans.py::DjangoTranslation.same", "__eq__")] == ("unresolved", None, None, "unknown-receiver")
+    assert calls[("use.py::f", "__bool__")] == ("unresolved", None, None, "unknown-receiver")
+    assert calls[("use.py::g", "update")] == ("unresolved", None, None, "unknown-receiver")  # only ever None
+
+
+def test_super_past_the_declared_mro_is_unknown_base(tmp_path):
+    calls = _calls(tmp_path, {
+        # django/contrib/staticfiles/storage.py:136: HashedFilesMixin.__init__ runs StaticFilesStorage.__init__
+        "storage.py": (
+            "class StaticFilesStorage:\n    def __init__(self):\n        pass\n\n\n"
+            "class HashedFilesMixin:\n    def __init__(self):\n        super().__init__()\n\n    def __dir__(self):\n        return super().__dir__()\n\n\n"
+            "class ManifestStaticFilesStorage(HashedFilesMixin, StaticFilesStorage):\n    pass\n"
+        ),
+    })
+    assert calls[("storage.py::HashedFilesMixin.__init__", "__init__")] == ("unresolved", None, None, "unknown-base")
+    assert calls[("storage.py::HashedFilesMixin.__dir__", "__dir__")] == ("unresolved", None, None, "unknown-base")
+
+
+def test_super_with_a_base_class_or_another_object(tmp_path):
+    calls = _calls(tmp_path, {
+        # django/forms/fields.py:374: FloatField.to_python skips IntegerField.to_python
+        "fields.py": (
+            "class Field:\n    def to_python(self, value):\n        return value\n\n\n"
+            "class IntegerField(Field):\n    def to_python(self, value):\n        return int(value)\n\n\n"
+            "class FloatField(IntegerField):\n    def to_python(self, value):\n"
+            "        value = super(IntegerField, self).to_python(value)\n        return float(value)\n\n"
+            "    def clean(self, value):\n        return super(FloatField, self).to_python(value)\n\n"
+            "    def other(self, value):\n        return super(Unrelated, self).to_python(value)\n\n\n"
+            "class Unrelated:\n    def to_python(self, value):\n        pass\n"
+        ),
+        # django/db/models/aggregates.py:136: super(Aggregate, c) on a copy of self
+        "agg.py": (
+            "class Func:\n    def get_source_expressions(self):\n        return []\n\n\n"
+            "class Aggregate(Func):\n    def get_source_expressions(self):\n        return []\n\n"
+            "    def resolve_expression(self):\n        c = self.copy()\n        return super(Aggregate, c).get_source_expressions()\n\n"
+            "    def by_name(self, klass):\n        return super(klass, self).copy()\n"
+        ),
+    })
+    assert calls[("fields.py::FloatField.to_python", "to_python")] == ("resolved", "T1", "fields.py::Field.to_python", None)
+    assert calls[("fields.py::FloatField.clean", "to_python")] == ("resolved", "T1", "fields.py::IntegerField.to_python", None)
+    # not in FloatField's MRO: a TypeError at run time
+    assert calls[("fields.py::FloatField.other", "to_python")] == ("unresolved", None, None, "unknown-receiver")
+    assert calls[("agg.py::Aggregate.resolve_expression", "get_source_expressions")] == (
+        "resolved", "T1", "agg.py::Func.get_source_expressions", None)
+    assert calls[("agg.py::Aggregate.by_name", "copy")] == ("unresolved", None, None, "unknown-receiver")  # klass is a variable
 
 
 def test_bad_class_graphs_are_unknown(tmp_path):

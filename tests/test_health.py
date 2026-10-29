@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import pytest
-from rdflib import Literal, URIRef
+from rdflib import BNode, Literal, URIRef
 from rdflib.namespace import RDF, XSD
 
 from acte.health import CHECKS, run_checks
@@ -69,3 +69,12 @@ def test_one_broken_triple_fails_exactly_its_check(tmp_path, check):
     MUTATIONS[check](graph, run, app)
     assert len(graph) != before
     assert _failing(graph) == {check}
+
+
+def test_blank_node_suspect_runs_the_whole_check(tmp_path):
+    """A blank node cannot be listed in VALUES, so a check with one among its suspects runs over the whole graph."""
+    for rel, code in PROJECT.items():
+        (tmp_path / rel).write_text(code)
+    graph = build_graph(sorted(tmp_path / rel for rel in PROJECT), tmp_path, use_jedi=False)
+    graph.add((BNode(), RDF.type, CODE.CallSite))
+    assert _failing(graph) == {"callsite-status", "callsite-without-caller"}
