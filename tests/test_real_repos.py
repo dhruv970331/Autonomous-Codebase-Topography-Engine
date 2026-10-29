@@ -108,7 +108,8 @@ def _id(node) -> str:
 def _oracle(project: jedi.Project, root: Path, graph, ranges: dict, node) -> set[str] | None:
     """The callers of Function *node* according to jedi, as ACTE ids; None if jedi does not find the definition itself."""
     path = text(value(graph, node, CODE.filePath))
-    line = max(int(x) for x in objects(graph, node, CODE.lineStart))  # the last definition, the one the resolver keeps
+    # the last definition, the one the resolver keeps
+    line = max(int(text(value(graph, d, CODE.lineStart))) for d in objects(graph, node, CODE.definedAt))
     name = text(value(graph, node, CODE.name))
     lines = (root / path).read_text(encoding="utf-8").splitlines()
     col = re.search(rf"\bdef\s+({re.escape(name)})\b", lines[line - 1]).start(1)
@@ -132,12 +133,13 @@ def _oracle(project: jedi.Project, root: Path, graph, ranges: dict, node) -> set
 
 
 def _ranges(graph) -> dict[str, list[tuple[int, int, str]]]:
-    """Parsed file -> (lineStart, lineEnd, id) of every Function in it. An id defined several times (overloads,
-    if/else) has one lineStart and lineEnd per definition; those never overlap, so sorted they pair up."""
+    """Parsed file -> (lineStart, lineEnd, id) of every definition of a Function in it. An id defined several times
+    (overloads, if/else) has one record per definition, holding its own lineStart and lineEnd."""
     out = {text(value(graph, f, CODE.filePath)): [] for f in subjects(graph, RDF.type, CODE.File)}
     for f in subjects(graph, RDF.type, CODE.Function):
-        starts, ends = (sorted(int(x) for x in objects(graph, f, p)) for p in (CODE.lineStart, CODE.lineEnd))
-        out[text(value(graph, f, CODE.filePath))].extend((s, e, _id(f)) for s, e in zip(starts, ends, strict=True))
+        out[text(value(graph, f, CODE.filePath))].extend(
+            (int(text(value(graph, d, CODE.lineStart))), int(text(value(graph, d, CODE.lineEnd))), _id(f))
+            for d in objects(graph, f, CODE.definedAt))
     return out
 
 
