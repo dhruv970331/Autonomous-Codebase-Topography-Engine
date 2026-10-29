@@ -1,9 +1,11 @@
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 
 from acte.cli import main
+from acte.impact import ModuleChange, impact
 
 # make() creates A; app.run calls make (through an import), app.main calls run
 MODELS = "RATE = 2\n\n\nclass A:\n    def m(self):\n        return RATE\n\n\ndef make():\n    return A()\n"
@@ -346,3 +348,20 @@ def test_unknown_format(repo, capsys):
     with pytest.raises(SystemExit) as exit_:
         main(["impact", str(repo), "--format", "xml"])
     assert exit_.value.code == 2
+
+
+def test_each_definition_of_a_twice_defined_function_has_its_own_span(twice_defined_graphs):
+    """alpha is defined at lines 9-10 and 15-16; Box.size at 21-22 and, decorated at 24, 25-26."""
+    root = Path(__file__).parent / "data" / "twice_defined"
+    app = f"{root}/app.py"
+
+    def changed(graph, *lines):
+        report = impact(root, graph, {app: set(lines)}, {}, [], "HEAD", depth=1)
+        return [(c.id.split("::")[1], c.line) for c in report.changed], report.modules
+
+    for graph in twice_defined_graphs:
+        assert changed(graph, 14) == ([], [ModuleChange(app, [], 0, {})])  # the else: between them is in neither
+        assert changed(graph, 16) == ([("alpha", 15)], [])
+        assert changed(graph, 24) == ([("Box.size", 25)], [])  # the decorator belongs to the second size only
+        assert changed(graph, 22) == ([("Box.size", 21)], [])
+        assert changed(graph, 10, 16) == ([("alpha", 9)], [])  # both changed: one entry, at the first definition

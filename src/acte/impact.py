@@ -14,7 +14,7 @@ from pathlib import Path
 
 from acte.cli import _git, build
 from acte.mcp_server import _calls, _count, _head, _kinds, stale_warning
-from acte.rdf_builder import CODE, RDF, Graph, iri, load, subjects, value
+from acte.rdf_builder import CODE, RDF, Graph, iri, load, objects, subjects, value
 from acte.rdf_builder import text as term_text  # this module has its own text()
 from acte.sparql_engine import IMPORT_KINDS, KIND_ORDER, BlastAnswer, SPARQLEngine
 
@@ -113,11 +113,14 @@ def impact(root: Path, graph: Graph, new: dict[str, set[int]], deleted: dict[str
     ends = {}  # file -> its File node's lineEnd
     for kind in ("Function", "Class", "File"):
         for node in subjects(graph, RDF.type, CODE[kind]):
-            file, start, end, decorated = (value(graph, node, CODE[p]) for p in ("filePath", "lineStart", "lineEnd", "decoratorLine"))
+            file = term_text(value(graph, node, CODE.filePath))
             if kind == "File":
-                ends[term_text(file)] = int(term_text(end))
-            else:
-                spans.setdefault(term_text(file), []).append((int(term_text(decorated or start)), int(term_text(end)), engine._id(node), kind, int(term_text(start))))
+                ends[file] = int(term_text(value(graph, node, CODE.lineEnd)))
+                continue
+            for record in objects(graph, node, CODE.definedAt):  # one span per definition: an id defined twice has two
+                start, end, decorated = (value(graph, record, CODE[p]) for p in ("lineStart", "lineEnd", "decoratorLine"))
+                spans.setdefault(file, []).append((int(term_text(decorated or start)), int(term_text(end)), engine._id(node), kind,
+                                                   int(term_text(start))))
     new = {f: set(n) for f, n in new.items()}
     for f in untracked:  # all of an untracked file is new
         if f in ends:
@@ -131,7 +134,8 @@ def impact(root: Path, graph: Graph, new: dict[str, set[int]], deleted: dict[str
         holding = [s for s in spans.get(f, []) if all(s[0] <= n <= s[1] for n in lines)]
         if holding:
             s = min(holding, key=lambda s: s[1] - s[0])  # the innermost: spans nest, so the shortest
-            hit[s[2]] = (*s, f)
+            if s[2] not in hit or s[4] < hit[s[2]][4]:  # both definitions of one id changed: the first one, as blast radius ranks it
+                hit[s[2]] = (*s, f)
         else:
             module_files.add(f)
 
