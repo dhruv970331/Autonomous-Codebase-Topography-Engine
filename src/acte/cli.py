@@ -63,14 +63,14 @@ def source_files(root: Path) -> tuple[list[str], str | None]:
     return files, commit
 
 
-def build(root: Path, use_jedi: bool = True) -> Graph:
+def build(root: Path, use_jedi: bool = True, jobs: int = 1) -> Graph:
     """The graph of the project at *root*, plus one code:Build node describing the run (root is the directory's name only)."""
     files, commit = source_files(root)
     # The parser records the path it is given, so parsing relative paths from inside root makes
     # every id relative; jedi and the resolver resolve those against the working directory.
     # shortcut: chdir is process-wide so two builds cannot run at once in one process, pass a display path through the parser when that is needed.
     with contextlib.chdir(root):
-        graph = build_graph([Path(f) for f in files], Path("."), use_jedi)
+        graph = build_graph([Path(f) for f in files], Path("."), use_jedi, jobs)
     meta = CODE["build"]
     graph.add((meta, RDF.type, CODE.Build))
     graph.add((meta, CODE.root, Literal(root.resolve().name, datatype=XSD.string)))
@@ -92,13 +92,18 @@ def _counts(graph: Graph) -> tuple[dict, dict]:
 def _summary(graph: Graph) -> tuple[dict, dict[str, list[dict]]]:
     """Print the counts and coverage rate of *graph*; return its coverage and health check results."""
     counts, cov = _counts(graph)
+    _print_counts(counts, cov)
+    return cov, run_checks(graph)
+
+
+def _print_counts(counts: dict, cov: dict) -> None:
+    """Print the counts and coverage rate, as build and stats show them."""
     for label, key in (("files parsed", "files"), ("functions", "functions"), ("classes", "classes"), ("call sites", "call_sites")):
         print(f"{label}: {counts[key]}")
     if cov["no_resolver"]:
         print(f"call sites in languages without call resolution: {cov['no_resolver']}")
     rate = cov["rate"]
     print(f"coverage: {'n/a' if rate is None else f'{rate:.1%}'}")
-    return cov, run_checks(graph)
 
 
 def _row(row: dict) -> dict:
@@ -165,6 +170,8 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("path", help="the project root")
     b.add_argument("-o", "--output", default="acte-graph.ttl", help="Turtle file to write (default: acte-graph.ttl)")
     b.add_argument("--no-jedi", action="store_true", help="skip the jedi resolution tier")
+    b.add_argument("--jobs", type=int, default=min(os.cpu_count() or 1, 8),
+                   help="processes that parse files; 1 parses in this process (default: CPU count, at most 8)")
     st = sub.add_parser("stats", help="summarise a Turtle graph written by build")
     st.add_argument("graph", help="the Turtle file")
     st.add_argument("--format", choices=["text", "json"], default="text", help="output format (default: text)")
@@ -217,10 +224,26 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--limit must be at least 1")
         from acte.impact import run  # imported here: impact imports this module
         return run(root, args.base, args.graph, args.depth, args.limit, args.format, not args.no_jedi)
-    graph = build(root, not args.no_jedi)
-    graph.serialize(destination=args.output, format="turtle")
+    if args.jobs < 1:
+        parser.error("--jobs must be at least 1")
+    graph = build(root, not args.no_jedi, args.jobs)
+    counts, cov = _counts(graph)
+    checks = run_checks(graph)
+    # for graph_info, which uses it only while the map still has this many triples (the count includes this one)
+    summary = {"counts": counts, "coverage": cov, "health": {name: len(rows) for name, rows in checks.items()},
+               "triples": len(graph) + 1}
+    graph.add((CODE["build"], CODE.summary, Literal(json.dumps(summary, sort_keys=True), datatype=XSD.string)))
+    # Write beside the output then rename, so a failed write never leaves a half-written map.
+    # A plain name, not tempfile's: tempfile creates mode 0600, which the rename would keep.
+    tmp = Path(args.output).with_name(f".{Path(args.output).name}.{os.getpid()}.tmp")
+    try:
+        graph.serialize(destination=tmp, format="turtle")
+        os.replace(tmp, args.output)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     print(f"wrote {args.output}")
-    _, checks = _summary(graph)
+    _print_counts(counts, cov)
     failing = [name for name, rows in checks.items() if rows]
     print(f"health: {'ok' if not failing else ', '.join(failing)}")
     return 1 if failing else 0

@@ -18,7 +18,9 @@ can be loaded into a triplestore as it is, if a project ever gets too big for me
 ## Pipeline
 
 `build_graph(paths, root)` in `rdf_builder.py` runs the whole pipeline: parse every file,
-resolve calls across all of them, build one graph.
+resolve calls across all of them, build one graph. With `jobs` above 1 and at least 50
+files, the files are parsed in a pool of processes and the results are put back in file
+order, so the graph is the same as with one process (`acte build --jobs`).
 
 ### Layer 1: Extraction (`src/acte/parser.py`)
 
@@ -260,6 +262,13 @@ over stdio, built on the official `mcp` SDK. Queries run one at a time under a l
 `small` profile (default) has `find_symbol`, `callers_of`, `callees_of` and `blast_radius`;
 `full` adds `functions_in_file`, `dependencies_of`, `orphan_functions` and `graph_info`.
 `execute_raw_sparql` is not offered: the model never writes SPARQL.
+The server builds the engine's name index right after loading the graph.
+
+`acte build` stores one `code:summary` literal on the Build node: JSON with the counts, the
+coverage, the row count of each health check, and the graph's triple count. `graph_info` uses
+it only when it is valid JSON, the triple count still matches the loaded graph, and the
+graph's `code:acteVersion` is the running version. Otherwise it computes everything again.
+`acte stats` always computes everything again.
 
 Each tool takes a name or path and returns plain text built for a small model:
 
@@ -271,7 +280,8 @@ Each tool takes a name or path and returns plain text built for a small model:
 - an unknown name gets up to 3 close spellings and a prompt to call again with one;
 - both of these are normal answers. Errors are only returned when something actually fails;
 - with `--project`, every answer warns when the project's git HEAD differs from the
-  commit the graph was built from.
+  commit the graph was built from. git is asked at most once every 5 seconds, so the
+  warning can lag a new commit by up to 5 seconds.
 
 ### Built on the graph: `acte impact` and `acte analyze`
 

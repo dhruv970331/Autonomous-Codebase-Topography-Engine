@@ -7,7 +7,8 @@ import pytest
 from mcp import Client
 
 from acte import mcp_server
-from acte.cli import build
+from acte.cli import build, main
+from acte.health import run_checks
 from acte.mcp_server import create_server
 
 PROJECT = {
@@ -316,6 +317,43 @@ def test_graph_info_counts_other_languages_apart(serve):
     assert lines[4:] == _call(serve(CALLS, profile="full"), "graph_info").splitlines()[3:]
 
 
+def test_graph_info_uses_the_stored_summary_only_while_it_fits_the_map(tmp_path, monkeypatch, capsys):
+    from rdflib import Graph, Literal
+    from rdflib.namespace import RDF, XSD
+
+    from acte.rdf_builder import CODE
+    _write(tmp_path / "proj", CALLS)
+    main(["build", str(tmp_path / "proj"), "-o", str(tmp_path / "fresh.ttl"), "--no-jedi"])  # the real `acte build`
+    fresh = Graph().parse(tmp_path / "fresh.ttl", format="turtle")
+    summary = fresh.value(CODE["build"], CODE.summary)
+    assert json.loads(str(summary))["triples"] == len(fresh)
+
+    def save(name, remove=(), add=()):
+        g = Graph().parse(tmp_path / "fresh.ttl", format="turtle")
+        for t in remove:
+            g.remove(t)
+        for t in add:
+            g.add(t)
+        g.serialize(tmp_path / name, format="turtle")
+        return tmp_path / name
+    meta = CODE["build"]
+    old = save("old.ttl", remove=[(meta, CODE.summary, None)])  # a map from before code:summary
+    edited = save("edited.ttl", remove=[(CODE["db.py::Database"], RDF.type, CODE.Class)])  # breaks dangling-call-arrows
+    edited_old = save("edited_old.ttl", remove=[(CODE["db.py::Database"], RDF.type, CODE.Class), (meta, CODE.summary, None)])
+    bad = save("bad.ttl", remove=[(meta, CODE.summary, None)], add=[(meta, CODE.summary, Literal("{not json", datatype=XSD.string))])
+    other = save("other.ttl", remove=[(meta, CODE.acteVersion, None)], add=[(meta, CODE.acteVersion, Literal("0.0.0", datatype=XSD.string))])
+
+    checked = []
+    monkeypatch.setattr(mcp_server, "run_checks", lambda g: checked.append(1) or run_checks(g))
+    info = {name: _call(create_server(path, profile="full"), "graph_info")
+            for name, path in (("fresh", tmp_path / "fresh.ttl"), ("old", old), ("edited", edited), ("edited_old", edited_old),
+                               ("bad", bad), ("other", other))}
+    assert len(checked) == 5  # every map but the fresh one is checked live
+    assert info["fresh"] == info["old"] == info["bad"] and info["fresh"].endswith("\nHealth: ok")
+    assert info["edited"] == info["edited_old"] and info["edited"].endswith("\nHealth: failing: dangling-call-arrows")
+    assert info["other"].splitlines()[1:] == info["fresh"].splitlines()[1:]
+
+
 CALLS_EACH_TOOL = [("find_symbol", {"name": "connect"}), ("callers_of", {"name": "zz"}), ("callees_of", {"name": "run"}),
                    ("blast_radius", {"name": "helper"}), ("functions_in_file", {"path": "db.py"}),
                    ("dependencies_of", {"path": "app.py"}), ("orphan_functions", {}), ("graph_info", {})]
@@ -331,12 +369,15 @@ def test_stale_warning_after_a_new_commit(tmp_path, monkeypatch):
     old = _git(root, "rev-parse", "HEAD")
     graph = tmp_path / "graph.ttl"
     _build(root, graph)
+    now = [1000.0]
+    monkeypatch.setattr(mcp_server.time, "monotonic", lambda: now[0])  # git is asked at most every 5 s
     server = create_server(graph, project=root, profile="full")
     for tool, arguments in CALLS_EACH_TOOL:
         assert not _call(server, tool, **arguments).startswith("Warning")
     _write(root, {"new.py": "x = 1\n"})
     _git(root, "add", ".")
     _git(root, "commit", "-qm", "two")
+    now[0] += 5
     new = _git(root, "rev-parse", "HEAD")
     warning = f"Warning: this map was built at commit {old[:7]} but the project is now at {new[:7]}; answers may be out of date."
     plain = create_server(graph, profile="full")  # no --project: never a warning
@@ -348,6 +389,39 @@ def test_stale_warning_after_a_new_commit(tmp_path, monkeypatch):
     missing = create_server(graph, project=tmp_path / "missing", profile="full")
     for tool, arguments in CALLS_EACH_TOOL:
         assert _call(missing, tool, **arguments) == _call(plain, tool, **arguments)
+
+
+def test_name_index_is_built_when_the_map_opens(tmp_path, monkeypatch):
+    from acte.sparql_engine import SPARQLEngine
+    root, graph = tmp_path / "proj", tmp_path / "graph.ttl"
+    _write(root, CALLS)
+    _build(root, graph)
+    built = []
+    real = SPARQLEngine._indexed
+    monkeypatch.setattr(SPARQLEngine, "_indexed", lambda self: built.append(self._index is None) or real(self))
+    create_server(graph)
+    assert built == [True]  # built once, before any tool is called
+
+
+def test_stale_check_runs_git_at_most_every_5_seconds(tmp_path, monkeypatch):
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    root, graph = tmp_path / "proj", tmp_path / "graph.ttl"
+    _write(root, CALLS)
+    _git(root, "init", "-q")
+    _git(root, "add", ".")
+    _git(root, "commit", "-qm", "one")
+    _build(root, graph)
+    server = create_server(graph, project=root, profile="full")
+    heads, now = [], [1000.0]
+    monkeypatch.setattr(mcp_server, "_head", lambda project: heads.append(project) or "0" * 40)
+    monkeypatch.setattr(mcp_server.time, "monotonic", lambda: now[0])
+    _call(server, "graph_info")
+    now[0] += 4.9
+    _call(server, "graph_info")
+    assert len(heads) == 1
+    now[0] += 0.1
+    _call(server, "graph_info")
+    assert len(heads) == 2
 
 
 def test_text_cuts_whole_lines_within_budget():

@@ -19,7 +19,7 @@ but draws no arrow (R11); ambiguous, unresolved and external calls draw none.
 """
 
 import urllib.parse
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -143,6 +143,7 @@ class SPARQLEngine:
 
     def __init__(self, graph: Graph | None = None) -> None:
         self.graph: Graph = graph if graph is not None else Graph()
+        self._index: tuple | None = None  # (graph size, symbols, by id, by bare name, by qualname), see _indexed()
 
     @classmethod
     def from_turtle(cls, path: str | Path) -> "SPARQLEngine":
@@ -299,6 +300,9 @@ ORDER BY ?file ?start
 
     def symbols(self) -> list[tuple[str, str, str, str, int]]:
         """Return (id, kind, bare name, file, lineStart) of every Function and Class, sorted by id."""
+        return list(self._indexed()[1])
+
+    def _symbols(self) -> list[tuple[str, str, str, str, int]]:
         q = _PREFIXES + """
 SELECT ?d ?kind ?name ?file ?start WHERE {
     VALUES ?kind { code:Function code:Class }
@@ -327,31 +331,28 @@ ORDER BY ?path
         without the jedi fields only the resolver knows. A call's edge kind is the type
         of its target, so a recursive call counts too, as in ``report()``. Only calls in
         languages with call resolution are measured; no_resolver counts the others, total all."""
-        q = _PREFIXES + """
-SELECT ?site ?status ?tier ?reason ?kind ?path WHERE {
-    ?site a code:CallSite ;
-          code:status ?status .
-    OPTIONAL { ?site code:tier ?tier }
-    OPTIONAL { ?site code:reason ?reason }
-    OPTIONAL { ?site code:resolvedTo/a ?kind }
-    OPTIONAL { ?site code:inFunction/code:filePath ?path }
-}
-"""
-        edges = {f"{_CODE_NS}Function": "calls", f"{_CODE_NS}Class": "instantiates"}
-        everything = list(self.graph.query(q))
-        rows = [r for r in everything if str(r.path).endswith(".py")]  # as the resolver: only Python is resolved
+        # triples() lookups give one row per combination of values, as the OPTIONALs of the old query
+        # (kept in the tests as an oracle) did: rdflib's SPARQL engine took 49 s for it on django
+        g, edges = self.graph, {_CODE.Function: "calls", _CODE.Class: "instantiates"}
+        everything = [(status, tier, reason, kind, path)
+                      for site in g.subjects(RDF.type, _CODE.CallSite) for status in g.objects(site, _CODE.status)
+                      for tier in list(g.objects(site, _CODE.tier)) or [None]
+                      for reason in list(g.objects(site, _CODE.reason)) or [None]
+                      for kind in [k for t in g.objects(site, _CODE.resolvedTo) for k in g.objects(t, RDF.type)] or [None]
+                      for path in [p for f in g.objects(site, _CODE.inFunction) for p in g.objects(f, _CODE.filePath)] or [None]]
+        rows = [r for r in everything if str(r[4]).endswith(".py")]  # as the resolver: only Python is resolved
 
         def count(values):
             return dict(sorted(Counter(str(v) for v in values if v is not None).items()))
-        status = count(r.status for r in rows)
+        status = count(r[0] for r in rows)
         measured = len(rows) - status.get("external", 0)
         return {
-            "edge": count(edges.get(str(r.kind)) for r in rows),
+            "edge": count(edges.get(r[3]) for r in rows),
             "no_resolver": len(everything) - len(rows),
             "rate": status.get("resolved", 0) / measured if measured else None,
-            "reason": count(r.reason for r in rows),
+            "reason": count(r[2] for r in rows),
             "status": status,
-            "tier": count(r.tier for r in rows),
+            "tier": count(r[1] for r in rows),
             "total": len(everything),
         }
 
@@ -382,14 +383,28 @@ SELECT ?site ?status ?tier ?reason ?kind ?path WHERE {
         An exact id wins. Otherwise a dotted *name* is a qualname (``<locals>``
         optional) and an undotted one matches every definition with that bare name.
         """
-        g = self.graph  # triples() lookups: the same rows as a SPARQL query over every definition, several times faster
-        defs = sorted((self._id(d), str(n)) for kind in (_CODE.Function, _CODE.Class)
-                      for d in g.subjects(RDF.type, kind) for n in g.objects(d, _CODE.name))
-        exact = [d for d in defs if d[0] == name]
+        _, _, by_id, by_bare, by_qual = self._indexed()
+        exact = by_id.get(name, [])
         if exact or "." not in name:
-            return exact or [d for d in defs if d[1] == name]
-        plain = name.replace(".<locals>", "")
-        return [d for d in defs if d[0].split("::", 1)[-1].replace(".<locals>", "") == plain]
+            return list(exact or by_bare.get(name, []))
+        return list(by_qual.get(name.replace(".<locals>", ""), []))
+
+    def _indexed(self) -> tuple:
+        """The definitions index, built on first use and again when the graph has changed."""
+        # change check: the triple count. A change that keeps the count the same is not seen; the
+        # engine's users load a graph once and only read it.
+        size = len(self.graph)
+        if self._index is None or self._index[0] != size:
+            g = self.graph  # triples() lookups: the same rows as a SPARQL query over every definition, several times faster
+            defs = sorted((self._id(d), str(n)) for kind in (_CODE.Function, _CODE.Class)
+                          for d in g.subjects(RDF.type, kind) for n in g.objects(d, _CODE.name))
+            by_id, by_bare, by_qual = defaultdict(list), defaultdict(list), defaultdict(list)
+            for d in defs:  # each list keeps the sorted order
+                by_id[d[0]].append(d)
+                by_bare[d[1]].append(d)
+                by_qual[d[0].split("::", 1)[-1].replace(".<locals>", "")].append(d)
+            self._index = (size, self._symbols(), by_id, by_bare, by_qual)
+        return self._index
 
     def _caller_answer(self, target: str, bare: str) -> CallerAnswer:
         """Confirmed callers, possible callers (R19) and the exact / lower-bound label (R23) of one definition."""

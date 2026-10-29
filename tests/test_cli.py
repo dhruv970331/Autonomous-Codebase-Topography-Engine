@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 from importlib.metadata import version
+from pathlib import Path
 
 import pytest
 from rdflib import Graph
@@ -120,6 +121,32 @@ def test_failing_health_check_exits_1(tmp_path, monkeypatch, capsys):
     assert main(["build", str(tmp_path / "proj"), "-o", str(tmp_path / "g.ttl"), "--no-jedi"]) == 1
     assert capsys.readouterr().out.splitlines()[-1] == "health: self-call-arrows"
     assert (tmp_path / "g.ttl").exists()  # the graph is still written
+
+
+def test_failed_write_keeps_the_old_output(tmp_path, monkeypatch):
+    _write(tmp_path / "proj", PROJECT)
+    out = tmp_path / "out" / "g.ttl"
+    out.parent.mkdir()
+    out.write_text("old map\n")
+
+    def broken(self, destination=None, **kw):  # writes part of the map, then fails as a crash would
+        Path(destination).write_text("@prefix half")
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(Graph, "serialize", broken)
+    with pytest.raises(RuntimeError, match="disk full"):
+        main(["build", str(tmp_path / "proj"), "-o", str(out), "--no-jedi"])
+    assert out.read_text() == "old map\n"
+    assert os.listdir(out.parent) == ["g.ttl"]  # no temporary file left behind
+
+
+def test_parallel_parse_writes_the_same_map(tmp_path, monkeypatch, capsys):
+    from acte import rdf_builder
+    monkeypatch.setattr(rdf_builder, "MIN_PARALLEL_FILES", 2)  # this repository's src/ has fewer than 50 files
+    src = Path(__file__).resolve().parents[1] / "src"
+    main(["build", str(src), "-o", str(tmp_path / "one.ttl"), "--no-jedi", "--jobs", "1"])
+    main(["build", str(src), "-o", str(tmp_path / "four.ttl"), "--no-jedi", "--jobs", "4"])
+    assert (tmp_path / "one.ttl").read_bytes() == (tmp_path / "four.ttl").read_bytes()
 
 
 def test_default_output_is_in_the_working_directory(tmp_path, monkeypatch, capsys):
