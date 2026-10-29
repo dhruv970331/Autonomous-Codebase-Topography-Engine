@@ -436,3 +436,22 @@ def test_go_and_tsx_give_structure_and_unresolved_calls(tmp_path):
     # the Python call resolves to the Python New, never to the Go one
     assert {(s, o) for s, _, o in triples(graph, None, CODE.calls)} == {(py, uri(f"{tmp_path}/main.py::New"))}
     assert all(rows == [] for rows in run_checks(graph).values())
+
+
+def test_each_definition_gets_its_own_record():
+    """An id defined twice keeps one node and gets one record per definition, each with its own lines."""
+    root = Path(__file__).parent / "data" / "twice_defined"
+    graph = build_graph([root / "app.py"], root, use_jedi=False)
+
+    def records(name):
+        node = iri(CODE[f"{root}/app.py::{name}"])
+        return sorted((text(r)[len(text(node)):], *(None if (v := value(graph, r, p)) is None else int(text(v))
+                                                   for p in (CODE.lineStart, CODE.lineEnd, CODE.decoratorLine)))
+                      for r in objects(graph, node, CODE.definedAt))
+    assert records("target") == [("!4", 4, 5, None)]
+    assert records("alpha") == [("!15", 15, 16, None), ("!9", 9, 10, None)]
+    assert records("Box.size") == [("!21", 21, 22, None), ("!25", 25, 26, 24)]
+    assert records("Shape") == [("!30", 30, 32, None), ("!34", 34, 38, None)]
+    definitions = {s for kind in (CODE.Function, CODE.Class) for s in subjects(graph, RDF.type, kind)}
+    assert {s for s, _, _ in triples(graph, None, CODE.definedAt)} == definitions
+    assert all(has(graph, r, RDF.type, CODE.Definition) for _, _, r in triples(graph, None, CODE.definedAt))

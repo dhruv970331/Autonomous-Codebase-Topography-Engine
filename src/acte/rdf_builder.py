@@ -190,6 +190,16 @@ class KnowledgeGraphBuilder:
         self.graph.add((uri, CODE.lineEnd,   lit(node.line_end)))
         if node.decorator_line is not None:
             self.graph.add((uri, CODE.decoratorLine, lit(node.decorator_line)))
+        if node.kind in ("Function", "Class"):
+            # One record per definition: an id defined twice (both branches of an if) keeps each one's lines together.
+            # _make_uri always escapes "!", so no identifier gives this IRI.
+            record = iri(f"{text(uri)}!{node.line_start}")
+            self.graph.add((uri, CODE.definedAt, record))
+            self.graph.add((record, RDF.type, CODE.Definition))
+            self.graph.add((record, CODE.lineStart, lit(node.line_start)))
+            self.graph.add((record, CODE.lineEnd, lit(node.line_end)))
+            if node.decorator_line is not None:
+                self.graph.add((record, CODE.decoratorLine, lit(node.decorator_line)))
 
         if node.language:
             self.graph.add((uri, CODE.language, lit(node.language)))

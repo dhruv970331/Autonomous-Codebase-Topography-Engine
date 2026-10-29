@@ -17,6 +17,9 @@ code:Class a rdfs:Class ;
 code:Function a rdfs:Class ;
     rdfs:comment "A function or method definition." .
 
+code:Definition a rdfs:Class ;
+    rdfs:comment "One place a Function or Class is defined, with its own lineStart, lineEnd and decoratorLine. An id defined twice, as in both branches of an if, has two." .
+
 code:CallSite a rdfs:Class ;
     rdfs:comment "One call in the source, with how it was resolved." .
 
@@ -44,6 +47,10 @@ code:lineEnd a rdf:Property ;
 code:decoratorLine a rdf:Property ;
     rdfs:comment "The line of the first decorator of a decorated Python function or class, counted from 1. Absent when it has none." ;
     rdfs:range xsd:integer .
+
+code:definedAt a rdf:Property ;
+    rdfs:comment "From a Function or Class to each Definition of it." ;
+    rdfs:range code:Definition .
 
 code:language a rdf:Property ;
     rdfs:comment "The programming language of the file the node is in." ;
