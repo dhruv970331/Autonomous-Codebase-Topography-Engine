@@ -73,7 +73,8 @@ def rank(graph: Graph, top: int = 10) -> Ranking:
     q = _PREFIXES + "SELECT DISTINCT ?s ?t WHERE { ?s code:calls|code:instantiates ?t . }"
     # DISTINCT: several calls from one caller to one target are one edge, as in a networkx DiGraph
     edges = sorted((engine._id(r["s"]), engine._id(r["t"])) for r in graph.query(q))
-    defs = {d[0]: (d[3], d[4]) for d in engine.symbols()}
+    # reversed, so an id defined twice keeps its first definition's line, as blast radius ranks it
+    defs = {d[0]: (d[3], d[4]) for d in reversed(engine.symbols())}
     nodes = sorted(set(defs) | {s for s, _ in edges} | {t for _, t in edges})  # File callers are nodes, never ranked
     score, converged = _pagerank(nodes, edges)
     callers: dict[str, set[str]] = {}

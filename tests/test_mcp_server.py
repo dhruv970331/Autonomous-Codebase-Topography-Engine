@@ -1,6 +1,7 @@
 import json
 import subprocess
 from importlib.metadata import version
+from pathlib import Path
 
 import anyio
 import pytest
@@ -10,7 +11,18 @@ from acte import mcp_server
 from acte.cli import build, main
 from acte.health import run_checks
 from acte.mcp_server import create_server
-from acte.rdf_builder import CODE, RDF, add, lit, load, remove, save, text, value
+from acte.rdf_builder import (
+    CODE,
+    RDF,
+    add,
+    build_graph,
+    lit,
+    load,
+    remove,
+    save,
+    text,
+    value,
+)
 
 PROJECT = {
     "db.py": "class Database:\n    def connect(self):\n        pass\n",
@@ -470,3 +482,12 @@ def test_callers_of_init_behind_an_outside_base_in_plain_words(serve):
         "Possible (create a subclass that may get its __init__ from a base class outside the project):\n"
         "i.py::make  i.py:16"
     )
+
+
+def test_an_ambiguous_name_shows_the_first_line_of_each_definition(tmp_path):
+    """Box.size (lines 21 and 25) and Shape.size (31 and 37) are each defined twice: each is shown at its first line."""
+    root = Path(__file__).parent / "data" / "twice_defined"
+    save(build_graph([root / "app.py"], root, use_jedi=False), tmp_path / "g.ttl")
+    answer = _call(create_server(tmp_path / "g.ttl"), "callers_of", name="size").splitlines()
+    assert answer[1:3] == [f"{root}/app.py::Box.size (Function) {root}/app.py:21",
+                           f"{root}/app.py::Shape.size (Function) {root}/app.py:31"]

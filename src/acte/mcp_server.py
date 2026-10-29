@@ -194,7 +194,7 @@ def create_server(graph_path: str | Path, project: str | Path | None = None, pro
             return defs[0], None
         if not defs:
             return None, _not_found(name, symbols)
-        where = {s[0]: s for s in symbols}
+        where = {s[0]: s for s in reversed(symbols)}  # an id defined twice: its first definition, as blast radius ranks it
         headline = f'{tool} "{name}": {len(defs)} definitions match. Ask again with one full name:'
         return None, _text(headline, [(None, [_symbol(where[d]) for d in defs])], _NARROW)
 

@@ -126,3 +126,10 @@ def test_pagerank_not_converged_returns_last_iterate():
     scores, converged = _pagerank(["a", "b"], [("a", "b")], max_iter=1)
     assert not converged
     assert scores == pytest.approx({"a": 0.2875, "b": 0.7125})  # (0.85 * 0.5 + 0.15) / 2, plus 0.85 * 0.5 into b
+
+
+def test_rank_shows_the_first_line_of_a_twice_defined_function(twice_defined_graphs):
+    """alpha is defined at lines 9 and 15: the line shown is 9, as blast radius ranks it, whatever the store's order."""
+    for graph in twice_defined_graphs:
+        lines = {r.id.split("::")[1]: r.line for r in rank(graph, top=100).top}
+        assert (lines["alpha"], lines["Box.size"], lines["Shape"]) == (9, 21, 30)
