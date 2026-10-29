@@ -257,6 +257,21 @@ def test_blast_radius_tie_order_does_not_depend_on_the_store():
     assert answers[0] == answers[1]
 
 
+def test_listings_give_each_definition_its_own_lines(twice_defined_graphs):
+    """alpha, Box.size, Shape and Shape.size are each defined twice: one row per definition, never a start of one
+    definition with the end of the other, in the same order whatever the store's order."""
+    app = f"{Path(__file__).parent}/data/twice_defined/app.py"
+    functions = [("target", 4, 5), ("alpha", 9, 10), ("beta", 12, 13), ("alpha", 15, 16),
+                 ("size", 21, 22), ("size", 25, 26), ("size", 31, 32), ("size", 37, 38)]
+    for graph in twice_defined_graphs:
+        engine = SPARQLEngine(graph=graph)
+        assert [(f.name, f.line_start, f.line_end) for f in engine.functions_in_file(app)] == functions
+        assert [(c.name, c.line_start, c.line_end) for c in engine.classes_in_file(app)] == [
+            ("Box", 19, 26), ("Shape", 30, 32), ("Shape", 34, 38)]
+        assert [(f.name, f.file_path, f.line_start, f.line_end) for f in engine.orphan_functions()] == [
+            (name, app, start, end) for name, start, end in functions if name != "target"]
+
+
 def test_blast_radius_mutual_recursion_terminates(tmp_path):
     engine = _engine(tmp_path, {"m.py": "def p():\n    q()\n\n\ndef q():\n    p()\n"})
     [answer] = engine.blast_radius("p", depth=10)

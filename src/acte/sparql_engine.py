@@ -232,16 +232,17 @@ ORDER BY ?line ?col
         ]
 
     def functions_in_file(self, file_path: str) -> list[FunctionResult]:
-        """Return all functions defined in *file_path*, ordered by line number."""
+        """Return every definition of a function in *file_path*, ordered by line number: an id defined twice gives two."""
         q = _PREFIXES + f"""
 SELECT ?name ?start ?end WHERE {{
     ?f a code:Function ;
        code:filePath  {self._literal(file_path)} ;
        code:name      ?name ;
-       code:lineStart ?start ;
+       code:definedAt ?d .
+    ?d code:lineStart ?start ;
        code:lineEnd   ?end .
 }}
-ORDER BY ?start
+ORDER BY ?start ?end ?name
 """
         return [
             FunctionResult(text(r["name"]), file_path, int(text(r["start"])), int(text(r["end"])))
@@ -249,16 +250,17 @@ ORDER BY ?start
         ]
 
     def classes_in_file(self, file_path: str) -> list[ClassResult]:
-        """Return all classes defined in *file_path*, ordered by line number."""
+        """Return every definition of a class in *file_path*, ordered by line number: an id defined twice gives two."""
         q = _PREFIXES + f"""
 SELECT ?name ?start ?end WHERE {{
     ?c a code:Class ;
        code:filePath  {self._literal(file_path)} ;
        code:name      ?name ;
-       code:lineStart ?start ;
+       code:definedAt ?d .
+    ?d code:lineStart ?start ;
        code:lineEnd   ?end .
 }}
-ORDER BY ?start
+ORDER BY ?start ?end ?name
 """
         return [
             ClassResult(text(r["name"]), file_path, int(text(r["start"])), int(text(r["end"])))
@@ -289,19 +291,20 @@ SELECT DISTINCT ?dep ?p WHERE {{
         Useful for dead-code detection. A function is an orphan when no
         calls / instantiates arrow and no resolved CallSite of another caller
         points to it. A function called only by itself is an orphan: its
-        recursive CallSite does not count (R11).
+        recursive CallSite does not count (R11). One row per definition: an id defined twice gives two.
         """
         q = _PREFIXES + """
 SELECT DISTINCT ?name ?file ?start ?end WHERE {
     ?f a code:Function ;
        code:name      ?name ;
-       code:filePath   ?file ;
-       code:lineStart ?start ;
+       code:filePath  ?file ;
+       code:definedAt ?d .
+    ?d code:lineStart ?start ;
        code:lineEnd   ?end .
     FILTER NOT EXISTS { ?anything code:calls|code:instantiates ?f . }
     FILTER NOT EXISTS { ?site code:resolvedTo ?f ; code:inFunction ?caller . FILTER(?caller != ?f) }
 }
-ORDER BY ?file ?start
+ORDER BY ?file ?start ?end ?name
 """
         return [
             FunctionResult(text(r["name"]), text(r["file"]), int(text(r["start"])), int(text(r["end"])))
