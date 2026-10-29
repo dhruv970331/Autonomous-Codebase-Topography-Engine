@@ -200,6 +200,11 @@ code:acteVersion a rdf:Property ;
     rdfs:domain code:Build ;
     rdfs:range xsd:string .
 
+code:mapFormat a rdf:Property ;
+    rdfs:comment "The shape of the map; an ACTE that expects a different number asks for a rebuild. 2 = with Definition records." ;
+    rdfs:domain code:Build ;
+    rdfs:range xsd:integer .
+
 code:jediVersion a rdf:Property ;
     rdfs:comment "The jedi version that ran the jedi resolution tier, when it ran." ;
     rdfs:domain code:Build ;

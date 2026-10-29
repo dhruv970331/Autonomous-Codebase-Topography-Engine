@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from acte.cli import build
 from acte.parser import CodeParser
 from acte.rdf_builder import (
     CODE,
@@ -342,7 +343,7 @@ def test_coverage_matches_report_and_survives_turtle(tmp_path, use_jedi):
     graph = KnowledgeGraphBuilder().build([n for r in results for n in r.nodes], [e for r in results for e in r.edges], resolution)
     coverage = SPARQLEngine(graph=graph).coverage()
     assert coverage == {k: report[k] for k in ("edge", "no_resolver", "rate", "reason", "status", "tier", "total")}
-    save(graph, tmp_path / "g.ttl")
+    save(build(SRC, use_jedi), tmp_path / "g.ttl")  # the real `acte build`, which marks the map's format
     assert SPARQLEngine.open(tmp_path / "g.ttl").coverage() == coverage
 
 

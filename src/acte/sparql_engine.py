@@ -31,7 +31,7 @@ from acte.rdf_builder import (
     has,
     iri,
     lit,
-    load,
+    load_map,
     new_graph,
     nt,
     objects,
@@ -160,7 +160,7 @@ class SPARQLEngine:
     @classmethod
     def open(cls, path: str | Path) -> "SPARQLEngine":
         """Load a map written by ``acte build`` and return a ready engine."""
-        return cls(graph=load(path))
+        return cls(graph=load_map(path))
 
     # ------------------------------------------------------------------
     # Named queries

@@ -23,12 +23,13 @@ from acte.mcp_server import create_server
 from acte.parser import EXTENSION_TO_LANGUAGE
 from acte.rdf_builder import (
     CODE,
+    MAP_FORMAT,
     RDF,
     Graph,
     add,
     build_graph,
     lit,
-    load,
+    load_map,
     save,
     subjects,
     text,
@@ -84,6 +85,7 @@ def build(root: Path, use_jedi: bool = True, jobs: int = 1) -> Graph:
     add(graph, meta, RDF.type, CODE.Build)
     add(graph, meta, CODE.root, lit(root.resolve().name))
     add(graph, meta, CODE.acteVersion, lit(version("acte")))
+    add(graph, meta, CODE.mapFormat, lit(MAP_FORMAT))
     if commit:
         add(graph, meta, CODE.commit, lit(commit))
     if use_jedi and resolver.jedi:  # the resolver runs tier TJ exactly when both hold
@@ -208,7 +210,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "serve":
         try:
             server = create_server(args.graph, args.project, args.profile)
-        except (OSError, SyntaxError, UnicodeDecodeError) as exc:  # rdflib's turtle BadSyntax is a SyntaxError
+        except (OSError, SyntaxError, ValueError) as exc:  # rdflib's turtle BadSyntax is a SyntaxError; load_map refuses with a ValueError
             parser.error(f"cannot read {args.graph}: {exc}")
         server.run("stdio")
         return 0
@@ -217,8 +219,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "analyze" and args.top < 1:
             parser.error("--top must be at least 1")
         try:
-            graph = load(args.graph)
-        except (OSError, SyntaxError, UnicodeDecodeError) as exc:  # rdflib's turtle BadSyntax is a SyntaxError
+            graph = load_map(args.graph)
+        except (OSError, SyntaxError, ValueError) as exc:  # rdflib's turtle BadSyntax is a SyntaxError; load_map refuses with a ValueError
             parser.error(f"cannot read {args.graph}: {exc}")
         if args.command == "stats":
             return _stats(graph, args.format)

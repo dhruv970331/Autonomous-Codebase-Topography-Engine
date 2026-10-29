@@ -15,7 +15,6 @@ from acte.rdf_builder import (
     CODE,
     RDF,
     add,
-    build_graph,
     lit,
     load,
     remove,
@@ -487,7 +486,6 @@ def test_callers_of_init_behind_an_outside_base_in_plain_words(serve):
 def test_an_ambiguous_name_shows_the_first_line_of_each_definition(tmp_path):
     """Box.size (lines 21 and 25) and Shape.size (31 and 37) are each defined twice: each is shown at its first line."""
     root = Path(__file__).parent / "data" / "twice_defined"
-    save(build_graph([root / "app.py"], root, use_jedi=False), tmp_path / "g.ttl")
+    _build(root, tmp_path / "g.ttl")
     answer = _call(create_server(tmp_path / "g.ttl"), "callers_of", name="size").splitlines()
-    assert answer[1:3] == [f"{root}/app.py::Box.size (Function) {root}/app.py:21",
-                           f"{root}/app.py::Shape.size (Function) {root}/app.py:31"]
+    assert answer[1:3] == ["app.py::Box.size (Function) app.py:21", "app.py::Shape.size (Function) app.py:31"]

@@ -14,7 +14,7 @@ from pathlib import Path
 
 from acte.cli import _git, build
 from acte.mcp_server import _calls, _count, _head, _kinds, stale_warning
-from acte.rdf_builder import CODE, RDF, Graph, iri, load, objects, subjects, value
+from acte.rdf_builder import CODE, RDF, Graph, iri, load_map, objects, subjects, value
 from acte.rdf_builder import text as term_text  # this module has its own text()
 from acte.sparql_engine import IMPORT_KINDS, KIND_ORDER, BlastAnswer, SPARQLEngine
 
@@ -216,8 +216,8 @@ def run(root: Path, base: str, graph_path: str | None, depth: int, limit: int, f
         return 2
     if graph_path:
         try:
-            graph = load(graph_path)
-        except (OSError, SyntaxError, UnicodeDecodeError) as exc:  # rdflib's turtle BadSyntax is a SyntaxError
+            graph = load_map(graph_path)
+        except (OSError, SyntaxError, ValueError) as exc:  # rdflib's turtle BadSyntax is a SyntaxError; load_map refuses with a ValueError
             print(f"acte impact: cannot read {graph_path}: {exc}", file=sys.stderr)
             return 2
         print(stale_warning(value(graph, CODE["build"], CODE.commit), _head(root)), end="", file=sys.stderr)

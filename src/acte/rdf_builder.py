@@ -84,6 +84,17 @@ def load(path: str | Path) -> Graph:
     return Graph().parse(str(path), format="turtle")
 
 
+MAP_FORMAT = 2  # code:mapFormat of the maps this ACTE builds; 2 = with Definition records
+
+
+def load_map(path: str | Path) -> Graph:
+    """The map *path* written by ``acte build``; a ValueError when an older ACTE built it."""
+    graph = load(path)
+    if value(graph, CODE["build"], CODE.mapFormat) != lit(MAP_FORMAT):
+        raise ValueError("built by an older ACTE. Run acte build again.")
+    return graph
+
+
 def save(graph: Graph, path: str | Path) -> None:
     """Write *graph* to *path* as Turtle."""
     graph.serialize(destination=str(path), format="turtle")
