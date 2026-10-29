@@ -10,6 +10,7 @@ from acte import mcp_server
 from acte.cli import build, main
 from acte.health import run_checks
 from acte.mcp_server import create_server
+from acte.rdf_builder import CODE, RDF, add, lit, load, remove, save, text, value
 
 PROJECT = {
     "db.py": "class Database:\n    def connect(self):\n        pass\n",
@@ -54,7 +55,7 @@ def _write(root, files):
 
 
 def _build(root, graph):
-    build(root, use_jedi=False).serialize(destination=graph, format="turtle")
+    save(build(root, use_jedi=False), graph)
 
 
 def _git(root, *args):
@@ -318,30 +319,26 @@ def test_graph_info_counts_other_languages_apart(serve):
 
 
 def test_graph_info_uses_the_stored_summary_only_while_it_fits_the_map(tmp_path, monkeypatch, capsys):
-    from rdflib import Graph, Literal
-    from rdflib.namespace import RDF, XSD
-
-    from acte.rdf_builder import CODE
     _write(tmp_path / "proj", CALLS)
     main(["build", str(tmp_path / "proj"), "-o", str(tmp_path / "fresh.ttl"), "--no-jedi"])  # the real `acte build`
-    fresh = Graph().parse(tmp_path / "fresh.ttl", format="turtle")
-    summary = fresh.value(CODE["build"], CODE.summary)
-    assert json.loads(str(summary))["triples"] == len(fresh)
+    fresh = load(tmp_path / "fresh.ttl")
+    summary = value(fresh, CODE["build"], CODE.summary)
+    assert json.loads(text(summary))["triples"] == len(fresh)
 
-    def save(name, remove=(), add=()):
-        g = Graph().parse(tmp_path / "fresh.ttl", format="turtle")
-        for t in remove:
-            g.remove(t)
-        for t in add:
-            g.add(t)
-        g.serialize(tmp_path / name, format="turtle")
+    def edit(name, drop=(), extra=()):
+        g = load(tmp_path / "fresh.ttl")
+        for t in drop:
+            remove(g, *t)
+        for t in extra:
+            add(g, *t)
+        save(g, tmp_path / name)
         return tmp_path / name
     meta = CODE["build"]
-    old = save("old.ttl", remove=[(meta, CODE.summary, None)])  # a map from before code:summary
-    edited = save("edited.ttl", remove=[(CODE["db.py::Database"], RDF.type, CODE.Class)])  # breaks dangling-call-arrows
-    edited_old = save("edited_old.ttl", remove=[(CODE["db.py::Database"], RDF.type, CODE.Class), (meta, CODE.summary, None)])
-    bad = save("bad.ttl", remove=[(meta, CODE.summary, None)], add=[(meta, CODE.summary, Literal("{not json", datatype=XSD.string))])
-    other = save("other.ttl", remove=[(meta, CODE.acteVersion, None)], add=[(meta, CODE.acteVersion, Literal("0.0.0", datatype=XSD.string))])
+    old = edit("old.ttl", drop=[(meta, CODE.summary, None)])  # a map from before code:summary
+    edited = edit("edited.ttl", drop=[(CODE["db.py::Database"], RDF.type, CODE.Class)])  # breaks dangling-call-arrows
+    edited_old = edit("edited_old.ttl", drop=[(CODE["db.py::Database"], RDF.type, CODE.Class), (meta, CODE.summary, None)])
+    bad = edit("bad.ttl", drop=[(meta, CODE.summary, None)], extra=[(meta, CODE.summary, lit("{not json"))])
+    other = edit("other.ttl", drop=[(meta, CODE.acteVersion, None)], extra=[(meta, CODE.acteVersion, lit("0.0.0"))])
 
     checked = []
     monkeypatch.setattr(mcp_server, "run_checks", lambda g: checked.append(1) or run_checks(g))

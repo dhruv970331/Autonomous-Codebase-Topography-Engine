@@ -1,11 +1,21 @@
 from pathlib import Path
 
 import pytest
-from rdflib import BNode, Literal, URIRef
-from rdflib.namespace import RDF, XSD
+from rdflib import BNode
 
 from acte.health import CHECKS, run_checks
-from acte.rdf_builder import CODE, KnowledgeGraphBuilder, build_graph
+from acte.rdf_builder import (
+    CODE,
+    RDF,
+    KnowledgeGraphBuilder,
+    add,
+    build_graph,
+    has,
+    iri,
+    lit,
+    remove,
+    subjects,
+)
 
 SRC = Path(__file__).resolve().parents[1] / "src"
 SNIPPETS = Path(__file__).parent / "data" / "pycg" / "snippets"
@@ -40,19 +50,19 @@ def test_pycg_snippets_are_healthy():
 
 
 def _site(g, status):
-    return next(iter(g.subjects(CODE.status, Literal(status, datatype=XSD.string))))
+    return next(iter(subjects(g, CODE.status, lit(status))))
 
 
-NOWHERE = URIRef(CODE["nowhere"])
+NOWHERE = iri(CODE["nowhere"])
 MUTATIONS = {
-    "dangling-call-arrows": lambda g, run, app: g.add((run, CODE.calls, NOWHERE)),
-    "dangling-import-arrows": lambda g, run, app: g.add((app, CODE.importsFrom, NOWHERE)),
-    "dangling-inherits-arrows": lambda g, run, app: g.add((run, CODE.inherits, NOWHERE)),
-    "self-call-arrows": lambda g, run, app: g.add((run, CODE.calls, run)),
-    "callsite-status": lambda g, run, app: g.remove((_site(g, "external"), CODE.status, None)),
-    "resolved-without-target": lambda g, run, app: g.remove((_site(g, "resolved"), CODE.resolvedTo, None)),
-    "callsite-without-caller": lambda g, run, app: g.remove((_site(g, "external"), CODE.inFunction, None)),
-    "undeclared-terms": lambda g, run, app: g.add((run, CODE.undeclared, app)),
+    "dangling-call-arrows": lambda g, run, app: add(g, run, CODE.calls, NOWHERE),
+    "dangling-import-arrows": lambda g, run, app: add(g, app, CODE.importsFrom, NOWHERE),
+    "dangling-inherits-arrows": lambda g, run, app: add(g, run, CODE.inherits, NOWHERE),
+    "self-call-arrows": lambda g, run, app: add(g, run, CODE.calls, run),
+    "callsite-status": lambda g, run, app: remove(g, _site(g, "external"), CODE.status),
+    "resolved-without-target": lambda g, run, app: remove(g, _site(g, "resolved"), CODE.resolvedTo),
+    "callsite-without-caller": lambda g, run, app: remove(g, _site(g, "external"), CODE.inFunction),
+    "undeclared-terms": lambda g, run, app: add(g, run, CODE.undeclared, app),
 }
 
 
@@ -64,7 +74,7 @@ def test_one_broken_triple_fails_exactly_its_check(tmp_path, check):
     assert _failing(graph) == set()
     uri = KnowledgeGraphBuilder()._make_uri
     app, run = uri(f"{tmp_path}/app.py"), uri(f"{tmp_path}/app.py::run")
-    assert (run, RDF.type, CODE.Function) in graph
+    assert has(graph, run, RDF.type, CODE.Function)
     before = len(graph)
     MUTATIONS[check](graph, run, app)
     assert len(graph) != before
@@ -76,5 +86,5 @@ def test_blank_node_suspect_runs_the_whole_check(tmp_path):
     for rel, code in PROJECT.items():
         (tmp_path / rel).write_text(code)
     graph = build_graph(sorted(tmp_path / rel for rel in PROJECT), tmp_path, use_jedi=False)
-    graph.add((BNode(), RDF.type, CODE.CallSite))
+    add(graph, BNode(), RDF.type, CODE.CallSite)
     assert _failing(graph) == {"callsite-status", "callsite-without-caller"}

@@ -2,11 +2,23 @@ from collections import Counter
 from pathlib import Path
 
 import pytest
-from rdflib import Graph
-from rdflib.namespace import RDF
 
 from acte.parser import CodeParser
-from acte.rdf_builder import CODE, KnowledgeGraphBuilder, build_graph
+from acte.rdf_builder import (
+    CODE,
+    RDF,
+    KnowledgeGraphBuilder,
+    add,
+    build_graph,
+    has,
+    new_graph,
+    objects,
+    remove,
+    save,
+    subjects,
+    text,
+    triples,
+)
 from acte.resolver import CANDIDATE_CEILING, resolve
 from acte.sparql_engine import Caller, CallerAnswer, SPARQLEngine
 
@@ -232,9 +244,9 @@ def test_blast_radius_tie_order_does_not_depend_on_the_store():
     graph = build_graph([root / "app.py"], root, use_jedi=False)
     alpha = f"{root}/app.py::alpha"
     assert [s[4] for s in SPARQLEngine(graph=graph).symbols() if s[0] == alpha] == [9, 15]
-    reversed_graph = Graph()
-    for triple in reversed(list(graph)):
-        reversed_graph.add(triple)
+    reversed_graph = new_graph()
+    for triple in reversed(list(triples(graph))):
+        add(reversed_graph, *triple)
     answers = []
     for g in (graph, reversed_graph):
         engine = SPARQLEngine(graph=g)
@@ -284,13 +296,13 @@ def test_arrows_reach_typed_nodes_and_every_call_site_has_one_status():
     """spec §10.2 and §10.17, over ACTE's own src/."""
     graph = build_graph(sorted(SRC.rglob("*.py")), SRC)
     for arrow, kind in ((CODE.calls, CODE.Function), (CODE.instantiates, CODE.Class)):
-        targets = set(graph.objects(None, arrow))
+        targets = set(objects(graph, None, arrow))
         assert targets
-        assert all((t, RDF.type, kind) in graph for t in targets), arrow
-    sites = set(graph.subjects(RDF.type, CODE.CallSite))
+        assert all(has(graph, t, RDF.type, kind) for t in targets), arrow
+    sites = set(subjects(graph, RDF.type, CODE.CallSite))
     assert sites
     for site in sites:
-        statuses = [str(s) for s in graph.objects(site, CODE.status)]
+        statuses = [text(s) for s in objects(graph, site, CODE.status)]
         assert len(statuses) == 1 and statuses[0] in {"resolved", "ambiguous", "unresolved", "external"}, site
 
 
@@ -315,7 +327,7 @@ def test_coverage_matches_report_and_survives_turtle(tmp_path, use_jedi):
     graph = KnowledgeGraphBuilder().build([n for r in results for n in r.nodes], [e for r in results for e in r.edges], resolution)
     coverage = SPARQLEngine(graph=graph).coverage()
     assert coverage == {k: report[k] for k in ("edge", "no_resolver", "rate", "reason", "status", "tier", "total")}
-    graph.serialize(tmp_path / "g.ttl", format="turtle")
+    save(graph, tmp_path / "g.ttl")
     assert SPARQLEngine.open(tmp_path / "g.ttl").coverage() == coverage
 
 
@@ -416,8 +428,8 @@ def test_blast_radius_counts_an_unknown_base_creator_once(tmp_path):
 def _uncached_definitions(engine: SPARQLEngine, name: str) -> list[tuple[str, str]]:
     """_definitions before the index: a scan of every definition per call."""
     g = engine.graph
-    defs = sorted((engine._id(d), str(n)) for kind in (CODE.Function, CODE.Class)
-                  for d in g.subjects(RDF.type, kind) for n in g.objects(d, CODE.name))
+    defs = sorted((engine._id(d), text(n)) for kind in (CODE.Function, CODE.Class)
+                  for d in subjects(g, RDF.type, kind) for n in objects(g, d, CODE.name))
     exact = [d for d in defs if d[0] == name]
     if exact or "." not in name:
         return exact or [d for d in defs if d[1] == name]
@@ -438,8 +450,8 @@ def test_definitions_index_matches_a_full_scan():
         assert engine._definitions(name) == _uncached_definitions(engine, name), name
         assert _case_insensitive(name, engine.symbols()) == _case_insensitive(name, symbols), name
     # a changed graph is indexed again
-    f = next(iter(engine.graph.subjects(RDF.type, CODE.Function)))
-    engine.graph.remove((f, None, None))
+    f = next(iter(subjects(engine.graph, RDF.type, CODE.Function)))
+    remove(engine.graph, f)
     assert engine._definitions(engine._id(f)) == _uncached_definitions(engine, engine._id(f)) == []
     assert engine.symbols() == engine._symbols() != symbols
 
@@ -460,19 +472,19 @@ def _coverage_by_sparql(engine: SPARQLEngine) -> dict:
     """coverage() as it was before its triples() rewrite: the old SPARQL query, kept as an oracle."""
     edges = {str(CODE.Function): "calls", str(CODE.Class): "instantiates"}
     everything = list(engine.graph.query(f"PREFIX code: <{CODE}>\n" + _COVERAGE_ORACLE))
-    rows = [r for r in everything if str(r.path).endswith(".py")]
+    rows = [r for r in everything if r["path"] is not None and text(r["path"]).endswith(".py")]
 
     def count(values):
-        return dict(sorted(Counter(str(v) for v in values if v is not None).items()))
-    status = count(r.status for r in rows)
+        return dict(sorted(Counter(text(v) for v in values if v is not None).items()))
+    status = count(r["status"] for r in rows)
     measured = len(rows) - status.get("external", 0)
     return {
-        "edge": count(edges.get(str(r.kind)) for r in rows),
+        "edge": count(edges.get(text(r["kind"])) for r in rows if r["kind"] is not None),
         "no_resolver": len(everything) - len(rows),
         "rate": status.get("resolved", 0) / measured if measured else None,
-        "reason": count(r.reason for r in rows),
+        "reason": count(r["reason"] for r in rows),
         "status": status,
-        "tier": count(r.tier for r in rows),
+        "tier": count(r["tier"] for r in rows),
         "total": len(everything),
     }
 
