@@ -10,7 +10,7 @@ sequenceDiagram
     participant U as User
     participant L as LLM client
     participant S as acte serve
-    participant G as acte-graph.ttl
+    participant G as acte-map
     participant B as acte build
 
     B->>G: 1. Parse files, resolve calls, save the graph
@@ -30,7 +30,7 @@ sequenceDiagram
 |---|---|
 | 1. Parse | tree-sitter reads each file and finds its classes, functions, imports and calls |
 | 2. Resolve | for each Python call, works out which function it runs; calls it cannot decide are kept and marked |
-| 3. Build | the results are stored as RDF triples and can be saved as Turtle (`.ttl`) |
+| 3. Build | the results are stored as RDF triples in a pyoxigraph store and saved in a map folder |
 | 4. Query | a fixed set of SPARQL queries answers callers, callees, dependencies and dead code |
 | 5. Serve | an MCP server lets an LLM run those queries as tools |
 
@@ -45,7 +45,7 @@ is still young.
 | Part | State |
 |---|---|
 | Parsing | Python. Java, JavaScript, TypeScript, TSX and Go give structure only |
-| RDF graph and Turtle output | Working |
+| RDF graph, saved as a map folder | Working |
 | Call resolution | Python only (see Limitations) |
 | Command line (`acte build`, `acte stats`, `acte impact`, `acte analyze`, `acte serve`) | Working |
 | Checks on real projects | Working (rich, httpx, click, flask, requests) |
@@ -56,7 +56,7 @@ is still young.
 ```bash
 pip install "acte[jedi] @ git+https://github.com/dhruv970331/Autonomous-Codebase-Topography-Engine.git"
 cd your-project
-acte build .            # writes acte-graph.ttl
+acte build .            # writes the map folder acte-map
 ```
 
 To connect a client, copy [`examples/opencode.json`](examples/opencode.json) or
@@ -82,8 +82,8 @@ It needs git and network access the first time, and takes about 5 minutes.
 ### Command line
 
 ```bash
-poetry run acte build src -o graph.ttl   # build one graph for a project folder
-poetry run acte stats graph.ttl          # show what a saved graph contains and if it is healthy
+poetry run acte build src -o acte-map   # build one map for a project folder
+poetry run acte stats acte-map          # show what a saved map contains and if it is healthy
 ```
 
 `acte build PATH` reads every source file under `PATH`. In a git repository it uses the files
@@ -91,14 +91,22 @@ git tracks, so anything in `.gitignore` is left out. Outside git it skips folder
 `.venv`, `node_modules` and hidden folders. Names in the graph are relative to `PATH`, for
 example `shop/db.py::Database.connect`, so moving the project does not change the graph.
 Use `--no-jedi` to skip the jedi step. `--jobs N` parses files in N processes (default: the
-number of CPUs, at most 8; `--jobs 1` parses in one process). The graph is the same byte for
-byte whatever N is. The graph is written to a temporary file first and then renamed, so a
-build that fails part way leaves the old graph in place. When it finishes, it prints the number of files,
+number of CPUs, at most 8; `--jobs 1` parses in one process).
+
+`-o` names the map folder (default `acte-map`). Each build fills a new subfolder in it with
+`map.nt.gz`, the graph as sorted N-Triples, and `db/`, a pyoxigraph database the other
+commands read. Only then does it rewrite the small file `current`, which names the subfolder
+in use, so a build that fails part way leaves the old map in place. The build keeps the
+subfolder it replaced, which a running server may still read, and deletes older ones.
+`map.nt.gz` is the same byte for byte whatever N is. `acte build` refuses to write into a
+folder that holds other files but no `current`. When it finishes, it prints the number of files,
 functions, classes and calls, how many calls it resolved, and the health check results.
 Calls in languages without call resolution, such as Go, are counted on a line of their
 own and left out of the coverage.
 
-`acte stats GRAPH` prints the same summary for a saved graph. It also shows how the graph was
+`acte stats MAP` prints the same summary for a saved map. MAP is the map folder, or one map
+file: a `map.nt.gz`, or a `.ttl` map from an ACTE that saved Turtle. `analyze`, `serve` and
+`impact --graph` take the same. It also shows how the graph was
 built (folder name, git commit, versions), and the first problem rows for any failed health
 check. With `--format json` it prints the same data as one JSON object, with all problem rows.
 
@@ -147,7 +155,7 @@ How changed lines are matched:
 The first line says how many definitions changed, how many others are affected, and whether
 that count is `exact` or a `lower-bound`. `--limit` caps each list (default 50) and says how
 many were left out. `--format json` prints the same data as one JSON object, for scripts and
-CI. `--no-jedi` skips the jedi step, which is faster in CI. `--graph FILE` uses a saved graph
+CI. `--no-jedi` skips the jedi step, which is faster in CI. `--graph MAP` uses a saved map
 instead of building one, and warns if it was built at another commit. The exit code is 2 when
 `PATH` is not in a git repository or git fails.
 
@@ -158,10 +166,10 @@ callers, run `callers_of` on a graph built before the change.
 ### Graph analysis
 
 ```bash
-poetry run acte analyze graph.ttl [--top N] [--format text|json]
+poetry run acte analyze acte-map [--top N] [--format text|json]
 ```
 
-`acte analyze GRAPH` reads a saved graph and prints three things.
+`acte analyze MAP` reads a saved map and prints three things.
 
 First, the functions and classes that the most code depends on. They are ranked with
 PageRank over the resolved calls. Each one comes with `file:line`, its score, and how many
@@ -184,7 +192,7 @@ mostly reached through unresolved calls ranks lower than it should.
 ### MCP server
 
 ```bash
-acte serve acte-graph.ttl [--project PATH] [--profile small|full]
+acte serve acte-map [--project PATH] [--profile small|full]
 ```
 
 The server talks MCP over stdio. Each answer is plain text. It starts with a one-line
@@ -194,6 +202,13 @@ a name has more than one definition, it lists them all and lets the caller choos
 `--project`, it warns when the project's current git commit differs from the one the graph
 was built from. It asks git at most once every 5 seconds, so the warning can appear up to
 5 seconds after a new commit.
+
+When it starts, the server opens the map's database folder read-only and counts its facts
+once. If the folder is missing, empty, will not open (for example after a pyoxigraph
+upgrade) or holds a different number of facts than the build stored, the server rebuilds it
+from `map.nt.gz`. If `map.nt.gz` does not hold that number either, the map was changed after
+its build, and the server refuses to start: run `acte build` again. A single map file is
+read into memory and checked the same way.
 
 | Tool | Profile | What it answers |
 |---|---|---|
@@ -209,8 +224,7 @@ was built from. It asks git at most once every 5 seconds, so the warning can app
 `small` is the default and offers the first four tools. `full` offers all eight.
 
 `graph_info` uses the numbers `acte build` stored in the graph. It works them out again if they
-are missing or unreadable, if the graph's triple count has changed since the build, or if a
-different ACTE version built it. The server builds its name index when it opens the graph.
+are missing or unreadable, or if a different ACTE version built it. The server builds its name index when it opens the graph.
 
 ### Python
 
@@ -218,12 +232,12 @@ The same steps from Python:
 
 ```python
 from pathlib import Path
-from acte.rdf_builder import build_graph
+from acte.rdf_builder import build_graph, save
 from acte.sparql_engine import SPARQLEngine
 
 root  = Path("src")
-graph = build_graph(sorted(root.rglob("*.py")), root)   # parse, resolve calls, build
-graph.serialize("graph.ttl", format="turtle")
+graph = build_graph(sorted(root.rglob("*.py")), root)   # parse, resolve calls, build a pyoxigraph Store
+save(graph, "map.nt.gz")                                # sorted N-Triples; load("map.nt.gz") reads it back
 
 engine = SPARQLEngine(graph=graph)
 engine.callers_of("db_connect")
