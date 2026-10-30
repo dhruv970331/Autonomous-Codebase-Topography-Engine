@@ -212,7 +212,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "serve":
         try:
             server = create_server(args.graph, args.project, args.profile)
-        except (OSError, SyntaxError, ValueError) as exc:  # a parse error is a SyntaxError; load_map refuses with a ValueError
+        except (OSError, SyntaxError, ValueError, RuntimeError) as exc:  # a parse error is a SyntaxError; load_map refuses with a ValueError; a broken db/ raises RuntimeError
             parser.error(f"cannot read {args.graph}: {exc}")
         server.run("stdio")
         return 0
@@ -222,7 +222,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--top must be at least 1")
         try:
             graph = load_map(args.graph)
-        except (OSError, SyntaxError, ValueError) as exc:  # a parse error is a SyntaxError; load_map refuses with a ValueError
+        except (OSError, SyntaxError, ValueError, RuntimeError) as exc:  # a parse error is a SyntaxError; load_map refuses with a ValueError; a broken db/ raises RuntimeError
             parser.error(f"cannot read {args.graph}: {exc}")
         if args.command == "stats":
             return _stats(graph, args.format)
