@@ -164,6 +164,7 @@ def test_a_new_build_keeps_the_map_it_replaces_and_deletes_older_ones(tmp_path, 
         names.append((out / "current").read_text().strip())
     assert len(set(names)) == 3
     assert sorted(os.listdir(out)) == sorted(["current", *names[1:]])  # a server may still read the one before
+    assert sorted(os.listdir(out / names[2])) == ["db", "map.nt.gz"]
     assert _kept(out).read_bytes() == (out / names[1] / "map.nt.gz").read_bytes()  # the same code gives the same map
 
 
@@ -220,7 +221,8 @@ def test_stats_on_a_built_graph(tmp_path, capsys):
 
 def test_stats_on_a_broken_graph(tmp_path, capsys):
     _write(tmp_path / "proj", PROJECT)
-    graph, _ = _build(capsys, tmp_path / "proj", tmp_path / "g", "--no-jedi")
+    _build(capsys, tmp_path / "proj", tmp_path / "g", "--no-jedi")
+    graph = load(_kept(tmp_path / "g"))  # the database folder opens read-only
     remove(graph, CODE["shop/models.py::A"], RDF.type, CODE.Class)  # make() now instantiates a node that is no Class
     save(graph, tmp_path / "broken.nt.gz")
 
@@ -247,6 +249,7 @@ def test_stats_as_json(tmp_path, capsys):
         "health": "ok", "failing": {},
     }
 
+    graph = load(_kept(tmp_path / "g"))
     remove(graph, CODE["shop/models.py::A"], RDF.type, CODE.Class)
     save(graph, tmp_path / "broken.nt.gz")
     assert main(["stats", str(tmp_path / "broken.nt.gz"), "--format", "json"]) == 1

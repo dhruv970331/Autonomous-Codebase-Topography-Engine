@@ -100,10 +100,11 @@ def remove(graph: Graph, s=None, p=None, o=None) -> None:
 
 
 def load(path: str | Path) -> Graph:
-    """The map at *path*, in memory: a map folder written by ``acte build``, a kept ``.nt.gz`` file, or a Turtle file."""
+    """The map at *path*: the database folder of a map folder written by ``acte build``, opened read-only, or a kept
+    ``.nt.gz`` file or a Turtle file, read into memory."""
     path = Path(path)
     if path.is_dir():
-        path = path / (path / "current").read_text().strip() / "map.nt.gz"
+        return ox.Store.read_only(str(path / (path / "current").read_text().strip() / "db"))
     graph = ox.Store()
     if path.name.endswith(".gz"):
         with gzip.open(path) as f:
@@ -153,9 +154,17 @@ def check_map_folder(folder: str | Path) -> None:
         raise ValueError("it exists and is not a map folder")
 
 
+def fill_db(graph: Graph, folder: Path) -> None:
+    """Make the database folder *folder* holding the facts of *graph*."""
+    db = ox.Store(str(folder))
+    db.bulk_extend(graph)
+    db.flush()
+    del db  # closes it
+
+
 def save_map(graph: Graph, folder: str | Path) -> None:
-    """Write *graph* as the map folder *folder*: a new subfolder with the kept file ``map.nt.gz``, then the file
-    ``current`` naming it. Old subfolders are deleted, but the one ``current`` named before stays: a running
+    """Write *graph* as the map folder *folder*: a new subfolder with the kept file ``map.nt.gz`` and the database
+    folder ``db``, then the file ``current`` naming it. Old subfolders are deleted, but the one ``current`` named before stays: a running
     server may still read it. A ValueError if *folder* is not a map folder (check_map_folder)."""
     folder = Path(folder)
     check_map_folder(folder)
@@ -167,6 +176,7 @@ def save_map(graph: Graph, folder: str | Path) -> None:
     new.mkdir()
     try:
         _write_new(new / "map.nt.gz", lambda tmp: save(graph, tmp))
+        fill_db(graph, new / "db")
         _write_new(current, lambda tmp: tmp.write_text(name + "\n"))
     except BaseException:
         shutil.rmtree(new, ignore_errors=True)

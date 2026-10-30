@@ -355,7 +355,7 @@ def test_unknown_format(repo, capsys):
 def test_a_map_from_before_the_definition_records_is_refused(repo, tmp_path, capsys):
     old = tmp_path / "old.nt.gz"
     assert main(["build", str(repo), "-o", str(tmp_path / "map"), "--no-jedi"]) == 0
-    graph = load(tmp_path / "map")
+    graph = load(next((tmp_path / "map").glob("*/map.nt.gz")))  # the kept file: the database folder opens read-only
     remove(graph, CODE["build"], CODE.mapFormat, None)
     save(graph, old)
     capsys.readouterr()

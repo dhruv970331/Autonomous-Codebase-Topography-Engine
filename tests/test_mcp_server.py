@@ -337,7 +337,7 @@ def test_graph_info_uses_the_stored_summary_only_while_it_fits_the_map(tmp_path,
     assert json.loads(text(summary))["triples"] == len(fresh)
 
     def edit(name, drop=(), extra=()):
-        g = load(tmp_path / "fresh")
+        g = load(next((tmp_path / "fresh").glob("*/map.nt.gz")))  # the kept file: the database folder opens read-only
         for t in drop:
             remove(g, *t)
         for t in extra:
