@@ -145,11 +145,11 @@ class BlastAnswer:
 class SPARQLEngine:
     """Executes deterministic multi-hop queries against the ACTE knowledge graph.
 
-    Typical usage — load from a serialised Turtle file:
-        engine = SPARQLEngine.open("graph.ttl")
+    Typical usage — open a map written by ``acte build``:
+        engine = SPARQLEngine.open("acte-map")
         hits = engine.blast_radius("db_connect")
 
-    Or inject a live rdflib Graph directly (useful in tests / Colab):
+    Or inject a pyoxigraph Store directly (useful in tests / Colab):
         engine = SPARQLEngine(graph=builder.graph)
     """
 
@@ -563,11 +563,6 @@ ORDER BY ?file ?line ?caller
         return f"<{_CODE_NS}{safe}>"
 
     def _literal(self, value: str) -> str:
-        """Return an xsd:string typed SPARQL literal.
-
-        The ``^^xsd:string`` annotation is required because rdflib stores
-        Literal(..., datatype=XSD.string) as typed literals. A plain ``"foo"``
-        in SPARQL does not match ``"foo"^^xsd:string`` in rdflib's query engine.
-        """
+        """Return an xsd:string typed SPARQL literal, as the map writes every string."""
         escaped = value.replace("\\", "\\\\").replace('"', '\\"')
         return f'"{escaped}"^^xsd:string'

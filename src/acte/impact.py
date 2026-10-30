@@ -217,7 +217,7 @@ def run(root: Path, base: str, graph_path: str | None, depth: int, limit: int, f
     if graph_path:
         try:
             graph = load_map(graph_path)
-        except (OSError, SyntaxError, ValueError) as exc:  # rdflib's turtle BadSyntax is a SyntaxError; load_map refuses with a ValueError
+        except (OSError, SyntaxError, ValueError) as exc:  # a parse error is a SyntaxError; load_map refuses with a ValueError
             print(f"acte impact: cannot read {graph_path}: {exc}", file=sys.stderr)
             return 2
         print(stale_warning(value(graph, CODE["build"], CODE.commit), _head(root)), end="", file=sys.stderr)

@@ -1,6 +1,6 @@
 """
 MCP server.
-`acte serve GRAPH.ttl` answers questions about one built graph over stdio. Each tool takes
+`acte serve MAP` answers questions about one built map over stdio. Each tool takes
 plain arguments and returns plain text; the LLM never writes SPARQL.
 """
 

@@ -1,10 +1,11 @@
 """
 Command line.
-`acte build PATH` parses a project into one Turtle graph, with ids relative to PATH.
-`acte stats GRAPH.ttl` summarises a graph written by build, as text or JSON.
+`acte build PATH` parses a project into one map folder, with ids relative to PATH.
+`acte stats MAP` summarises a map written by build, as text or JSON.
 `acte impact PATH` lists what the uncommitted changes (or those since --base) may break.
-`acte serve GRAPH.ttl` answers questions about a graph as an MCP server over stdio.
-`acte analyze GRAPH.ttl` ranks definitions and finds import cycles and subsystems.
+`acte serve MAP` answers questions about a map as an MCP server over stdio.
+`acte analyze MAP` ranks definitions and finds import cycles and subsystems.
+MAP is a map folder, or one map file: its map.nt.gz, or a .ttl map from an older ACTE.
 """
 
 import argparse
@@ -178,14 +179,14 @@ def _analyze(graph: Graph, top: int, fmt: str) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="acte")
     sub = parser.add_subparsers(dest="command", required=True)
-    b = sub.add_parser("build", help="parse a project into a Turtle graph")
+    b = sub.add_parser("build", help="parse a project into a map folder")
     b.add_argument("path", help="the project root")
     b.add_argument("-o", "--output", default="acte-map", help="map folder to write (default: acte-map)")
     b.add_argument("--no-jedi", action="store_true", help="skip the jedi resolution tier")
     b.add_argument("--jobs", type=int, default=min(os.cpu_count() or 1, 8),
                    help="processes that parse files; 1 parses in this process (default: CPU count, at most 8)")
-    st = sub.add_parser("stats", help="summarise a Turtle graph written by build")
-    st.add_argument("graph", help="the Turtle file")
+    st = sub.add_parser("stats", help="summarise a map written by build")
+    st.add_argument("graph", help="the map folder, or a .nt.gz or .ttl map file")
     st.add_argument("--format", choices=["text", "json"], default="text", help="output format (default: text)")
     im = sub.add_parser(
         "impact", help="list what a git diff may break",
@@ -193,17 +194,17 @@ def main(argv: list[str] | None = None) -> int:
                     "and list what calls those. Definitions the change deleted are not detected: they are not in the new graph.")
     im.add_argument("path", nargs="?", default=".", help="the project root, as for build (default: .)")
     im.add_argument("--base", default="HEAD", help="the git revision to diff against (default: HEAD, so uncommitted work)")
-    im.add_argument("--graph", help="a Turtle file written by build, used instead of building the work tree afresh")
+    im.add_argument("--graph", help="a map written by build, used instead of building the work tree afresh")
     im.add_argument("--depth", type=int, default=2, help="hops of callers to follow, 1 to 10 (default: 2)")
     im.add_argument("--limit", type=int, default=50, help="most affected entries listed per change (default: 50)")
     im.add_argument("--format", choices=["text", "json"], default="text", help="output format (default: text)")
     im.add_argument("--no-jedi", action="store_true", help="skip the jedi resolution tier when building")
-    sv = sub.add_parser("serve", help="serve a Turtle graph as an MCP server over stdio")
-    sv.add_argument("graph", help="the Turtle file")
+    sv = sub.add_parser("serve", help="serve a map as an MCP server over stdio")
+    sv.add_argument("graph", help="the map folder, or a .nt.gz or .ttl map file")
     sv.add_argument("--project", help="the project root the graph was built from")
     sv.add_argument("--profile", choices=["small", "full"], default="small", help="which tools to offer (default: small)")
     an = sub.add_parser("analyze", help="rank functions and classes, find import cycles and subsystems")
-    an.add_argument("graph", help="the Turtle file")
+    an.add_argument("graph", help="the map folder, or a .nt.gz or .ttl map file")
     an.add_argument("--top", type=int, default=10, help="how many ranked functions and classes to show (default: 10)")
     an.add_argument("--format", choices=["text", "json"], default="text", help="output format (default: text)")
     args = parser.parse_args(argv)
@@ -211,7 +212,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "serve":
         try:
             server = create_server(args.graph, args.project, args.profile)
-        except (OSError, SyntaxError, ValueError) as exc:  # rdflib's turtle BadSyntax is a SyntaxError; load_map refuses with a ValueError
+        except (OSError, SyntaxError, ValueError) as exc:  # a parse error is a SyntaxError; load_map refuses with a ValueError
             parser.error(f"cannot read {args.graph}: {exc}")
         server.run("stdio")
         return 0
@@ -221,7 +222,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--top must be at least 1")
         try:
             graph = load_map(args.graph)
-        except (OSError, SyntaxError, ValueError) as exc:  # rdflib's turtle BadSyntax is a SyntaxError; load_map refuses with a ValueError
+        except (OSError, SyntaxError, ValueError) as exc:  # a parse error is a SyntaxError; load_map refuses with a ValueError
             parser.error(f"cannot read {args.graph}: {exc}")
         if args.command == "stats":
             return _stats(graph, args.format)
