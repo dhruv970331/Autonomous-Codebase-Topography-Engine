@@ -5,11 +5,23 @@ import sys
 from importlib.metadata import version
 from pathlib import Path
 
+import pyoxigraph as ox
 import pytest
 
-from acte import cli
+from acte import rdf_builder
 from acte.cli import main
-from acte.rdf_builder import CODE, RDF, has, load, remove, save, subjects, text, value
+from acte.rdf_builder import (
+    CODE,
+    RDF,
+    has,
+    load,
+    remove,
+    save,
+    subjects,
+    text,
+    triples,
+    value,
+)
 
 # run() calls x.m() on the result of make(), which only jedi can follow (tier TJ)
 PROJECT = {
@@ -62,7 +74,7 @@ def test_git_repo(tmp_path, capsys):
     _git(repo, "add", "shop", ".gitignore")
     _git(repo, "commit", "-q", "-m", "init")  # app.py stays untracked and is still parsed
 
-    graph, out = _build(capsys, repo, tmp_path / "g.ttl")
+    graph, out = _build(capsys, repo, tmp_path / "g")
 
     assert _files(graph) == ["app.py", "shop/__init__.py", "shop/models.py"]  # ignored, non-code and checkpoint files absent
     assert _call(graph, "app.py::run", "make") == ("resolved", "shop/models.py::make", "T3")
@@ -73,7 +85,7 @@ def test_git_repo(tmp_path, capsys):
     assert text(value(graph, meta, CODE.commit)) == _git(repo, "rev-parse", "HEAD")
     assert value(graph, meta, CODE.acteVersion) is not None
     assert value(graph, meta, CODE.jediVersion) is not None
-    assert out == [f"wrote {tmp_path / 'g.ttl'}", *SUMMARY, "coverage: 100.0%", "health: ok"]
+    assert out == [f"wrote {tmp_path / 'g'}", *SUMMARY, "coverage: 100.0%", "health: ok"]
 
 
 def test_plain_dir_without_jedi(tmp_path, capsys):
@@ -81,7 +93,7 @@ def test_plain_dir_without_jedi(tmp_path, capsys):
     _write(root, PROJECT | {".venv/lib/dep.py": "def d():\n    pass\n", "node_modules/x/y.js": "function f() {}\n",
                             ".hidden/h.py": "def h():\n    pass\n", "build/b.py": "def b():\n    pass\n"})
 
-    graph, out = _build(capsys, root, tmp_path / "g.ttl", "--no-jedi")
+    graph, out = _build(capsys, root, tmp_path / "g", "--no-jedi")
 
     assert _files(graph) == ["app.py", "shop/__init__.py", "shop/models.py"]  # skipped and hidden dirs absent
     assert _call(graph, "app.py::run", "m") == ("unresolved", None, None)
@@ -97,63 +109,96 @@ def test_calls_in_other_languages_are_counted_apart(tmp_path, capsys):
     _write(root, PROJECT | {"svc/main.go": "package main\n\nfunc main() {\n\tfmt.Println(run())\n}\n",
                             "web/app.tsx": "export const App = () => <div>{load()}</div>;\n"})
 
-    _, out = _build(capsys, root, tmp_path / "g.ttl", "--no-jedi")
+    _, out = _build(capsys, root, tmp_path / "g", "--no-jedi")
 
     # the Python numbers are those of PROJECT alone; the Go and TSX calls are counted apart
     assert out[1:] == ["files parsed: 5", "functions: 5", "classes: 1", "call sites: 6",
                        "call sites in languages without call resolution: 3", "coverage: 66.7%", "health: ok"]
     # and `stats` gives the breakdown of the same Python project built alone
     _write(tmp_path / "py", PROJECT)
-    _build(capsys, tmp_path / "py", tmp_path / "py.ttl", "--no-jedi")
+    _build(capsys, tmp_path / "py", tmp_path / "py-map", "--no-jedi")
     stats = {}
-    for name in ("g", "py"):
-        assert main(["stats", str(tmp_path / f"{name}.ttl")]) == 0
+    for name in ("g", "py-map"):
+        assert main(["stats", str(tmp_path / name)]) == 0
         lines = capsys.readouterr().out.splitlines()
         stats[name] = lines[lines.index("coverage: 66.7%"):]
-    assert stats["g"] == stats["py"]
+    assert stats["g"] == stats["py-map"]
     assert stats["g"][1].startswith("status: resolved")
 
 
 def test_failing_health_check_exits_1(tmp_path, monkeypatch, capsys):
     _write(tmp_path / "proj", PROJECT)
     monkeypatch.setattr("acte.cli.run_checks", lambda graph: {"self-call-arrows": [{"s": "x"}], "callsite-status": []})
-    assert main(["build", str(tmp_path / "proj"), "-o", str(tmp_path / "g.ttl"), "--no-jedi"]) == 1
+    assert main(["build", str(tmp_path / "proj"), "-o", str(tmp_path / "g"), "--no-jedi"]) == 1
     assert capsys.readouterr().out.splitlines()[-1] == "health: self-call-arrows"
-    assert (tmp_path / "g.ttl").exists()  # the graph is still written
+    assert (tmp_path / "g").exists()  # the graph is still written
 
 
-def test_failed_write_keeps_the_old_output(tmp_path, monkeypatch):
+def _kept(folder):
+    """The kept file of the map folder *folder*."""
+    return folder / (folder / "current").read_text().strip() / "map.nt.gz"
+
+
+def test_failed_write_keeps_the_old_output(tmp_path, monkeypatch, capsys):
     _write(tmp_path / "proj", PROJECT)
-    out = tmp_path / "out" / "g.ttl"
-    out.parent.mkdir()
-    out.write_text("old map\n")
+    out = tmp_path / "out" / "g"
+    _build(capsys, tmp_path / "proj", out, "--no-jedi")
+    before = sorted(os.listdir(out)), _kept(out).read_bytes()
 
     def broken(graph, path):  # writes part of the map, then fails as a crash would
-        Path(path).write_text("@prefix half")
+        Path(path).write_text("half")
         raise RuntimeError("disk full")
 
-    monkeypatch.setattr(cli, "save", broken)
+    monkeypatch.setattr(rdf_builder, "save", broken)
     with pytest.raises(RuntimeError, match="disk full"):
         main(["build", str(tmp_path / "proj"), "-o", str(out), "--no-jedi"])
-    assert out.read_text() == "old map\n"
-    assert os.listdir(out.parent) == ["g.ttl"]  # no temporary file left behind
+    assert (sorted(os.listdir(out)), _kept(out).read_bytes()) == before  # no new subfolder or temporary file left behind
+
+
+def test_a_new_build_keeps_the_map_it_replaces_and_deletes_older_ones(tmp_path, capsys):
+    _write(tmp_path / "proj", PROJECT)
+    out = tmp_path / "g"
+    names = []
+    for _ in range(3):
+        _build(capsys, tmp_path / "proj", out, "--no-jedi")
+        names.append((out / "current").read_text().strip())
+    assert len(set(names)) == 3
+    assert sorted(os.listdir(out)) == sorted(["current", *names[1:]])  # a server may still read the one before
+    assert _kept(out).read_bytes() == (out / names[1] / "map.nt.gz").read_bytes()  # the same code gives the same map
+
+
+def test_build_refuses_to_write_into_a_folder_that_is_no_map(tmp_path, capsys):
+    _write(tmp_path / "proj", PROJECT)
+    for out in (tmp_path / "proj", tmp_path / "proj" / "app.py"):
+        with pytest.raises(SystemExit) as exit_:
+            main(["build", str(tmp_path / "proj"), "-o", str(out), "--no-jedi"])
+        assert exit_.value.code == 2
+        assert f"cannot write {out}: it exists and is not a map folder" in capsys.readouterr().err
+    assert sorted(os.listdir(tmp_path / "proj")) == ["app.py", "shop"]
+
+
+def test_old_turtle_maps_and_kept_files_open_like_the_folder(tmp_path, capsys):
+    _write(tmp_path / "proj", PROJECT)
+    graph, _ = _build(capsys, tmp_path / "proj", tmp_path / "g", "--no-jedi")
+    graph.dump(tmp_path / "old.ttl", format=ox.RdfFormat.TURTLE, from_graph=ox.DefaultGraph())  # a map from an older ACTE
+    for path in (tmp_path / "old.ttl", _kept(tmp_path / "g")):
+        assert set(triples(load(path))) == set(triples(graph))
 
 
 def test_parallel_parse_writes_the_same_map(tmp_path, monkeypatch, capsys):
-    from acte import rdf_builder
     monkeypatch.setattr(rdf_builder, "MIN_PARALLEL_FILES", 2)  # this repository's src/ has fewer than 50 files
     src = Path(__file__).resolve().parents[1] / "src"
-    main(["build", str(src), "-o", str(tmp_path / "one.ttl"), "--no-jedi", "--jobs", "1"])
-    main(["build", str(src), "-o", str(tmp_path / "four.ttl"), "--no-jedi", "--jobs", "4"])
-    assert (tmp_path / "one.ttl").read_bytes() == (tmp_path / "four.ttl").read_bytes()
+    main(["build", str(src), "-o", str(tmp_path / "one"), "--no-jedi", "--jobs", "1"])
+    main(["build", str(src), "-o", str(tmp_path / "four"), "--no-jedi", "--jobs", "4"])
+    assert _kept(tmp_path / "one").read_bytes() == _kept(tmp_path / "four").read_bytes()
 
 
 def test_default_output_is_in_the_working_directory(tmp_path, monkeypatch, capsys):
     _write(tmp_path / "proj", PROJECT)
     monkeypatch.chdir(tmp_path)
     assert main(["build", "proj", "--no-jedi"]) == 0
-    assert capsys.readouterr().out.splitlines()[0] == "wrote acte-graph.ttl"
-    assert text(value(load(tmp_path / "acte-graph.ttl"), CODE["build"], CODE.root)) == "proj"
+    assert capsys.readouterr().out.splitlines()[0] == "wrote acte-map"
+    assert text(value(load(tmp_path / "acte-map"), CODE["build"], CODE.root)) == "proj"
 
 
 def test_stats_on_a_built_graph(tmp_path, capsys):
@@ -163,9 +208,9 @@ def test_stats_on_a_built_graph(tmp_path, capsys):
     _git(repo, "init", "-q")
     _git(repo, "add", ".")
     _git(repo, "commit", "-q", "-m", "init")
-    _build(capsys, repo, tmp_path / "g.ttl")
+    _build(capsys, repo, tmp_path / "g")
 
-    assert main(["stats", str(tmp_path / "g.ttl")]) == 0
+    assert main(["stats", str(tmp_path / "g")]) == 0
     assert capsys.readouterr().out.splitlines() == [
         "root: repo", f"commit: {_git(repo, 'rev-parse', 'HEAD')}", f"acteVersion: {version('acte')}",
         f"jediVersion: {jedi.__version__}", *SUMMARY, "coverage: 100.0%",
@@ -175,11 +220,11 @@ def test_stats_on_a_built_graph(tmp_path, capsys):
 
 def test_stats_on_a_broken_graph(tmp_path, capsys):
     _write(tmp_path / "proj", PROJECT)
-    graph, _ = _build(capsys, tmp_path / "proj", tmp_path / "g.ttl", "--no-jedi")
+    graph, _ = _build(capsys, tmp_path / "proj", tmp_path / "g", "--no-jedi")
     remove(graph, CODE["shop/models.py::A"], RDF.type, CODE.Class)  # make() now instantiates a node that is no Class
-    save(graph, tmp_path / "broken.ttl")
+    save(graph, tmp_path / "broken.nt.gz")
 
-    assert main(["stats", str(tmp_path / "broken.ttl")]) == 1
+    assert main(["stats", str(tmp_path / "broken.nt.gz")]) == 1
     out = capsys.readouterr().out.splitlines()
     assert out[out.index("health: failing"):] == [
         "health: failing",
@@ -190,9 +235,9 @@ def test_stats_on_a_broken_graph(tmp_path, capsys):
 
 def test_stats_as_json(tmp_path, capsys):
     _write(tmp_path / "proj", PROJECT)
-    graph, _ = _build(capsys, tmp_path / "proj", tmp_path / "g.ttl", "--no-jedi")
+    graph, _ = _build(capsys, tmp_path / "proj", tmp_path / "g", "--no-jedi")
 
-    assert main(["stats", str(tmp_path / "g.ttl"), "--format", "json"]) == 0
+    assert main(["stats", str(tmp_path / "g"), "--format", "json"]) == 0
     stats = json.loads(capsys.readouterr().out)
     assert stats == {
         "build": {"root": "proj", "acteVersion": version("acte")},
@@ -203,8 +248,8 @@ def test_stats_as_json(tmp_path, capsys):
     }
 
     remove(graph, CODE["shop/models.py::A"], RDF.type, CODE.Class)
-    save(graph, tmp_path / "broken.ttl")
-    assert main(["stats", str(tmp_path / "broken.ttl"), "--format", "json"]) == 1
+    save(graph, tmp_path / "broken.nt.gz")
+    assert main(["stats", str(tmp_path / "broken.nt.gz"), "--format", "json"]) == 1
     stats = json.loads(capsys.readouterr().out)
     assert (stats["health"], stats["failing"]) == ("failing", {
         "dangling-call-arrows": [{"s": "shop/models.py::make", "p": "instantiates", "o": "shop/models.py::A"}]})
@@ -212,7 +257,7 @@ def test_stats_as_json(tmp_path, capsys):
 
 def test_stats_unknown_format(tmp_path, capsys):
     with pytest.raises(SystemExit) as exit_:
-        main(["stats", str(tmp_path / "g.ttl"), "--format", "xml"])
+        main(["stats", str(tmp_path / "g"), "--format", "xml"])
     assert exit_.value.code == 2
     assert "invalid choice: 'xml'" in capsys.readouterr().err
 
@@ -236,8 +281,8 @@ ANALYZE = {
 
 def _analyze(capsys, tmp_path, *flags):
     _write(tmp_path / "proj", ANALYZE)
-    _build(capsys, tmp_path / "proj", tmp_path / "g.ttl", "--no-jedi")
-    assert main(["analyze", str(tmp_path / "g.ttl"), *flags]) == 0
+    _build(capsys, tmp_path / "proj", tmp_path / "g", "--no-jedi")
+    assert main(["analyze", str(tmp_path / "g"), *flags]) == 0
     return capsys.readouterr().out
 
 
@@ -267,7 +312,7 @@ def test_analyze_is_the_same_on_every_run(tmp_path, capsys):
     run = "import sys; from acte.cli import main; sys.exit(main(sys.argv[1:]))"
     for fmt in ("text", "json"):
         # separate processes with different hash seeds, so set and dict order cannot leak into the output
-        outs = [subprocess.run([sys.executable, "-c", run, "analyze", str(tmp_path / "g.ttl"), "--format", fmt],
+        outs = [subprocess.run([sys.executable, "-c", run, "analyze", str(tmp_path / "g"), "--format", fmt],
                                check=True, capture_output=True, text=True, env=os.environ | {"PYTHONHASHSEED": seed}).stdout
                 for seed in ("1", "2")]
         assert outs[0] == outs[1] and outs[0]
@@ -276,6 +321,6 @@ def test_analyze_is_the_same_on_every_run(tmp_path, capsys):
 @pytest.mark.parametrize("flags, error", [(["--format", "dot"], "invalid choice: 'dot'"), (["--top", "0"], "--top must be at least 1")])
 def test_analyze_bad_arguments(tmp_path, capsys, flags, error):
     with pytest.raises(SystemExit) as exit_:
-        main(["analyze", str(tmp_path / "g.ttl"), *flags])
+        main(["analyze", str(tmp_path / "g"), *flags])
     assert exit_.value.code == 2
     assert error in capsys.readouterr().err

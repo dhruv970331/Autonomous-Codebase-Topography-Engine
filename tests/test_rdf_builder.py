@@ -10,7 +10,6 @@ from acte.rdf_builder import (
     KnowledgeGraphBuilder,
     build_graph,
     has,
-    iri,
     lit,
     nt,
     objects,
@@ -323,7 +322,7 @@ def test_import_kinds(tmp_path):
     assert imported(CODE.importsTypeOnlyExternal) == {"json", "collections", "decimal"}
     assert imported(CODE.importsInFunction) == {"lib.py"}  # lib.py in two kinds: once in each
     assert imported(CODE.importsInFunctionExternal) == {"os", "string", "fractions"}
-    assert {(app, CODE.importsFrom, lib), (app, CODE.importsInFunction, lib), (app, CODE.importsTypeOnly, other)} <= set(graph)
+    assert {(app, CODE.importsFrom, lib), (app, CODE.importsInFunction, lib), (app, CODE.importsTypeOnly, other)} <= set(triples(graph))
     assert not any(run_checks(graph).values())
     deps = SPARQLEngine(graph=graph).dependencies_of(f"{tmp_path}/app.py")
     assert deps.dependencies == sorted([
@@ -403,7 +402,7 @@ def test_inherits_points_at_project_classes_only(tmp_path):
 def test_decorator_line_only_when_decorated(tmp_path):
     (tmp_path / "a.py").write_text("@deco\ndef f():\n    pass\n\n\ndef g():\n    pass\n")
     g = build_graph([tmp_path / "a.py"], tmp_path, use_jedi=False)
-    f, plain = (iri(CODE[f"{tmp_path}/a.py::{n}"]) for n in ("f", "g"))
+    f, plain = (CODE[f"{tmp_path}/a.py::{n}"] for n in ("f", "g"))
     assert (value(g, f, CODE.lineStart), value(g, f, CODE.decoratorLine)) == (lit(2), lit(1))
     assert value(g, plain, CODE.decoratorLine) is None
 
@@ -444,7 +443,7 @@ def test_each_definition_gets_its_own_record():
     graph = build_graph([root / "app.py"], root, use_jedi=False)
 
     def records(name):
-        node = iri(CODE[f"{root}/app.py::{name}"])
+        node = CODE[f"{root}/app.py::{name}"]
         return sorted((text(r)[len(text(node)):], *(None if (v := value(graph, r, p)) is None else int(text(v))
                                                    for p in (CODE.lineStart, CODE.lineEnd, CODE.decoratorLine)))
                       for r in objects(graph, node, CODE.definedAt))

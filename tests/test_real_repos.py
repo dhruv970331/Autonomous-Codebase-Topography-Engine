@@ -186,6 +186,6 @@ def test_link_accuracy(name):
 
 def test_build_is_deterministic(tmp_path):
     root = _checkout("flask")
-    for name in ("a.ttl", "b.ttl"):
+    for name in ("a.nt.gz", "b.nt.gz"):
         save(build(root), tmp_path / name)
-    assert (tmp_path / "a.ttl").read_bytes() == (tmp_path / "b.ttl").read_bytes()
+    assert (tmp_path / "a.nt.gz").read_bytes() == (tmp_path / "b.nt.gz").read_bytes()

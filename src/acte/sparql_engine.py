@@ -345,7 +345,7 @@ ORDER BY ?path
         of its target, so a recursive call counts too, as in ``report()``. Only calls in
         languages with call resolution are measured; no_resolver counts the others, total all."""
         # triples() lookups give one row per combination of values, as the OPTIONALs of the old query
-        # (kept in the tests as an oracle) did: rdflib's SPARQL engine took 49 s for it on django
+        # (kept in the tests as an oracle) did: it took 49 s on django under rdflib, the earlier store
         g, edges = self.graph, {CODE.Function: "calls", CODE.Class: "instantiates"}
         everything = [(status, tier, reason, kind, path)
                       for site in subjects(g, RDF.type, CODE.CallSite) for status in objects(g, site, CODE.status)
@@ -428,8 +428,8 @@ ORDER BY ?path
         possible = self._callers(f"VALUES ?t {{ {values} }} ?site code:candidate ?t .", "ambiguous")
         # A8: a call resolved to a method target overrides, through self / cls, a variable typed as that class
         # or jedi, may run target when the object is of target's class
-        # The sites are picked with triples(), each as often as the SPARQL pattern it replaces matched it: rdflib
-        # evaluated the tier and receiver literals over every call site first (about 3 s per call on django).
+        # The sites are picked with triples(), each as often as the SPARQL pattern it replaces matched it: rdflib,
+        # the earlier store, evaluated the tier and receiver literals over every call site first (about 3 s per call on django).
         g = self.graph
         sites = [s for t in self._overridden(target) for s in subjects(g, CODE.resolvedTo, t) for tier in objects(g, s, CODE.tier)
                  for r in ([None] if tier in (lit("T4b"), lit("TJ")) else objects(g, s, CODE.receiver) if tier == lit("T1") else [])
@@ -452,7 +452,7 @@ ORDER BY ?path
     def _overridden(self, target: str) -> list:
         """Every Function of *target*'s name in a class its class reaches by ``code:inherits+``, other than *target*.
 
-        Walked with triples() lookups: as one SPARQL pattern, rdflib evaluated ``code:inherits+``
+        Walked with triples() lookups: as one SPARQL pattern, rdflib (the earlier store) evaluated ``code:inherits+``
         from every node in the graph (about 65 s on fastapi)."""
         g, uri = self.graph, iri(self._uri(target)[1:-1])
         found = []

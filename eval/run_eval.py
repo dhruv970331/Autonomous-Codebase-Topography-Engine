@@ -28,7 +28,7 @@ from pathlib import Path
 import anyio
 from mcp import Client, StdioServerParameters
 
-from acte.rdf_builder import CODE
+from acte.rdf_builder import CODE, text, value
 from acte.sparql_engine import SPARQLEngine
 
 MAX_TURNS = 8
@@ -176,8 +176,8 @@ async def run(args) -> list[dict]:
     key = json.loads(Path(args.questions).read_text())
     questions = key["questions"][: args.limit]
     engine = SPARQLEngine.open(args.graph)
-    built = engine.graph.value(CODE["build"], CODE.commit)
-    if src_changed(Path(__file__).parent, built and str(built), key["source_tree"]):
+    built = value(engine.graph, CODE["build"], CODE.commit)
+    if src_changed(Path(__file__).parent, built and text(built), key["source_tree"]):
         print(f"warning: src/ at the graph's commit {built} is not the src/ tree {key['source_tree']} the expected "
               "answers were checked against; they may not match", file=sys.stderr)
     ids = [s[0] for s in engine.symbols()]

@@ -28,9 +28,10 @@ from acte.rdf_builder import (
     Graph,
     add,
     build_graph,
+    check_map_folder,
     lit,
     load_map,
-    save,
+    save_map,
     subjects,
     text,
     value,
@@ -179,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     b = sub.add_parser("build", help="parse a project into a Turtle graph")
     b.add_argument("path", help="the project root")
-    b.add_argument("-o", "--output", default="acte-graph.ttl", help="Turtle file to write (default: acte-graph.ttl)")
+    b.add_argument("-o", "--output", default="acte-map", help="map folder to write (default: acte-map)")
     b.add_argument("--no-jedi", action="store_true", help="skip the jedi resolution tier")
     b.add_argument("--jobs", type=int, default=min(os.cpu_count() or 1, 8),
                    help="processes that parse files; 1 parses in this process (default: CPU count, at most 8)")
@@ -237,6 +238,10 @@ def main(argv: list[str] | None = None) -> int:
         return run(root, args.base, args.graph, args.depth, args.limit, args.format, not args.no_jedi)
     if args.jobs < 1:
         parser.error("--jobs must be at least 1")
+    try:
+        check_map_folder(args.output)
+    except ValueError as exc:
+        parser.error(f"cannot write {args.output}: {exc}")
     graph = build(root, not args.no_jedi, args.jobs)
     counts, cov = _counts(graph)
     checks = run_checks(graph)
@@ -244,15 +249,7 @@ def main(argv: list[str] | None = None) -> int:
     summary = {"counts": counts, "coverage": cov, "health": {name: len(rows) for name, rows in checks.items()},
                "triples": len(graph) + 1}
     add(graph, CODE["build"], CODE.summary, lit(json.dumps(summary, sort_keys=True)))
-    # Write beside the output then rename, so a failed write never leaves a half-written map.
-    # A plain name, not tempfile's: tempfile creates mode 0600, which the rename would keep.
-    tmp = Path(args.output).with_name(f".{Path(args.output).name}.{os.getpid()}.tmp")
-    try:
-        save(graph, tmp)
-        os.replace(tmp, args.output)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
+    save_map(graph, args.output)
     print(f"wrote {args.output}")
     _print_counts(counts, cov)
     failing = [name for name, rows in checks.items() if rows]
