@@ -41,11 +41,10 @@ from pathlib import Path
 
 import jedi
 import pytest
-from rdflib.namespace import RDF
 
 from acte.cli import build
 from acte.health import run_checks
-from acte.rdf_builder import CODE
+from acte.rdf_builder import CODE, RDF, objects, save, subjects, text, value
 from acte.sparql_engine import SPARQLEngine
 
 LEVEL = os.environ.get("ACTE_REAL_REPOS")
@@ -74,7 +73,7 @@ def _measure(root: Path, use_jedi: bool) -> tuple[dict, dict]:
     graph = build(root, use_jedi)
     seconds = time.perf_counter() - start
     cov = SPARQLEngine(graph=graph).coverage()
-    files, functions, classes = (len(set(graph.subjects(RDF.type, t))) for t in (CODE.File, CODE.Function, CODE.Class))
+    files, functions, classes = (len(set(subjects(graph, RDF.type, t))) for t in (CODE.File, CODE.Function, CODE.Class))
     return {
         "files": files, "functions": functions, "nodes": files + functions + classes,
         "call_sites": cov["total"], "resolved": cov["status"].get("resolved", 0),
@@ -103,16 +102,17 @@ SAMPLE = 40
 
 
 def _id(node) -> str:
-    return urllib.parse.unquote(str(node)[len(CODE):])  # as SPARQLEngine._id: ids, not percent-encoded URIs
+    return urllib.parse.unquote(text(node)[len(CODE):])  # as SPARQLEngine._id: ids, not percent-encoded URIs
 
 
 def _oracle(project: jedi.Project, root: Path, graph, ranges: dict, node) -> set[str] | None:
     """The callers of Function *node* according to jedi, as ACTE ids; None if jedi does not find the definition itself."""
-    path = str(graph.value(node, CODE.filePath))
-    line = max(int(x) for x in graph.objects(node, CODE.lineStart))  # the last definition, the one the resolver keeps
-    name = str(graph.value(node, CODE.name))
-    text = (root / path).read_text(encoding="utf-8").splitlines()
-    col = re.search(rf"\bdef\s+({re.escape(name)})\b", text[line - 1]).start(1)
+    path = text(value(graph, node, CODE.filePath))
+    # the last definition, the one the resolver keeps
+    line = max(int(text(value(graph, d, CODE.lineStart))) for d in objects(graph, node, CODE.definedAt))
+    name = text(value(graph, node, CODE.name))
+    lines = (root / path).read_text(encoding="utf-8").splitlines()
+    col = re.search(rf"\bdef\s+({re.escape(name)})\b", lines[line - 1]).start(1)
     refs = jedi.Script(path=root / path, project=project).get_references(line, col)
     # jedi gives a @classmethod's own name the path of builtins.pyi, so the position alone is checked
     if not any(r.is_definition() and (r.line, r.column) == (line, col) for r in refs):
@@ -133,12 +133,13 @@ def _oracle(project: jedi.Project, root: Path, graph, ranges: dict, node) -> set
 
 
 def _ranges(graph) -> dict[str, list[tuple[int, int, str]]]:
-    """Parsed file -> (lineStart, lineEnd, id) of every Function in it. An id defined several times (overloads,
-    if/else) has one lineStart and lineEnd per definition; those never overlap, so sorted they pair up."""
-    out = {str(graph.value(f, CODE.filePath)): [] for f in graph.subjects(RDF.type, CODE.File)}
-    for f in graph.subjects(RDF.type, CODE.Function):
-        starts, ends = (sorted(int(x) for x in graph.objects(f, p)) for p in (CODE.lineStart, CODE.lineEnd))
-        out[str(graph.value(f, CODE.filePath))].extend((s, e, _id(f)) for s, e in zip(starts, ends, strict=True))
+    """Parsed file -> (lineStart, lineEnd, id) of every definition of a Function in it. An id defined several times
+    (overloads, if/else) has one record per definition, holding its own lineStart and lineEnd."""
+    out = {text(value(graph, f, CODE.filePath)): [] for f in subjects(graph, RDF.type, CODE.File)}
+    for f in subjects(graph, RDF.type, CODE.Function):
+        out[text(value(graph, f, CODE.filePath))].extend(
+            (int(text(value(graph, d, CODE.lineStart))), int(text(value(graph, d, CODE.lineEnd))), _id(f))
+            for d in objects(graph, f, CODE.definedAt))
     return out
 
 
@@ -148,8 +149,8 @@ def _link_accuracy(root: Path) -> dict:
     engines = {k: SPARQLEngine(graph=g) for k, g in graphs.items()}
     graph, project = graphs[False], jedi.Project(root.resolve())
     ranges = _ranges(graph)
-    nodes = sorted((f for f in graph.subjects(RDF.type, CODE.Function)  # jedi reads Python only: no .js in fastapi's docs
-                    if str(graph.value(f, CODE.language)) == "python" and not re.fullmatch(r"__\w+__", str(graph.value(f, CODE.name)))),
+    nodes = sorted((f for f in subjects(graph, RDF.type, CODE.Function)  # jedi reads Python only: no .js in fastapi's docs
+                    if text(value(graph, f, CODE.language)) == "python" and not re.fullmatch(r"__\w+__", text(value(graph, f, CODE.name)))),
                    key=_id)
     k = max(1, len(nodes) // SAMPLE)
     rows = []
@@ -183,6 +184,8 @@ def test_link_accuracy(name):
     assert got["precision"] >= want["precision_floor"], got["disagreements"]["acte_only"]
 
 
-def test_build_is_deterministic():
+def test_build_is_deterministic(tmp_path):
     root = _checkout("flask")
-    assert build(root).serialize(format="turtle") == build(root).serialize(format="turtle")
+    for name in ("a.ttl", "b.ttl"):
+        save(build(root), tmp_path / name)
+    assert (tmp_path / "a.ttl").read_bytes() == (tmp_path / "b.ttl").read_bytes()

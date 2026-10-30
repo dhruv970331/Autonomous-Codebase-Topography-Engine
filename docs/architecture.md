@@ -192,6 +192,14 @@ Every node also carries `code:name`, `code:filePath`, `code:lineStart`, `code:li
 `code:language`. A decorated Python function or class also carries `code:decoratorLine`, the line of its
 first decorator. Its `code:lineStart` stays the line of `def` or `class`.
 
+Each Function and Class also has one `code:definedAt` record per definition: a `code:Definition`
+with that definition's own `code:lineStart`, `code:lineEnd` and `code:decoratorLine`. An id
+defined twice, as in both branches of an `if`, keeps one node with two records. The node itself
+then has two of each line fact with nothing to pair them, so `acte impact`, the file listings and
+the orphan list read the records. Where one line is shown for such an id, it is the first
+definition's. A record's IRI is the node's IRI followed by `!` and its start line, for example
+`<code:src/app.py::alpha!9>`. The IRI of an id never holds a bare `!`, because `_make_uri` encodes it.
+
 Every call becomes a `code:CallSite` record:
 
 ```turtle
@@ -288,7 +296,7 @@ Each tool takes a name or path and returns plain text built for a small model:
 `impact.py` answers "what may this change break?". It reads `git diff -U0` for the given base
 (default `HEAD`), builds a fresh graph of the work tree, and maps each changed line to the
 innermost Function or Class whose span holds it, starting the span at `code:decoratorLine`
-when there is one. Blank and comment-only lines are skipped. For a deletion in a Python file it reads the
+when there is one. Each definition record is its own span. Blank and comment-only lines are skipped. For a deletion in a Python file it reads the
 removed text: a removed `def`, `class` or decorator marks the definition around both
 neighbouring lines, and removed body code marks the definition just above. In other
 languages a deletion marks the definition around both neighbouring lines. A line in no

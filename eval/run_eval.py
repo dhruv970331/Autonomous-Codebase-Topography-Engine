@@ -175,7 +175,7 @@ def table(results: list[dict]) -> str:
 async def run(args) -> list[dict]:
     key = json.loads(Path(args.questions).read_text())
     questions = key["questions"][: args.limit]
-    engine = SPARQLEngine.from_turtle(args.graph)
+    engine = SPARQLEngine.open(args.graph)
     built = engine.graph.value(CODE["build"], CODE.commit)
     if src_changed(Path(__file__).parent, built and str(built), key["source_tree"]):
         print(f"warning: src/ at the graph's commit {built} is not the src/ tree {key['source_tree']} the expected "

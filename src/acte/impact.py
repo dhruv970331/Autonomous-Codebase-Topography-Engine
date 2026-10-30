@@ -12,16 +12,14 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from rdflib import Graph, URIRef
-from rdflib.namespace import RDF
-
 from acte.cli import _git, build
 from acte.mcp_server import _calls, _count, _head, _kinds, stale_warning
-from acte.rdf_builder import CODE
+from acte.rdf_builder import CODE, RDF, Graph, iri, load_map, objects, subjects, value
+from acte.rdf_builder import text as term_text  # this module has its own text()
 from acte.sparql_engine import IMPORT_KINDS, KIND_ORDER, BlastAnswer, SPARQLEngine
 
 _HUNK = re.compile(r"^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
-_IMPORTS = {URIRef(p): kind for p, kind in IMPORT_KINDS.items() if not p.endswith("External")}  # of a project file, by kind
+_IMPORTS = {iri(p): kind for p, kind in IMPORT_KINDS.items() if not p.endswith("External")}  # of a project file, by kind
 _HEADER = ("def ", "async def ", "class ", "@")  # a removed Python line starting so began a definition
 
 
@@ -114,12 +112,15 @@ def impact(root: Path, graph: Graph, new: dict[str, set[int]], deleted: dict[str
     spans: dict[str, list[tuple[int, int, str, str, int]]] = {}  # file -> (first line, end, id, kind, lineStart) of each definition
     ends = {}  # file -> its File node's lineEnd
     for kind in ("Function", "Class", "File"):
-        for node in graph.subjects(RDF.type, CODE[kind]):
-            file, start, end, decorated = (graph.value(node, CODE[p]) for p in ("filePath", "lineStart", "lineEnd", "decoratorLine"))
+        for node in subjects(graph, RDF.type, CODE[kind]):
+            file = term_text(value(graph, node, CODE.filePath))
             if kind == "File":
-                ends[str(file)] = int(end)
-            else:
-                spans.setdefault(str(file), []).append((int(decorated or start), int(end), engine._id(node), kind, int(start)))
+                ends[file] = int(term_text(value(graph, node, CODE.lineEnd)))
+                continue
+            for record in objects(graph, node, CODE.definedAt):  # one span per definition: an id defined twice has two
+                start, end, decorated = (value(graph, record, CODE[p]) for p in ("lineStart", "lineEnd", "decoratorLine"))
+                spans.setdefault(file, []).append((int(term_text(decorated or start)), int(term_text(end)), engine._id(node), kind,
+                                                   int(term_text(start))))
     new = {f: set(n) for f, n in new.items()}
     for f in untracked:  # all of an untracked file is new
         if f in ends:
@@ -133,7 +134,8 @@ def impact(root: Path, graph: Graph, new: dict[str, set[int]], deleted: dict[str
         holding = [s for s in spans.get(f, []) if all(s[0] <= n <= s[1] for n in lines)]
         if holding:
             s = min(holding, key=lambda s: s[1] - s[0])  # the innermost: spans nest, so the shortest
-            hit[s[2]] = (*s, f)
+            if s[2] not in hit or s[4] < hit[s[2]][4]:  # both definitions of one id changed: the first one, as blast radius ranks it
+                hit[s[2]] = (*s, f)
         else:
             module_files.add(f)
 
@@ -160,8 +162,8 @@ def impact(root: Path, graph: Graph, new: dict[str, set[int]], deleted: dict[str
     for f in sorted(module_files):
         kinds: dict[str, set[str]] = {}
         for p, kind in _IMPORTS.items():
-            for s in graph.subjects(p, _file(graph, f)):
-                kinds.setdefault(str(graph.value(s, CODE.filePath)), set()).add(kind)
+            for s in subjects(graph, p, _file(graph, f)):
+                kinds.setdefault(term_text(value(graph, s, CODE.filePath)), set()).add(kind)
         importers = sorted(kinds)
         seen |= set(importers)
         listed = importers[:limit]
@@ -172,7 +174,7 @@ def impact(root: Path, graph: Graph, new: dict[str, set[int]], deleted: dict[str
 
 def _file(graph: Graph, path: str):
     """The File node whose filePath is *path*."""
-    return next(f for f in graph.subjects(RDF.type, CODE.File) if str(graph.value(f, CODE.filePath)) == path)
+    return next(f for f in subjects(graph, RDF.type, CODE.File) if term_text(value(graph, f, CODE.filePath)) == path)
 
 
 def text(report: Report) -> str:
@@ -214,11 +216,11 @@ def run(root: Path, base: str, graph_path: str | None, depth: int, limit: int, f
         return 2
     if graph_path:
         try:
-            graph = Graph().parse(graph_path, format="turtle")
-        except (OSError, SyntaxError, UnicodeDecodeError) as exc:  # rdflib's turtle BadSyntax is a SyntaxError
+            graph = load_map(graph_path)
+        except (OSError, SyntaxError, ValueError) as exc:  # rdflib's turtle BadSyntax is a SyntaxError; load_map refuses with a ValueError
             print(f"acte impact: cannot read {graph_path}: {exc}", file=sys.stderr)
             return 2
-        print(stale_warning(graph.value(CODE["build"], CODE.commit), _head(root)), end="", file=sys.stderr)
+        print(stale_warning(value(graph, CODE["build"], CODE.commit), _head(root)), end="", file=sys.stderr)
     else:
         graph = build(root, use_jedi)
     report = impact(root, graph, *lines, base, depth, limit)

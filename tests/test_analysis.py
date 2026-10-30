@@ -13,7 +13,7 @@ from acte.analysis import (
     subsystems,
 )
 from acte.cli import build
-from acte.rdf_builder import CODE
+from acte.rdf_builder import CODE, subjects, triples
 from acte.sparql_engine import SPARQLEngine
 
 HUB = {
@@ -102,8 +102,8 @@ def test_pagerank_matches_networkx(tmp_path):
     # ACTE's own src is the larger graph; HUB has a File as a caller, which ACTE's src has not
     for graph, defs in ((build(Path(acte.__file__).parent.parent, use_jedi=False), 100), (_graph(tmp_path, HUB), 4)):
         arrows = nx.DiGraph()
-        arrows.add_nodes_from(ids(d) for kind in (CODE.Function, CODE.Class) for d in graph.subjects(None, kind))
-        arrows.add_edges_from((ids(s), ids(t)) for p in (CODE.calls, CODE.instantiates) for s, t in graph.subject_objects(p))
+        arrows.add_nodes_from(ids(d) for kind in (CODE.Function, CODE.Class) for d in subjects(graph, None, kind))
+        arrows.add_edges_from((ids(s), ids(t)) for p in (CODE.calls, CODE.instantiates) for s, _, t in triples(graph, None, p))
         expected = _pagerank_python(arrows)
         ranking = rank(graph, top=10**6)
         assert ranking.converged and len(ranking.top) == ranking.total > defs
@@ -126,3 +126,10 @@ def test_pagerank_not_converged_returns_last_iterate():
     scores, converged = _pagerank(["a", "b"], [("a", "b")], max_iter=1)
     assert not converged
     assert scores == pytest.approx({"a": 0.2875, "b": 0.7125})  # (0.85 * 0.5 + 0.15) / 2, plus 0.85 * 0.5 into b
+
+
+def test_rank_shows_the_first_line_of_a_twice_defined_function(twice_defined_graphs):
+    """alpha is defined at lines 9 and 15: the line shown is 9, as blast radius ranks it, whatever the store's order."""
+    for graph in twice_defined_graphs:
+        lines = {r.id.split("::")[1]: r.line for r in rank(graph, top=100).top}
+        assert (lines["alpha"], lines["Box.size"], lines["Shape"]) == (9, 21, 30)

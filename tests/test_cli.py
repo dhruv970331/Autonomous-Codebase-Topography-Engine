@@ -6,11 +6,10 @@ from importlib.metadata import version
 from pathlib import Path
 
 import pytest
-from rdflib import Graph
-from rdflib.namespace import RDF
 
+from acte import cli
 from acte.cli import main
-from acte.rdf_builder import CODE
+from acte.rdf_builder import CODE, RDF, has, load, remove, save, subjects, text, value
 
 # run() calls x.m() on the result of make(), which only jedi can follow (tier TJ)
 PROJECT = {
@@ -40,19 +39,19 @@ def _git(root, *args):
 
 def _build(capsys, root, out, *flags):
     assert main(["build", str(root), "-o", str(out), *flags]) == 0
-    return Graph().parse(out, format="turtle"), capsys.readouterr().out.splitlines()
+    return load(out), capsys.readouterr().out.splitlines()
 
 
 def _files(graph):
-    return sorted(str(graph.value(f, CODE.filePath)) for f in graph.subjects(None, CODE.File))
+    return sorted(text(value(graph, f, CODE.filePath)) for f in subjects(graph, None, CODE.File))
 
 
 def _call(graph, caller, name):
     """(status, resolvedTo id or None, tier or None) of the call to *name* in *caller*."""
-    site = next(s for s in graph.subjects(CODE.inFunction, CODE[caller]) if str(graph.value(s, CODE.targetName)) == name)
-    target = graph.value(site, CODE.resolvedTo)
-    return (str(graph.value(site, CODE.status)), target and str(target)[len(CODE):],
-            graph.value(site, CODE.tier) and str(graph.value(site, CODE.tier)))
+    site = next(s for s in subjects(graph, CODE.inFunction, CODE[caller]) if text(value(graph, s, CODE.targetName)) == name)
+    target = value(graph, site, CODE.resolvedTo)
+    return (text(value(graph, site, CODE.status)), target and text(target)[len(CODE):],
+            value(graph, site, CODE.tier) and text(value(graph, site, CODE.tier)))
 
 
 def test_git_repo(tmp_path, capsys):
@@ -69,11 +68,11 @@ def test_git_repo(tmp_path, capsys):
     assert _call(graph, "app.py::run", "make") == ("resolved", "shop/models.py::make", "T3")
     assert _call(graph, "app.py::run", "m") == ("resolved", "shop/models.py::A.m", "TJ")  # jedi reads the relative paths
     meta = CODE["build"]
-    assert (meta, None, CODE.Build) in graph
-    assert str(graph.value(meta, CODE.root)) == "repo"  # the name only: no machine path in the graph
-    assert str(graph.value(meta, CODE.commit)) == _git(repo, "rev-parse", "HEAD")
-    assert graph.value(meta, CODE.acteVersion) is not None
-    assert graph.value(meta, CODE.jediVersion) is not None
+    assert has(graph, meta, None, CODE.Build)
+    assert text(value(graph, meta, CODE.root)) == "repo"  # the name only: no machine path in the graph
+    assert text(value(graph, meta, CODE.commit)) == _git(repo, "rev-parse", "HEAD")
+    assert value(graph, meta, CODE.acteVersion) is not None
+    assert value(graph, meta, CODE.jediVersion) is not None
     assert out == [f"wrote {tmp_path / 'g.ttl'}", *SUMMARY, "coverage: 100.0%", "health: ok"]
 
 
@@ -87,9 +86,9 @@ def test_plain_dir_without_jedi(tmp_path, capsys):
     assert _files(graph) == ["app.py", "shop/__init__.py", "shop/models.py"]  # skipped and hidden dirs absent
     assert _call(graph, "app.py::run", "m") == ("unresolved", None, None)
     meta = CODE["build"]
-    assert str(graph.value(meta, CODE.root)) == "proj"
-    assert graph.value(meta, CODE.commit) is None  # not a git work tree
-    assert graph.value(meta, CODE.jediVersion) is None  # jedi did not run
+    assert text(value(graph, meta, CODE.root)) == "proj"
+    assert value(graph, meta, CODE.commit) is None  # not a git work tree
+    assert value(graph, meta, CODE.jediVersion) is None  # jedi did not run
     assert out[1:] == [*SUMMARY, "coverage: 66.7%", "health: ok"]
 
 
@@ -129,11 +128,11 @@ def test_failed_write_keeps_the_old_output(tmp_path, monkeypatch):
     out.parent.mkdir()
     out.write_text("old map\n")
 
-    def broken(self, destination=None, **kw):  # writes part of the map, then fails as a crash would
-        Path(destination).write_text("@prefix half")
+    def broken(graph, path):  # writes part of the map, then fails as a crash would
+        Path(path).write_text("@prefix half")
         raise RuntimeError("disk full")
 
-    monkeypatch.setattr(Graph, "serialize", broken)
+    monkeypatch.setattr(cli, "save", broken)
     with pytest.raises(RuntimeError, match="disk full"):
         main(["build", str(tmp_path / "proj"), "-o", str(out), "--no-jedi"])
     assert out.read_text() == "old map\n"
@@ -154,7 +153,7 @@ def test_default_output_is_in_the_working_directory(tmp_path, monkeypatch, capsy
     monkeypatch.chdir(tmp_path)
     assert main(["build", "proj", "--no-jedi"]) == 0
     assert capsys.readouterr().out.splitlines()[0] == "wrote acte-graph.ttl"
-    assert str(Graph().parse(tmp_path / "acte-graph.ttl", format="turtle").value(CODE["build"], CODE.root)) == "proj"
+    assert text(value(load(tmp_path / "acte-graph.ttl"), CODE["build"], CODE.root)) == "proj"
 
 
 def test_stats_on_a_built_graph(tmp_path, capsys):
@@ -177,8 +176,8 @@ def test_stats_on_a_built_graph(tmp_path, capsys):
 def test_stats_on_a_broken_graph(tmp_path, capsys):
     _write(tmp_path / "proj", PROJECT)
     graph, _ = _build(capsys, tmp_path / "proj", tmp_path / "g.ttl", "--no-jedi")
-    graph.remove((CODE["shop/models.py::A"], RDF.type, CODE.Class))  # make() now instantiates a node that is no Class
-    graph.serialize(tmp_path / "broken.ttl", format="turtle")
+    remove(graph, CODE["shop/models.py::A"], RDF.type, CODE.Class)  # make() now instantiates a node that is no Class
+    save(graph, tmp_path / "broken.ttl")
 
     assert main(["stats", str(tmp_path / "broken.ttl")]) == 1
     out = capsys.readouterr().out.splitlines()
@@ -203,8 +202,8 @@ def test_stats_as_json(tmp_path, capsys):
         "health": "ok", "failing": {},
     }
 
-    graph.remove((CODE["shop/models.py::A"], RDF.type, CODE.Class))
-    graph.serialize(tmp_path / "broken.ttl", format="turtle")
+    remove(graph, CODE["shop/models.py::A"], RDF.type, CODE.Class)
+    save(graph, tmp_path / "broken.ttl")
     assert main(["stats", str(tmp_path / "broken.ttl"), "--format", "json"]) == 1
     stats = json.loads(capsys.readouterr().out)
     assert (stats["health"], stats["failing"]) == ("failing", {

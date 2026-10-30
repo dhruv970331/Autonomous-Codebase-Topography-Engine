@@ -9,14 +9,101 @@ import urllib.parse
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
-from rdflib import Graph, Literal, Namespace, URIRef
-from rdflib.namespace import RDF, XSD
+from rdflib import BNode, Graph, Literal, Namespace, URIRef
+from rdflib.namespace import RDF, RDFS, XSD  # noqa: F401 - RDFS is for health.py
 
 from acte.parser import CodeParser, EdgeInfo, NodeInfo, ParseResult
 from acte.resolver import CallResolution, Resolution, SymbolIndex, resolve
 
 # Formal namespace for the codebase topography ontology
 CODE = Namespace("http://acte.local/code#")
+
+
+# Terms of a map. Every module makes and reads terms through these, so the store behind them can change in one place.
+def lit(value: str | int | bool) -> Literal:
+    """A literal typed by its Python type: xsd:boolean, xsd:integer or xsd:string."""
+    datatype = XSD.boolean if isinstance(value, bool) else XSD.integer if isinstance(value, int) else XSD.string
+    return Literal(value, datatype=datatype)
+
+
+def iri(text: str) -> URIRef:
+    """The node with the full IRI *text*."""
+    return URIRef(text)
+
+
+def text(term) -> str:
+    """An IRI's text, or a literal's value as written in the map."""
+    return str(term)
+
+
+def is_blank(term) -> bool:
+    return isinstance(term, BNode)
+
+
+def nt(term) -> str:
+    """*term* as N-Triples and SPARQL write it, e.g. ``<http://...>``."""
+    return term.n3()
+
+
+# Lookups and edits. None matches anything; remove() takes away every fact matching the pattern.
+def new_graph() -> Graph:
+    return Graph()
+
+
+def triples(graph: Graph, s=None, p=None, o=None):
+    return graph.triples((s, p, o))
+
+
+def subjects(graph: Graph, p=None, o=None):
+    return graph.subjects(p, o)
+
+
+def objects(graph: Graph, s=None, p=None):
+    return graph.objects(s, p)
+
+
+def value(graph: Graph, s, p):
+    """One object of (s, p), or None."""
+    return graph.value(s, p)
+
+
+def has(graph: Graph, s=None, p=None, o=None) -> bool:
+    return (s, p, o) in graph
+
+
+def add(graph: Graph, s, p, o) -> None:
+    graph.add((s, p, o))
+
+
+def remove(graph: Graph, s=None, p=None, o=None) -> None:
+    graph.remove((s, p, o))
+
+
+def load(path: str | Path) -> Graph:
+    """The map in the Turtle file at *path*."""
+    return Graph().parse(str(path), format="turtle")
+
+
+MAP_FORMAT = 2  # code:mapFormat of the maps this ACTE builds; 2 = with Definition records
+
+
+def load_map(path: str | Path) -> Graph:
+    """The map *path* written by ``acte build``; a ValueError when an older ACTE built it."""
+    graph = load(path)
+    if value(graph, CODE["build"], CODE.mapFormat) != lit(MAP_FORMAT):
+        raise ValueError("built by an older ACTE. Run acte build again.")
+    return graph
+
+
+def save(graph: Graph, path: str | Path) -> None:
+    """Write *graph* to *path* as Turtle."""
+    graph.serialize(destination=str(path), format="turtle")
+
+
+def query_rows(graph: Graph, query) -> list[dict[str, str]]:
+    """The rows of a SELECT as {variable: text}, without the variables a row leaves unbound."""
+    result = graph.query(query)
+    return [{str(v): text(row[v]) for v in result.vars if row[v] is not None} for row in result]
 
 # An import's kind (parser EdgeInfo.extra["import_kind"]) -> its (project file, outside module) predicates
 _IMPORT_PREDICATES = {
@@ -40,7 +127,7 @@ class KnowledgeGraphBuilder:
         for path in repo_files:
             result = parser.parse_file(path)
             builder.build(result.nodes, result.edges)   # accumulates across calls
-        builder.serialize("graph.ttl")
+        save(builder.graph, "graph.ttl")
 
     Call reset() between runs if you need a clean graph without creating a new
     instance (e.g. in tests or repeated ingestion jobs).
@@ -80,10 +167,6 @@ class KnowledgeGraphBuilder:
         self.graph = Graph()
         self.graph.bind("code", CODE)
 
-    def serialize(self, filepath: str | Path, format: str = "turtle") -> None:
-        """Export the graph to disk (default: Turtle)."""
-        self.graph.serialize(destination=str(filepath), format=format)
-
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -96,7 +179,7 @@ class KnowledgeGraphBuilder:
         """Encode an arbitrary code identifier into a valid RDF URI."""
         # "#" is encoded: the namespace's "#" must stay the only one in the IRI.
         safe = urllib.parse.quote(identifier, safe="/:.@")
-        return URIRef(CODE[safe])
+        return iri(CODE[safe])
 
     def _add_node(self, node: NodeInfo) -> None:
         uri = self._make_uri(self._node_id(node))
@@ -112,15 +195,25 @@ class KnowledgeGraphBuilder:
             self.graph.add((uri, RDF.type, rdf_type))
 
         # Literal properties
-        self.graph.add((uri, CODE.name,      Literal(node.name,      datatype=XSD.string)))
-        self.graph.add((uri, CODE.filePath,  Literal(node.file_path, datatype=XSD.string)))
-        self.graph.add((uri, CODE.lineStart, Literal(node.line_start, datatype=XSD.integer)))
-        self.graph.add((uri, CODE.lineEnd,   Literal(node.line_end,   datatype=XSD.integer)))
+        self.graph.add((uri, CODE.name,      lit(node.name)))
+        self.graph.add((uri, CODE.filePath,  lit(node.file_path)))
+        self.graph.add((uri, CODE.lineStart, lit(node.line_start)))
+        self.graph.add((uri, CODE.lineEnd,   lit(node.line_end)))
         if node.decorator_line is not None:
-            self.graph.add((uri, CODE.decoratorLine, Literal(node.decorator_line, datatype=XSD.integer)))
+            self.graph.add((uri, CODE.decoratorLine, lit(node.decorator_line)))
+        if node.kind in ("Function", "Class"):
+            # One record per definition: an id defined twice (both branches of an if) keeps each one's lines together.
+            # _make_uri always escapes "!", so no identifier gives this IRI.
+            record = iri(f"{text(uri)}!{node.line_start}")
+            self.graph.add((uri, CODE.definedAt, record))
+            self.graph.add((record, RDF.type, CODE.Definition))
+            self.graph.add((record, CODE.lineStart, lit(node.line_start)))
+            self.graph.add((record, CODE.lineEnd, lit(node.line_end)))
+            if node.decorator_line is not None:
+                self.graph.add((record, CODE.decoratorLine, lit(node.decorator_line)))
 
         if node.language:
-            self.graph.add((uri, CODE.language, Literal(node.language, datatype=XSD.string)))
+            self.graph.add((uri, CODE.language, lit(node.language)))
 
     def _add_edge(self, edge: EdgeInfo, index: SymbolIndex | None = None) -> None:
         source_uri = self._make_uri(edge.source)
@@ -133,7 +226,7 @@ class KnowledgeGraphBuilder:
             if len(files) == 1:
                 self.graph.add((source_uri, project, self._make_uri(files[0])))
             elif not files and not edge.target.startswith("."):  # a relative import is inside the project, never external
-                self.graph.add((source_uri, external, Literal(edge.target, datatype=XSD.string)))
+                self.graph.add((source_uri, external, lit(edge.target)))
             # several files: ambiguous, so no arrow
 
     def _add_call(self, r: CallResolution) -> None:
@@ -144,28 +237,28 @@ class KnowledgeGraphBuilder:
         g = self.graph
         g.add((uri, RDF.type, CODE.CallSite))
         g.add((uri, CODE.inFunction, caller))
-        g.add((uri, CODE.line, Literal(call.line, datatype=XSD.integer)))
-        g.add((uri, CODE.column, Literal(call.col, datatype=XSD.integer)))
-        g.add((uri, CODE.targetName, Literal(call.target_name, datatype=XSD.string)))
+        g.add((uri, CODE.line, lit(call.line)))
+        g.add((uri, CODE.column, lit(call.col)))
+        g.add((uri, CODE.targetName, lit(call.target_name)))
         if call.receiver is not None:
-            g.add((uri, CODE.receiver, Literal(call.receiver, datatype=XSD.string)))
-        g.add((uri, CODE.status, Literal(r.status, datatype=XSD.string)))
+            g.add((uri, CODE.receiver, lit(call.receiver)))
+        g.add((uri, CODE.status, lit(r.status)))
         if r.reason:
-            g.add((uri, CODE.reason, Literal(r.reason, datatype=XSD.string)))
+            g.add((uri, CODE.reason, lit(r.reason)))
         if r.status == "resolved":
             target = self._make_uri(r.target)
-            g.add((uri, CODE.tier, Literal(r.tier, datatype=XSD.string)))
+            g.add((uri, CODE.tier, lit(r.tier)))
             g.add((uri, CODE.resolvedTo, target))
             if r.init:
                 g.add((uri, CODE.initTarget, self._make_uri(r.init)))
             if r.init_unknown:
-                g.add((uri, CODE.initUnknown, Literal(True, datatype=XSD.boolean)))
+                g.add((uri, CODE.initUnknown, lit(True)))
             if r.recursive:
-                g.add((uri, CODE.recursive, Literal(True, datatype=XSD.boolean)))
+                g.add((uri, CODE.recursive, lit(True)))
             else:  # R11: a recursive call keeps its record but draws no self-edge
                 g.add((caller, CODE[r.edge], target))
         elif r.status == "ambiguous":
-            g.add((uri, CODE.candidateCount, Literal(r.candidate_count, datatype=XSD.integer)))
+            g.add((uri, CODE.candidateCount, lit(r.candidate_count)))
             for c in r.candidates:
                 g.add((uri, CODE.candidate, self._make_uri(c)))
 

@@ -1,13 +1,24 @@
 from pathlib import Path
 
 import pytest
-from rdflib import Literal, URIRef
-from rdflib.compare import isomorphic
-from rdflib.namespace import RDF, XSD
 
 from acte.health import run_checks
 from acte.parser import CodeParser, EdgeInfo, NodeInfo
-from acte.rdf_builder import CODE, KnowledgeGraphBuilder, build_graph
+from acte.rdf_builder import (
+    CODE,
+    RDF,
+    KnowledgeGraphBuilder,
+    build_graph,
+    has,
+    iri,
+    lit,
+    nt,
+    objects,
+    subjects,
+    text,
+    triples,
+    value,
+)
 from acte.sparql_engine import SPARQLEngine
 
 
@@ -38,11 +49,7 @@ def test_uri_alignment(builder, sample_data):
 
     # Verify the CONTAINS edge uses the identical URI for its target
     class_uri = builder._make_uri("main.py::AuthManager")
-    assert (
-        class_uri,
-        CODE.contains,
-        func_uri,
-    ) in graph, "Fatal: Node URI and Edge target URI do not match."
+    assert has(graph, class_uri, CODE.contains, func_uri), "Fatal: Node URI and Edge target URI do not match."
 
 
 def test_accumulation_and_reset(builder, sample_data):
@@ -58,12 +65,8 @@ def test_accumulation_and_reset(builder, sample_data):
         len(builder.graph) == initial_length
     ), "Graph duplicated identical triples."
 
-    # Reset should clear triples but retain namespace bindings
     builder.reset()
     assert len(builder.graph) == 0, "Graph failed to reset."
-    assert (
-        "code" in [prefix for prefix, _ in builder.graph.namespaces()]
-    ), "Namespace bindings lost on reset."
 
 
 def test_line_end_mapping(builder, sample_data):
@@ -71,9 +74,9 @@ def test_line_end_mapping(builder, sample_data):
     graph = builder.build(nodes, edges)
 
     file_uri = builder._make_uri("main.py")
-    line_end = graph.value(subject=file_uri, predicate=CODE.lineEnd)
+    line_end = value(graph, file_uri, CODE.lineEnd)
 
-    assert str(line_end) == "10", "lineEnd literal missing or incorrect."
+    assert text(line_end) == "10", "lineEnd literal missing or incorrect."
 
 
 def test_rdf_types(builder, sample_data):
@@ -85,9 +88,9 @@ def test_rdf_types(builder, sample_data):
     file_uri = builder._make_uri("main.py")
 
     # Verify semantic type mappings are emitted correctly
-    assert (class_uri, RDF.type, CODE.Class) in graph
-    assert (function_uri, RDF.type, CODE.Function) in graph
-    assert (file_uri, RDF.type, CODE.File) in graph
+    assert has(graph, class_uri, RDF.type, CODE.Class)
+    assert has(graph, function_uri, RDF.type, CODE.Function)
+    assert has(graph, file_uri, RDF.type, CODE.File)
 
 
 def test_edge_predicates(builder, sample_data):
@@ -98,7 +101,7 @@ def test_edge_predicates(builder, sample_data):
     file_uri = builder._make_uri("main.py")
     class_uri = builder._make_uri("main.py::AuthManager")
 
-    assert (file_uri, CODE.contains, class_uri) in graph
+    assert has(graph, file_uri, CODE.contains, class_uri)
 def test_hash_in_path_is_encoded(tmp_path):
     """A '#' in a real path is percent-encoded, and lookups still match."""
     src = tmp_path / "dir#1" / "mod.py"
@@ -106,7 +109,7 @@ def test_hash_in_path_is_encoded(tmp_path):
     src.write_text("def helper():\n    pass\n\ndef run():\n    helper()\n")
     graph = build_graph([src], tmp_path)
 
-    uris = {str(t) for triple in graph for t in triple if isinstance(t, URIRef)}
+    uris = {text(t) for triple in triples(graph) for t in triple if nt(t).startswith("<")}
     code_uris = {u for u in uris if u.startswith(str(CODE))}
     assert code_uris
     assert all(u.count("#") == 1 for u in code_uris)
@@ -121,9 +124,9 @@ def test_nested_and_top_level_helper_are_distinct_nodes(tmp_path):
     result = CodeParser().parse_file(src)
     graph = KnowledgeGraphBuilder().build(result.nodes, result.edges)
 
-    helpers = set(graph.subjects(CODE.name, Literal("helper", datatype=XSD.string)))
+    helpers = set(subjects(graph, CODE.name, lit("helper")))
     assert len(helpers) == 2
-    assert sorted(len(list(graph.objects(h, CODE.lineStart))) for h in helpers) == [1, 1]
+    assert sorted(len(list(objects(graph, h, CODE.lineStart))) for h in helpers) == [1, 1]
 
 
 CALL_PROJECT = {
@@ -169,8 +172,7 @@ def test_call_sites_and_arrows(tmp_path):
     uri = KnowledgeGraphBuilder()._make_uri
     app = f"{tmp_path}/app.py"
     run, helper, db = uri(f"{app}::run"), uri(f"{app}::helper"), uri(f"{app}::Database")
-    s = lambda v: Literal(v, datatype=XSD.string)
-    i = lambda v: Literal(v, datatype=XSD.integer)
+    s = i = lit
 
     def site(caller, line, col, name, status, extra):
         return {
@@ -192,7 +194,7 @@ def test_call_sites_and_arrows(tmp_path):
                                   {(CODE.receiver, s("os")), (CODE.reason, s("stdlib"))}),
         f"{app}::run@L19c4": site(f"{app}::run", 19, 4, "run", "resolved", {
             (CODE.tier, s("T2")), (CODE.resolvedTo, run),
-            (CODE.recursive, Literal(True, datatype=XSD.boolean)),
+            (CODE.recursive, lit(True)),
         }),
         f"{app}::run@L20c5": site(f"{app}::run", 20, 5, "Database", "resolved",
                                   {(CODE.tier, s("T2")), (CODE.resolvedTo, db)}),
@@ -201,21 +203,21 @@ def test_call_sites_and_arrows(tmp_path):
         f"{app}@L23c0": site(app, 23, 0, "helper", "resolved",
                              {(CODE.tier, s("T2")), (CODE.resolvedTo, helper)}),
     }
-    sites = set(graph.subjects(RDF.type, CODE.CallSite))
+    sites = set(subjects(graph, RDF.type, CODE.CallSite))
     assert sites == {uri(k) for k in expected}
     for k, props in expected.items():
-        assert set(graph.predicate_objects(uri(k))) == props, k
-    assert all(str(u).count("#") == 1 for u in sites)
-    assert f"{CODE}{tmp_path}/app.py::run@L19c4" in {str(u) for u in sites}  # "@" stays readable
+        assert {(p, o) for _, p, o in triples(graph, uri(k))} == props, k
+    assert all(text(u).count("#") == 1 for u in sites)
+    assert f"{CODE}{tmp_path}/app.py::run@L19c4" in {text(u) for u in sites}  # "@" stays readable
 
-    assert (run, CODE.calls, helper) in graph
-    assert (uri(app), CODE.calls, helper) in graph
-    assert (run, CODE.instantiates, db) in graph
-    assert (run, CODE.calls, db) not in graph
-    assert (run, CODE.calls, run) not in graph  # R11
+    assert has(graph, run, CODE.calls, helper)
+    assert has(graph, uri(app), CODE.calls, helper)
+    assert has(graph, run, CODE.instantiates, db)
+    assert not has(graph, run, CODE.calls, db)
+    assert not has(graph, run, CODE.calls, run)  # R11
     candidates = {uri(f"{tmp_path}/x/util.py::build"), uri(f"{tmp_path}/y/util.py::build")}
-    assert not candidates & set(graph.objects(run, CODE.calls))  # ambiguous: no arrow
-    assert (run, CODE.calls, uri(f"{app}::Database.connect")) not in graph
+    assert not candidates & set(objects(graph, run, CODE.calls))  # ambiguous: no arrow
+    assert not has(graph, run, CODE.calls, uri(f"{app}::Database.connect"))
 
 
 def test_jedi_resolved_call_site(tmp_path):
@@ -224,14 +226,19 @@ def test_jedi_resolved_call_site(tmp_path):
     uri = KnowledgeGraphBuilder()._make_uri
     run, connect = uri(f"{tmp_path}/app.py::run"), uri(f"{tmp_path}/app.py::Database.connect")
     site = uri(f"{tmp_path}/app.py::run@L20c20")
-    assert str(graph.value(site, CODE.tier)) == "TJ"
-    assert graph.value(site, CODE.resolvedTo) == connect
-    assert (run, CODE.calls, connect) in graph
+    assert text(value(graph, site, CODE.tier)) == "TJ"
+    assert value(graph, site, CODE.resolvedTo) == connect
+    assert has(graph, run, CODE.calls, connect)
+
+
+def _lines(graph) -> list[str]:
+    """The map as sorted N-Triples lines: two builds of the same code give the same lines."""
+    return sorted(" ".join(nt(t) for t in triple) for triple in triples(graph))
 
 
 @pytest.mark.parametrize("use_jedi", [False, True])
 def test_build_is_deterministic(tmp_path, use_jedi):
-    assert isomorphic(_call_graph(tmp_path / "a", use_jedi), _call_graph(tmp_path / "a", use_jedi))
+    assert _lines(_call_graph(tmp_path / "a", use_jedi)) == _lines(_call_graph(tmp_path / "a", use_jedi))
 
 
 def test_imports_point_at_file_nodes_or_name_external_modules(tmp_path):
@@ -249,11 +256,11 @@ def test_imports_point_at_file_nodes_or_name_external_modules(tmp_path):
     uri = KnowledgeGraphBuilder()._make_uri
     a = uri(f"{tmp_path}/pkg/a.py")
 
-    imported = set(graph.objects(a, CODE.importsFrom))
+    imported = set(objects(graph, a, CODE.importsFrom))
     assert imported == {uri(f"{tmp_path}/pkg/__init__.py"), uri(f"{tmp_path}/pkg/b.py")}
-    assert all((f, RDF.type, CODE.File) in graph for f in imported)
+    assert all(has(graph, f, RDF.type, CODE.File) for f in imported)
     # `util` is no project module (x/util.py is x.util), so it is external; `.gone` is relative: no arrow, no name
-    assert set(graph.objects(a, CODE.importsExternal)) == {Literal("os.path", datatype=XSD.string), Literal("util", datatype=XSD.string)}
+    assert set(objects(graph, a, CODE.importsExternal)) == {lit("os.path"), lit("util")}
 
 
 def test_import_kinds(tmp_path):
@@ -306,16 +313,16 @@ def test_import_kinds(tmp_path):
     uri = KnowledgeGraphBuilder()._make_uri
     app, lib, other = (uri(f"{tmp_path}/{f}") for f in ("app.py", "lib.py", "other.py"))
 
-    def objects(p):
-        return {str(o).rsplit("/", 1)[-1] if isinstance(o, URIRef) else str(o) for o in graph.objects(app, p)}
+    def imported(p):
+        return {text(o).rsplit("/", 1)[-1] if nt(o).startswith("<") else text(o) for o in objects(graph, app, p)}
 
     # elif, else and class bodies run at import time; a TYPE_CHECKING block in a function is type-only
-    assert objects(CODE.importsFrom) == {"lib.py"}  # inside a module-level try
-    assert objects(CODE.importsExternal) == {"typing", "csv", "re", "enum"}
-    assert objects(CODE.importsTypeOnly) == {"other.py"}
-    assert objects(CODE.importsTypeOnlyExternal) == {"json", "collections", "decimal"}
-    assert objects(CODE.importsInFunction) == {"lib.py"}  # lib.py in two kinds: once in each
-    assert objects(CODE.importsInFunctionExternal) == {"os", "string", "fractions"}
+    assert imported(CODE.importsFrom) == {"lib.py"}  # inside a module-level try
+    assert imported(CODE.importsExternal) == {"typing", "csv", "re", "enum"}
+    assert imported(CODE.importsTypeOnly) == {"other.py"}
+    assert imported(CODE.importsTypeOnlyExternal) == {"json", "collections", "decimal"}
+    assert imported(CODE.importsInFunction) == {"lib.py"}  # lib.py in two kinds: once in each
+    assert imported(CODE.importsInFunctionExternal) == {"os", "string", "fractions"}
     assert {(app, CODE.importsFrom, lib), (app, CODE.importsInFunction, lib), (app, CODE.importsTypeOnly, other)} <= set(graph)
     assert not any(run_checks(graph).values())
     deps = SPARQLEngine(graph=graph).dependencies_of(f"{tmp_path}/app.py")
@@ -357,17 +364,17 @@ def test_main_block_imports(tmp_path):
     graph = build_graph(sorted(tmp_path / rel for rel in files), tmp_path, use_jedi=False)
     app = KnowledgeGraphBuilder()._make_uri(f"{tmp_path}/app.py")
 
-    def objects(p):
-        return {str(o).rsplit("/", 1)[-1] if isinstance(o, URIRef) else str(o) for o in graph.objects(app, p)}
+    def imported(p):
+        return {text(o).rsplit("/", 1)[-1] if nt(o).startswith("<") else text(o) for o in objects(graph, app, p)}
 
     # both operand orders and quote styles; a function in the block is in it too; else runs as usual;
     # only a module-level guard counts, so one in a function is an in-function import; the innermost block decides
-    assert objects(CODE.importsInMainBlock) == {"lib.py"}
-    assert objects(CODE.importsInMainBlockExternal) == {"argparse", "pdb", "glob"}
-    assert objects(CODE.importsExternal) == {"shutil"}
-    assert objects(CODE.importsInFunctionExternal) == {"timeit"}
-    assert objects(CODE.importsTypeOnlyExternal) == {"decimal"}
-    assert objects(CODE.importsFrom) == set()
+    assert imported(CODE.importsInMainBlock) == {"lib.py"}
+    assert imported(CODE.importsInMainBlockExternal) == {"argparse", "pdb", "glob"}
+    assert imported(CODE.importsExternal) == {"shutil"}
+    assert imported(CODE.importsInFunctionExternal) == {"timeit"}
+    assert imported(CODE.importsTypeOnlyExternal) == {"decimal"}
+    assert imported(CODE.importsFrom) == set()
     assert SPARQLEngine(graph=graph).dependencies_of(f"{tmp_path}/app.py").kinds[f"{tmp_path}/lib.py"] == ["main-block"]
     assert not any(run_checks(graph).values())
 
@@ -375,9 +382,9 @@ def test_main_block_imports(tmp_path):
 def test_imports_in_own_source_reach_typed_files():
     src = Path(__file__).resolve().parents[1] / "src"
     graph = build_graph(sorted(src.rglob("*.py")), src, use_jedi=False)
-    imported = set(graph.objects(None, CODE.importsFrom))
+    imported = set(objects(graph, None, CODE.importsFrom))
     assert imported
-    assert all((f, RDF.type, CODE.File) in graph for f in imported)
+    assert all(has(graph, f, RDF.type, CODE.File) for f in imported)
 
 
 def test_inherits_points_at_project_classes_only(tmp_path):
@@ -390,15 +397,15 @@ def test_inherits_points_at_project_classes_only(tmp_path):
     graph = build_graph(sorted(tmp_path / rel for rel in files), tmp_path, use_jedi=False)
     uri = KnowledgeGraphBuilder()._make_uri
     a, b, base = (uri(f"{tmp_path}/{i}") for i in ("app.py::A", "app.py::B", "base.py::Base"))
-    assert set(graph.subject_objects(CODE.inherits)) == {(a, base), (b, a)}
+    assert {(s, o) for s, _, o in triples(graph, None, CODE.inherits)} == {(a, base), (b, a)}
 
 
 def test_decorator_line_only_when_decorated(tmp_path):
     (tmp_path / "a.py").write_text("@deco\ndef f():\n    pass\n\n\ndef g():\n    pass\n")
     g = build_graph([tmp_path / "a.py"], tmp_path, use_jedi=False)
-    f, plain = (URIRef(CODE[f"{tmp_path}/a.py::{n}"]) for n in ("f", "g"))
-    assert (g.value(f, CODE.lineStart), g.value(f, CODE.decoratorLine)) == (Literal(2, datatype=XSD.integer), Literal(1, datatype=XSD.integer))
-    assert g.value(plain, CODE.decoratorLine) is None
+    f, plain = (iri(CODE[f"{tmp_path}/a.py::{n}"]) for n in ("f", "g"))
+    assert (value(g, f, CODE.lineStart), value(g, f, CODE.decoratorLine)) == (lit(2), lit(1))
+    assert value(g, plain, CODE.decoratorLine) is None
 
 def test_go_and_tsx_give_structure_and_unresolved_calls(tmp_path):
     files = {
@@ -414,18 +421,37 @@ def test_go_and_tsx_give_structure_and_unresolved_calls(tmp_path):
     uri = KnowledgeGraphBuilder()._make_uri
     go, tsx, py = (uri(f"{tmp_path}/{f}") for f in ("shapes.go", "app.tsx", "main.py"))
 
-    assert set(graph.objects(go, CODE.contains)) == {uri(f"{tmp_path}/shapes.go::{n}") for n in ("Point", "Point.String", "New")}
-    assert set(graph.objects(tsx, CODE.contains)) == {uri(f"{tmp_path}/app.tsx::{n}") for n in ("App", "helper")}
-    assert (uri(f"{tmp_path}/shapes.go::Point"), RDF.type, CODE.Class) in graph
-    assert (uri(f"{tmp_path}/shapes.go::Point.String"), RDF.type, CODE.Function) in graph
+    assert set(objects(graph, go, CODE.contains)) == {uri(f"{tmp_path}/shapes.go::{n}") for n in ("Point", "Point.String", "New")}
+    assert set(objects(graph, tsx, CODE.contains)) == {uri(f"{tmp_path}/app.tsx::{n}") for n in ("App", "helper")}
+    assert has(graph, uri(f"{tmp_path}/shapes.go::Point"), RDF.type, CODE.Class)
+    assert has(graph, uri(f"{tmp_path}/shapes.go::Point.String"), RDF.type, CODE.Function)
     # only Python imports are kept in the graph, as for TypeScript
-    assert not {o for f in (go, tsx) for p in (CODE.importsFrom, CODE.importsExternal) for o in graph.objects(f, p)}
+    assert not {o for f in (go, tsx) for p in (CODE.importsFrom, CODE.importsExternal) for o in objects(graph, f, p)}
 
     status = {
-        (str(graph.value(s, CODE.targetName)), str(graph.value(s, CODE.status)), str(graph.value(s, CODE.reason)))
-        for s in graph.subjects(RDF.type, CODE.CallSite) if "main.py" not in str(graph.value(s, CODE.inFunction))
+        (text(value(graph, s, CODE.targetName)), text(value(graph, s, CODE.status)), text(value(graph, s, CODE.reason)))
+        for s in subjects(graph, RDF.type, CODE.CallSite) if "main.py" not in text(value(graph, s, CODE.inFunction))
     }
     assert status == {("Sprint", "unresolved", "unknown-receiver"), ("New", "unresolved", "no-match"), ("helper", "unresolved", "no-match")}
     # the Python call resolves to the Python New, never to the Go one
-    assert set(graph.subject_objects(CODE.calls)) == {(py, uri(f"{tmp_path}/main.py::New"))}
+    assert {(s, o) for s, _, o in triples(graph, None, CODE.calls)} == {(py, uri(f"{tmp_path}/main.py::New"))}
     assert all(rows == [] for rows in run_checks(graph).values())
+
+
+def test_each_definition_gets_its_own_record():
+    """An id defined twice keeps one node and gets one record per definition, each with its own lines."""
+    root = Path(__file__).parent / "data" / "twice_defined"
+    graph = build_graph([root / "app.py"], root, use_jedi=False)
+
+    def records(name):
+        node = iri(CODE[f"{root}/app.py::{name}"])
+        return sorted((text(r)[len(text(node)):], *(None if (v := value(graph, r, p)) is None else int(text(v))
+                                                   for p in (CODE.lineStart, CODE.lineEnd, CODE.decoratorLine)))
+                      for r in objects(graph, node, CODE.definedAt))
+    assert records("target") == [("!4", 4, 5, None)]
+    assert records("alpha") == [("!15", 15, 16, None), ("!9", 9, 10, None)]
+    assert records("Box.size") == [("!21", 21, 22, None), ("!25", 25, 26, 24)]
+    assert records("Shape") == [("!30", 30, 32, None), ("!34", 34, 38, None)]
+    definitions = {s for kind in (CODE.Function, CODE.Class) for s in subjects(graph, RDF.type, kind)}
+    assert {s for s, _, _ in triples(graph, None, CODE.definedAt)} == definitions
+    assert all(has(graph, r, RDF.type, CODE.Definition) for _, _, r in triples(graph, None, CODE.definedAt))

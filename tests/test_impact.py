@@ -1,9 +1,13 @@
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 
 from acte.cli import main
+from acte.impact import ModuleChange, impact
+from acte.rdf_builder import CODE, load, remove, save
+from acte.sparql_engine import SPARQLEngine
 
 # make() creates A; app.run calls make (through an import), app.main calls run
 MODELS = "RATE = 2\n\n\nclass A:\n    def m(self):\n        return RATE\n\n\ndef make():\n    return A()\n"
@@ -346,3 +350,38 @@ def test_unknown_format(repo, capsys):
     with pytest.raises(SystemExit) as exit_:
         main(["impact", str(repo), "--format", "xml"])
     assert exit_.value.code == 2
+
+
+def test_a_map_from_before_the_definition_records_is_refused(repo, tmp_path, capsys):
+    old = tmp_path / "old.ttl"
+    assert main(["build", str(repo), "-o", str(old), "--no-jedi"]) == 0
+    graph = load(old)
+    remove(graph, CODE["build"], CODE.mapFormat, None)
+    save(graph, old)
+    capsys.readouterr()
+    message = "built by an older ACTE. Run acte build again."
+
+    with pytest.raises(SystemExit) as exit_:
+        main(["stats", str(old)])
+    assert exit_.value.code == 2
+    assert message in capsys.readouterr().err
+    assert _impact(capsys, repo, "--graph", old) == (2, [], f"acte impact: cannot read {old}: {message}\n")
+    with pytest.raises(ValueError, match=message):
+        SPARQLEngine.open(old)
+
+
+def test_each_definition_of_a_twice_defined_function_has_its_own_span(twice_defined_graphs):
+    """alpha is defined at lines 9-10 and 15-16; Box.size at 21-22 and, decorated at 24, 25-26."""
+    root = Path(__file__).parent / "data" / "twice_defined"
+    app = f"{root}/app.py"
+
+    def changed(graph, *lines):
+        report = impact(root, graph, {app: set(lines)}, {}, [], "HEAD", depth=1)
+        return [(c.id.split("::")[1], c.line) for c in report.changed], report.modules
+
+    for graph in twice_defined_graphs:
+        assert changed(graph, 14) == ([], [ModuleChange(app, [], 0, {})])  # the else: between them is in neither
+        assert changed(graph, 16) == ([("alpha", 15)], [])
+        assert changed(graph, 24) == ([("Box.size", 25)], [])  # the decorator belongs to the second size only
+        assert changed(graph, 22) == ([("Box.size", 21)], [])
+        assert changed(graph, 10, 16) == ([("alpha", 9)], [])  # both changed: one entry, at the first definition

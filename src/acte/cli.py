@@ -16,15 +16,25 @@ from dataclasses import asdict
 from importlib.metadata import version
 from pathlib import Path
 
-from rdflib import Graph, Literal
-from rdflib.namespace import RDF, XSD
-
 from acte import resolver
 from acte.analysis import import_cycles, rank, subsystems
 from acte.health import run_checks
 from acte.mcp_server import create_server
 from acte.parser import EXTENSION_TO_LANGUAGE
-from acte.rdf_builder import CODE, build_graph
+from acte.rdf_builder import (
+    CODE,
+    MAP_FORMAT,
+    RDF,
+    Graph,
+    add,
+    build_graph,
+    lit,
+    load_map,
+    save,
+    subjects,
+    text,
+    value,
+)
 from acte.sparql_engine import SPARQLEngine
 
 # skipped when walking a directory that is not in a git work tree; hidden dirs are skipped too
@@ -72,21 +82,22 @@ def build(root: Path, use_jedi: bool = True, jobs: int = 1) -> Graph:
     with contextlib.chdir(root):
         graph = build_graph([Path(f) for f in files], Path("."), use_jedi, jobs)
     meta = CODE["build"]
-    graph.add((meta, RDF.type, CODE.Build))
-    graph.add((meta, CODE.root, Literal(root.resolve().name, datatype=XSD.string)))
-    graph.add((meta, CODE.acteVersion, Literal(version("acte"), datatype=XSD.string)))
+    add(graph, meta, RDF.type, CODE.Build)
+    add(graph, meta, CODE.root, lit(root.resolve().name))
+    add(graph, meta, CODE.acteVersion, lit(version("acte")))
+    add(graph, meta, CODE.mapFormat, lit(MAP_FORMAT))
     if commit:
-        graph.add((meta, CODE.commit, Literal(commit, datatype=XSD.string)))
+        add(graph, meta, CODE.commit, lit(commit))
     if use_jedi and resolver.jedi:  # the resolver runs tier TJ exactly when both hold
-        graph.add((meta, CODE.jediVersion, Literal(resolver.jedi.__version__, datatype=XSD.string)))
+        add(graph, meta, CODE.jediVersion, lit(resolver.jedi.__version__))
     return graph
 
 
 def _counts(graph: Graph) -> tuple[dict, dict]:
     """The file, function, class and call-site counts of *graph*, and its coverage."""
     cov = SPARQLEngine(graph=graph).coverage()
-    return {"files": len(set(graph.subjects(RDF.type, CODE.File))), "functions": len(set(graph.subjects(RDF.type, CODE.Function))),
-            "classes": len(set(graph.subjects(RDF.type, CODE.Class))), "call_sites": cov["total"]}, cov
+    return {"files": len(set(subjects(graph, RDF.type, CODE.File))), "functions": len(set(subjects(graph, RDF.type, CODE.Function))),
+            "classes": len(set(subjects(graph, RDF.type, CODE.Class))), "call_sites": cov["total"]}, cov
 
 
 def _summary(graph: Graph) -> tuple[dict, dict[str, list[dict]]]:
@@ -114,16 +125,16 @@ def _row(row: dict) -> dict:
 def _stats(graph: Graph, fmt: str = "text") -> int:
     """Print the build metadata, summary, coverage breakdown and health of *graph*; 1 if a health check fails."""
     meta = CODE["build"]
-    built = {prop: str(value) for prop in ("root", "commit", "acteVersion", "jediVersion")
-             if (value := graph.value(meta, CODE[prop])) is not None}
+    built = {prop: text(v) for prop in ("root", "commit", "acteVersion", "jediVersion")
+             if (v := value(graph, meta, CODE[prop])) is not None}
     if fmt == "json":
         counts, cov = _counts(graph)
         failing = {name: [_row(r) for r in rows] for name, rows in run_checks(graph).items() if rows}
         print(json.dumps({"build": built, **counts, "coverage": cov, "health": "failing" if failing else "ok",
                           "failing": failing}, indent=2))
         return 1 if failing else 0
-    for prop, value in built.items():
-        print(f"{prop}: {value}")
+    for prop, v in built.items():
+        print(f"{prop}: {v}")
     cov, checks = _summary(graph)
     for key in ("status", "tier", "reason"):
         print(f"{key}: {', '.join(f'{k} {n}' for k, n in cov[key].items()) or 'none'}")
@@ -199,7 +210,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "serve":
         try:
             server = create_server(args.graph, args.project, args.profile)
-        except (OSError, SyntaxError, UnicodeDecodeError) as exc:  # rdflib's turtle BadSyntax is a SyntaxError
+        except (OSError, SyntaxError, ValueError) as exc:  # rdflib's turtle BadSyntax is a SyntaxError; load_map refuses with a ValueError
             parser.error(f"cannot read {args.graph}: {exc}")
         server.run("stdio")
         return 0
@@ -208,8 +219,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "analyze" and args.top < 1:
             parser.error("--top must be at least 1")
         try:
-            graph = Graph().parse(args.graph, format="turtle")
-        except (OSError, SyntaxError, UnicodeDecodeError) as exc:  # rdflib's turtle BadSyntax is a SyntaxError
+            graph = load_map(args.graph)
+        except (OSError, SyntaxError, ValueError) as exc:  # rdflib's turtle BadSyntax is a SyntaxError; load_map refuses with a ValueError
             parser.error(f"cannot read {args.graph}: {exc}")
         if args.command == "stats":
             return _stats(graph, args.format)
@@ -232,12 +243,12 @@ def main(argv: list[str] | None = None) -> int:
     # for graph_info, which uses it only while the map still has this many triples (the count includes this one)
     summary = {"counts": counts, "coverage": cov, "health": {name: len(rows) for name, rows in checks.items()},
                "triples": len(graph) + 1}
-    graph.add((CODE["build"], CODE.summary, Literal(json.dumps(summary, sort_keys=True), datatype=XSD.string)))
+    add(graph, CODE["build"], CODE.summary, lit(json.dumps(summary, sort_keys=True)))
     # Write beside the output then rename, so a failed write never leaves a half-written map.
     # A plain name, not tempfile's: tempfile creates mode 0600, which the rename would keep.
     tmp = Path(args.output).with_name(f".{Path(args.output).name}.{os.getpid()}.tmp")
     try:
-        graph.serialize(destination=tmp, format="turtle")
+        save(graph, tmp)
         os.replace(tmp, args.output)
     except BaseException:
         tmp.unlink(missing_ok=True)

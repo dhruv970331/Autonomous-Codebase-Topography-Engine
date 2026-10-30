@@ -10,8 +10,8 @@ from collections import Counter
 from dataclasses import dataclass
 
 import networkx as nx
-from rdflib import Graph
 
+from acte.rdf_builder import Graph, text
 from acte.sparql_engine import _IMPORTS, _PREFIXES, SPARQLEngine
 
 
@@ -72,8 +72,9 @@ def rank(graph: Graph, top: int = 10) -> Ranking:
     engine = SPARQLEngine(graph=graph)
     q = _PREFIXES + "SELECT DISTINCT ?s ?t WHERE { ?s code:calls|code:instantiates ?t . }"
     # DISTINCT: several calls from one caller to one target are one edge, as in a networkx DiGraph
-    edges = sorted((engine._id(r.s), engine._id(r.t)) for r in graph.query(q))
-    defs = {d[0]: (d[3], d[4]) for d in engine.symbols()}
+    edges = sorted((engine._id(r["s"]), engine._id(r["t"])) for r in graph.query(q))
+    # reversed, so an id defined twice keeps its first definition's line, as blast radius ranks it
+    defs = {d[0]: (d[3], d[4]) for d in reversed(engine.symbols())}
     nodes = sorted(set(defs) | {s for s, _ in edges} | {t for _, t in edges})  # File callers are nodes, never ranked
     score, converged = _pagerank(nodes, edges)
     callers: dict[str, set[str]] = {}
@@ -107,7 +108,7 @@ SELECT ?a ?b WHERE {{
           code:resolvedTo/code:filePath ?b .
 }}
 """
-    weight = Counter(tuple(sorted((str(r.a), str(r.b)))) for r in graph.query(q))  # one row per call site
+    weight = Counter(tuple(sorted((text(r["a"]), text(r["b"])))) for r in graph.query(q))  # one row per call site
     for pair in {tuple(sorted(p)) for p in _imports(graph)}:
         weight[pair] += 1
     files = nx.Graph()
@@ -134,4 +135,4 @@ SELECT DISTINCT ?a ?b WHERE {{
     ?t code:filePath ?b .
 }}
 """
-    return [(str(r.a), str(r.b)) for r in graph.query(q)]
+    return [(text(r["a"]), text(r["b"])) for r in graph.query(q)]

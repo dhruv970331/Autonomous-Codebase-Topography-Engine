@@ -2,11 +2,20 @@ import subprocess
 from importlib.resources import files
 from pathlib import Path
 
-from rdflib import Graph
-from rdflib.namespace import RDF, RDFS
-
 from acte.cli import main
-from acte.rdf_builder import CODE, build_graph
+from acte.rdf_builder import (
+    CODE,
+    RDF,
+    RDFS,
+    add,
+    build_graph,
+    load,
+    objects,
+    subjects,
+    text,
+    triples,
+    value,
+)
 
 SRC = Path(__file__).parent.parent / "src" / "acte"
 
@@ -43,7 +52,7 @@ PROJECT = {
 
 
 def _ontology():
-    return Graph().parse(files("acte") / "ontology" / "code.ttl", format="turtle")
+    return load(files("acte") / "ontology" / "code.ttl")
 
 
 def _graph(tmp_path):
@@ -56,14 +65,16 @@ def _graph(tmp_path):
     # the real `acte build` (with jedi, so the Build node has jediVersion; PROJECT has no call jedi is asked about),
     # so code:summary is covered too
     main(["build", str(tmp_path), "-o", str(tmp_path / "g.ttl")])
-    return graph + Graph().parse(tmp_path / "g.ttl", format="turtle")
+    for triple in triples(load(tmp_path / "g.ttl")):
+        add(graph, *triple)
+    return graph
 
 
 def test_ontology_and_graph_agree(tmp_path):
     onto = _ontology()
-    declared = set(onto.subjects(RDF.type, RDFS.Class)) | set(onto.subjects(RDF.type, RDF.Property))
+    declared = set(subjects(onto, RDF.type, RDFS.Class)) | set(subjects(onto, RDF.type, RDF.Property))
     graph = _graph(tmp_path)
-    used = set(graph.objects(None, RDF.type)) | {p for p in graph.predicates() if p.startswith(CODE)}
+    used = set(objects(graph, None, RDF.type)) | {p for _, p, _ in triples(graph) if text(p).startswith(CODE)}
     assert used - declared == set(), "emitted but not declared in code.ttl"
     assert declared - used == set(), "declared in code.ttl but never emitted"
-    assert all(onto.value(t, RDFS.comment) for t in declared)
+    assert all(value(onto, t, RDFS.comment) for t in declared)

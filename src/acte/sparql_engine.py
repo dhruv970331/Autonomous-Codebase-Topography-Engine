@@ -24,11 +24,23 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from rdflib import Graph, Literal, Namespace, URIRef
-from rdflib.namespace import RDF, XSD
+from acte.rdf_builder import (
+    CODE,
+    RDF,
+    Graph,
+    has,
+    iri,
+    lit,
+    load_map,
+    new_graph,
+    nt,
+    objects,
+    query_rows,
+    subjects,
+    text,
+)
 
 _CODE_NS = "http://acte.local/code#"
-_CODE = Namespace(_CODE_NS)
 _PREFIXES = (
     f"PREFIX code: <{_CODE_NS}>\n"
     "PREFIX xsd:  <http://www.w3.org/2001/XMLSchema#>\n"
@@ -134,7 +146,7 @@ class SPARQLEngine:
     """Executes deterministic multi-hop queries against the ACTE knowledge graph.
 
     Typical usage — load from a serialised Turtle file:
-        engine = SPARQLEngine.from_turtle("graph.ttl")
+        engine = SPARQLEngine.open("graph.ttl")
         hits = engine.blast_radius("db_connect")
 
     Or inject a live rdflib Graph directly (useful in tests / Colab):
@@ -142,15 +154,13 @@ class SPARQLEngine:
     """
 
     def __init__(self, graph: Graph | None = None) -> None:
-        self.graph: Graph = graph if graph is not None else Graph()
+        self.graph: Graph = graph if graph is not None else new_graph()
         self._index: tuple | None = None  # (graph size, symbols, by id, by bare name, by qualname), see _indexed()
 
     @classmethod
-    def from_turtle(cls, path: str | Path) -> "SPARQLEngine":
-        """Load a serialised Turtle (.ttl) file and return a ready engine."""
-        g = Graph()
-        g.parse(str(path), format="turtle")
-        return cls(graph=g)
+    def open(cls, path: str | Path) -> "SPARQLEngine":
+        """Load a map written by ``acte build`` and return a ready engine."""
+        return cls(graph=load_map(path))
 
     # ------------------------------------------------------------------
     # Named queries
@@ -196,7 +206,7 @@ SELECT DISTINCT ?callee_name WHERE {{
 }}
 ORDER BY ?callee_name
 """
-        return [str(r.callee_name) for r in self.graph.query(q)]
+        return [text(r["callee_name"]) for r in self.graph.query(q)]
 
     def call_sites(self, caller_id: str) -> list[CallSiteResult]:
         """Return every call made directly in the Function (or File) with id *caller_id*, by line and column."""
@@ -214,44 +224,46 @@ SELECT ?line ?col ?target_name ?receiver ?status ?resolved ?reason WHERE {{
 ORDER BY ?line ?col
 """
         return [
-            CallSiteResult(int(r.line), int(r.col), str(r.target_name),
-                           None if r.receiver is None else str(r.receiver), str(r.status),
-                           None if r.resolved is None else self._id(r.resolved),
-                           None if r.reason is None else str(r.reason))
+            CallSiteResult(int(text(r["line"])), int(text(r["col"])), text(r["target_name"]),
+                           None if r["receiver"] is None else text(r["receiver"]), text(r["status"]),
+                           None if r["resolved"] is None else self._id(r["resolved"]),
+                           None if r["reason"] is None else text(r["reason"]))
             for r in self.graph.query(q)
         ]
 
     def functions_in_file(self, file_path: str) -> list[FunctionResult]:
-        """Return all functions defined in *file_path*, ordered by line number."""
+        """Return every definition of a function in *file_path*, ordered by line number: an id defined twice gives two."""
         q = _PREFIXES + f"""
 SELECT ?name ?start ?end WHERE {{
     ?f a code:Function ;
        code:filePath  {self._literal(file_path)} ;
        code:name      ?name ;
-       code:lineStart ?start ;
+       code:definedAt ?d .
+    ?d code:lineStart ?start ;
        code:lineEnd   ?end .
 }}
-ORDER BY ?start
+ORDER BY ?start ?end ?name
 """
         return [
-            FunctionResult(str(r.name), file_path, int(r.start), int(r.end))
+            FunctionResult(text(r["name"]), file_path, int(text(r["start"])), int(text(r["end"])))
             for r in self.graph.query(q)
         ]
 
     def classes_in_file(self, file_path: str) -> list[ClassResult]:
-        """Return all classes defined in *file_path*, ordered by line number."""
+        """Return every definition of a class in *file_path*, ordered by line number: an id defined twice gives two."""
         q = _PREFIXES + f"""
 SELECT ?name ?start ?end WHERE {{
     ?c a code:Class ;
        code:filePath  {self._literal(file_path)} ;
        code:name      ?name ;
-       code:lineStart ?start ;
+       code:definedAt ?d .
+    ?d code:lineStart ?start ;
        code:lineEnd   ?end .
 }}
-ORDER BY ?start
+ORDER BY ?start ?end ?name
 """
         return [
-            ClassResult(str(r.name), file_path, int(r.start), int(r.end))
+            ClassResult(text(r["name"]), file_path, int(text(r["start"])), int(text(r["end"])))
             for r in self.graph.query(q)
         ]
 
@@ -269,7 +281,7 @@ SELECT DISTINCT ?dep ?p WHERE {{
 """
         found: dict[str, set[str]] = {}
         for r in self.graph.query(q):
-            found.setdefault(str(r.dep), set()).add(IMPORT_KINDS[str(r.p)])
+            found.setdefault(text(r["dep"]), set()).add(IMPORT_KINDS[text(r["p"])])
         kinds = {d: [k for k in KIND_ORDER if k in ks] for d, ks in found.items() if "module" not in ks}
         return DependenciesAnswer(sorted(found), kinds)
 
@@ -279,22 +291,23 @@ SELECT DISTINCT ?dep ?p WHERE {{
         Useful for dead-code detection. A function is an orphan when no
         calls / instantiates arrow and no resolved CallSite of another caller
         points to it. A function called only by itself is an orphan: its
-        recursive CallSite does not count (R11).
+        recursive CallSite does not count (R11). One row per definition: an id defined twice gives two.
         """
         q = _PREFIXES + """
 SELECT DISTINCT ?name ?file ?start ?end WHERE {
     ?f a code:Function ;
        code:name      ?name ;
-       code:filePath   ?file ;
-       code:lineStart ?start ;
+       code:filePath  ?file ;
+       code:definedAt ?d .
+    ?d code:lineStart ?start ;
        code:lineEnd   ?end .
     FILTER NOT EXISTS { ?anything code:calls|code:instantiates ?f . }
     FILTER NOT EXISTS { ?site code:resolvedTo ?f ; code:inFunction ?caller . FILTER(?caller != ?f) }
 }
-ORDER BY ?file ?start
+ORDER BY ?file ?start ?end ?name
 """
         return [
-            FunctionResult(str(r.name), str(r.file), int(r.start), int(r.end))
+            FunctionResult(text(r["name"]), text(r["file"]), int(text(r["start"])), int(text(r["end"])))
             for r in self.graph.query(q)
         ]
 
@@ -313,7 +326,7 @@ SELECT ?d ?kind ?name ?file ?start WHERE {
 }
 """
         return sorted(
-            (self._id(r.d), self._id(r.kind), str(r.name), str(r.file), int(r.start))
+            (self._id(r["d"]), self._id(r["kind"]), text(r["name"]), text(r["file"]), int(text(r["start"])))
             for r in self.graph.query(q)
         )
 
@@ -323,7 +336,7 @@ SELECT ?d ?kind ?name ?file ?start WHERE {
 SELECT ?path WHERE { ?f a code:File ; code:filePath ?path . }
 ORDER BY ?path
 """
-        return [str(r.path) for r in self.graph.query(q)]
+        return [text(r["path"]) for r in self.graph.query(q)]
 
     def coverage(self) -> dict:
         """Counts per status, tier (resolved only), reason and edge kind, plus total and
@@ -333,17 +346,17 @@ ORDER BY ?path
         languages with call resolution are measured; no_resolver counts the others, total all."""
         # triples() lookups give one row per combination of values, as the OPTIONALs of the old query
         # (kept in the tests as an oracle) did: rdflib's SPARQL engine took 49 s for it on django
-        g, edges = self.graph, {_CODE.Function: "calls", _CODE.Class: "instantiates"}
+        g, edges = self.graph, {CODE.Function: "calls", CODE.Class: "instantiates"}
         everything = [(status, tier, reason, kind, path)
-                      for site in g.subjects(RDF.type, _CODE.CallSite) for status in g.objects(site, _CODE.status)
-                      for tier in list(g.objects(site, _CODE.tier)) or [None]
-                      for reason in list(g.objects(site, _CODE.reason)) or [None]
-                      for kind in [k for t in g.objects(site, _CODE.resolvedTo) for k in g.objects(t, RDF.type)] or [None]
-                      for path in [p for f in g.objects(site, _CODE.inFunction) for p in g.objects(f, _CODE.filePath)] or [None]]
-        rows = [r for r in everything if str(r[4]).endswith(".py")]  # as the resolver: only Python is resolved
+                      for site in subjects(g, RDF.type, CODE.CallSite) for status in objects(g, site, CODE.status)
+                      for tier in list(objects(g, site, CODE.tier)) or [None]
+                      for reason in list(objects(g, site, CODE.reason)) or [None]
+                      for kind in [k for t in objects(g, site, CODE.resolvedTo) for k in objects(g, t, RDF.type)] or [None]
+                      for path in [p for f in objects(g, site, CODE.inFunction) for p in objects(g, f, CODE.filePath)] or [None]]
+        rows = [r for r in everything if text(r[4]).endswith(".py")]  # as the resolver: only Python is resolved
 
         def count(values):
-            return dict(sorted(Counter(str(v) for v in values if v is not None).items()))
+            return dict(sorted(Counter(text(v) for v in values if v is not None).items()))
         status = count(r[0] for r in rows)
         measured = len(rows) - status.get("external", 0)
         return {
@@ -366,10 +379,7 @@ ORDER BY ?path
         """
         try:
             full_query = _PREFIXES + query if "PREFIX code:" not in query else query
-            return [
-                {str(var): str(val) for var, val in row.asdict().items()}
-                for row in self.graph.query(full_query)
-            ]
+            return query_rows(self.graph, full_query)
         except Exception as e:  # noqa: BLE001 - bad user SPARQL is reported, not raised
             return [{"error": str(e)}]
 
@@ -396,8 +406,8 @@ ORDER BY ?path
         size = len(self.graph)
         if self._index is None or self._index[0] != size:
             g = self.graph  # triples() lookups: the same rows as a SPARQL query over every definition, several times faster
-            defs = sorted((self._id(d), str(n)) for kind in (_CODE.Function, _CODE.Class)
-                          for d in g.subjects(RDF.type, kind) for n in g.objects(d, _CODE.name))
+            defs = sorted((self._id(d), text(n)) for kind in (CODE.Function, CODE.Class)
+                          for d in subjects(g, RDF.type, kind) for n in objects(g, d, CODE.name))
             by_id, by_bare, by_qual = defaultdict(list), defaultdict(list), defaultdict(list)
             for d in defs:  # each list keeps the sorted order
                 by_id[d[0]].append(d)
@@ -422,11 +432,11 @@ ORDER BY ?path
         # or jedi, may run target when the object is of target's class
         # The sites are picked with triples(), each as often as the SPARQL pattern it replaces matched it: rdflib
         # evaluated the tier and receiver literals over every call site first (about 3 s per call on django).
-        g, xsd = self.graph, lambda v: Literal(v, datatype=XSD.string)
-        sites = [s for t in self._overridden(target) for s in g.subjects(_CODE.resolvedTo, t) for tier in g.objects(s, _CODE.tier)
-                 for r in ([None] if tier in (xsd("T4b"), xsd("TJ")) else g.objects(s, _CODE.receiver) if tier == xsd("T1") else [])
-                 if r is None or r in (xsd("self"), xsd("cls"))]
-        override = self._callers(f"VALUES ?site {{ {' '.join(s.n3() for s in sites)} }}", "override") if sites else []
+        g = self.graph
+        sites = [s for t in self._overridden(target) for s in subjects(g, CODE.resolvedTo, t) for tier in objects(g, s, CODE.tier)
+                 for r in ([None] if tier in (lit("T4b"), lit("TJ")) else objects(g, s, CODE.receiver) if tier == lit("T1") else [])
+                 if r is None or r in (lit("self"), lit("cls"))]
+        override = self._callers(f"VALUES ?site {{ {' '.join(nt(s) for s in sites)} }}", "override") if sites else []
         if target.endswith(".__init__"):  # a subclass whose MRO reaches an outside or unknown base before any __init__
             possible += self._callers(f"?site code:initUnknown true ; code:resolvedTo/code:inherits+ {self._uri(cls)} .", "unknown-base")
         possible = sorted(possible + override, key=lambda c: (c.file_path, c.line, c.id))
@@ -436,29 +446,29 @@ ORDER BY ?path
         # (counted with triples(): SPARQL took 0.06 s per count)
         for status, reason in (("unresolved", "unknown-receiver"), ("unresolved", "unknown-base"), ("ambiguous", "ceiling")):
             reasons[reason] = listed[reason] + sum(
-                1 for n in names for site in g.subjects(_CODE.targetName, xsd(n))
-                if (site, _CODE.status, xsd(status)) in g and (site, _CODE.reason, xsd(reason)) in g)
+                1 for n in names for site in subjects(g, CODE.targetName, lit(n))
+                if has(g, site, CODE.status, lit(status)) and has(g, site, CODE.reason, lit(reason)))
         reasons = {k: v for k, v in reasons.items() if v}
         return CallerAnswer(target, callers, possible, "lower-bound" if reasons else "exact", reasons)
 
-    def _overridden(self, target: str) -> list[URIRef]:
+    def _overridden(self, target: str) -> list:
         """Every Function of *target*'s name in a class its class reaches by ``code:inherits+``, other than *target*.
 
         Walked with triples() lookups: as one SPARQL pattern, rdflib evaluated ``code:inherits+``
         from every node in the graph (about 65 s on fastapi)."""
-        g, uri = self.graph, URIRef(self._uri(target)[1:-1])
+        g, uri = self.graph, iri(self._uri(target)[1:-1])
         found = []
-        for sub in g.subjects(_CODE.contains, uri):
-            if (sub, RDF.type, _CODE.Class) not in g:
+        for sub in subjects(g, CODE.contains, uri):
+            if not has(g, sub, RDF.type, CODE.Class):
                 continue
             bases, todo = set(), [sub]  # one or more steps, as inherits+: sub itself only through a cycle
             while todo:
-                for b in g.objects(todo.pop(), _CODE.inherits):
+                for b in objects(g, todo.pop(), CODE.inherits):
                     if b not in bases:
                         bases.add(b)
                         todo.append(b)
-            found += [t for m in g.objects(uri, _CODE.name) for base in bases for t in g.objects(base, _CODE.contains)
-                      if t != uri and (t, RDF.type, _CODE.Function) in g and (t, _CODE.name, m) in g]
+            found += [t for m in objects(g, uri, CODE.name) for base in bases for t in objects(g, base, CODE.contains)
+                      if t != uri and has(g, t, RDF.type, CODE.Function) and has(g, t, CODE.name, m)]
         return found
 
     def _blast(self, target: str, bare: str, depth: int, limit: int) -> BlastAnswer:
@@ -516,7 +526,7 @@ SELECT ?n (MIN(?s) AS ?start) WHERE {{
 }}
 GROUP BY ?n
 """
-        return {self._id(r.n): int(r.start) for r in self.graph.query(q)}
+        return {self._id(r["n"]): int(text(r["start"])) for r in self.graph.query(q)}
 
     def _callers(self, site_pattern: str, reason: str | None = None) -> list[Caller]:
         """One Caller per CallSite matching *site_pattern* (which binds ?site), by file and line, each with *reason*."""
@@ -531,13 +541,13 @@ SELECT ?caller ?name ?file ?line WHERE {{
 ORDER BY ?file ?line ?caller
 """
         return [
-            Caller(self._id(r.caller), str(r.name), str(r.file), int(r.line), reason)
+            Caller(self._id(r["caller"]), text(r["name"]), text(r["file"]), int(text(r["line"])), reason)
             for r in self.graph.query(q)
         ]
 
     def _id(self, uri: Any) -> str:
         """Return the code identifier a node URI encodes (inverse of ``_uri``)."""
-        return urllib.parse.unquote(str(uri)[len(_CODE_NS):])
+        return urllib.parse.unquote(text(uri)[len(_CODE_NS):])
 
     def _uri(self, identifier: str) -> str:
         """Return a SPARQL inline URI for *identifier*, e.g. ``<code:foo>``."""
