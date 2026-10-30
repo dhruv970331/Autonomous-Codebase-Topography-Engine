@@ -5,8 +5,8 @@ Starts `acte serve GRAPH --profile PROFILE` over stdio, offers its tools to a mo
 OpenAI-style /v1/chat/completions endpoint, asks each question in questions.json, and grades
 the final answers against the expected ids.
 
-    poetry run acte build src -o acte.ttl
-    poetry run python eval/run_eval.py --graph acte.ttl --base-url http://host:11500/v1 --model qwen3.6:35b-a3b
+    poetry run acte build src -o acte-map
+    poetry run python eval/run_eval.py --graph acte-map --base-url http://host:11500/v1 --model qwen3.6:35b-a3b
 
 The expected sets are for ACTE's own `src/` tree at questions.json's source_tree; run inside the repo,
 the runner warns when the graph was built from a commit whose `src/` differs.
@@ -201,7 +201,7 @@ async def run(args) -> list[dict]:
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    p.add_argument("--graph", required=True, help="Turtle graph from `acte build src`")
+    p.add_argument("--graph", required=True, help="the map folder from `acte build src`")
     p.add_argument("--base-url", required=True, help="OpenAI-style API root, such as http://host:port/v1")
     p.add_argument("--model", required=True)
     p.add_argument("--profile", default="small", choices=["small", "full"])
