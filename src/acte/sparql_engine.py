@@ -155,7 +155,7 @@ class SPARQLEngine:
 
     def __init__(self, graph: Graph | None = None) -> None:
         self.graph: Graph = graph if graph is not None else new_graph()
-        self._index: tuple | None = None  # (graph size, symbols, by id, by bare name, by qualname), see _indexed()
+        self._index: tuple | None = None  # (symbols, by id, by bare name, by qualname), see _indexed()
 
     @classmethod
     def open(cls, path: str | Path) -> "SPARQLEngine":
@@ -313,7 +313,7 @@ ORDER BY ?file ?start ?end ?name
 
     def symbols(self) -> list[tuple[str, str, str, str, int]]:
         """Return (id, kind, bare name, file, lineStart) of every Function and Class, sorted by id."""
-        return list(self._indexed()[1])
+        return list(self._indexed()[0])
 
     def _symbols(self) -> list[tuple[str, str, str, str, int]]:
         q = _PREFIXES + """
@@ -393,18 +393,16 @@ ORDER BY ?path
         An exact id wins. Otherwise a dotted *name* is a qualname (``<locals>``
         optional) and an undotted one matches every definition with that bare name.
         """
-        _, _, by_id, by_bare, by_qual = self._indexed()
+        _, by_id, by_bare, by_qual = self._indexed()
         exact = by_id.get(name, [])
         if exact or "." not in name:
             return list(exact or by_bare.get(name, []))
         return list(by_qual.get(name.replace(".<locals>", ""), []))
 
     def _indexed(self) -> tuple:
-        """The definitions index, built on first use and again when the graph has changed."""
-        # change check: the triple count. A change that keeps the count the same is not seen; the
-        # engine's users load a graph once and only read it.
-        size = len(self.graph)
-        if self._index is None or self._index[0] != size:
+        """The definitions index, built on first use and never again: edits to the map after the first question are not seen."""
+        # no change check: counting the facts would read the whole map on every question
+        if self._index is None:
             g = self.graph  # triples() lookups: the same rows as a SPARQL query over every definition, several times faster
             defs = sorted((self._id(d), text(n)) for kind in (CODE.Function, CODE.Class)
                           for d in subjects(g, RDF.type, kind) for n in objects(g, d, CODE.name))
@@ -413,7 +411,7 @@ ORDER BY ?path
                 by_id[d[0]].append(d)
                 by_bare[d[1]].append(d)
                 by_qual[d[0].split("::", 1)[-1].replace(".<locals>", "")].append(d)
-            self._index = (size, self._symbols(), by_id, by_bare, by_qual)
+            self._index = (self._symbols(), by_id, by_bare, by_qual)
         return self._index
 
     def _caller_answer(self, target: str, bare: str) -> CallerAnswer:

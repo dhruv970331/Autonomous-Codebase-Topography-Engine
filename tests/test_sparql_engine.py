@@ -465,11 +465,11 @@ def test_definitions_index_matches_a_full_scan():
     for name in sorted(names):
         assert engine._definitions(name) == _uncached_definitions(engine, name), name
         assert _case_insensitive(name, engine.symbols()) == _case_insensitive(name, symbols), name
-    # a changed graph is indexed again
+    # the index is built once: a later edit to the map is not seen
     f = next(iter(subjects(engine.graph, RDF.type, CODE.Function)))
     remove(engine.graph, f)
-    assert engine._definitions(engine._id(f)) == _uncached_definitions(engine, engine._id(f)) == []
-    assert engine.symbols() == engine._symbols() != symbols
+    assert _uncached_definitions(engine, engine._id(f)) == [] != engine._definitions(engine._id(f))
+    assert engine._symbols() != engine.symbols() == symbols
 
 
 _COVERAGE_ORACLE = """
