@@ -1,9 +1,12 @@
 import json
+import os
+import shutil
 import subprocess
 from importlib.metadata import version
 from pathlib import Path
 
 import anyio
+import pyoxigraph as ox
 import pytest
 from mcp import Client
 
@@ -354,11 +357,13 @@ def test_graph_info_uses_the_stored_summary_only_while_it_fits_the_map(tmp_path,
     checked = []
     monkeypatch.setattr(mcp_server, "run_checks", lambda g: checked.append(1) or run_checks(g))
     info = {name: _call(create_server(path, profile="full"), "graph_info")
-            for name, path in (("fresh", tmp_path / "fresh"), ("old", old), ("edited", edited), ("edited_old", edited_old),
+            for name, path in (("fresh", tmp_path / "fresh"), ("old", old), ("edited_old", edited_old),
                                ("bad", bad), ("other", other))}
-    assert len(checked) == 5  # every map but the fresh one is checked live
+    assert len(checked) == 4  # every map but the fresh one is checked live
     assert info["fresh"] == info["old"] == info["bad"] and info["fresh"].endswith("\nHealth: ok")
-    assert info["edited"] == info["edited_old"] and info["edited"].endswith("\nHealth: failing: dangling-call-arrows")
+    assert info["edited_old"].endswith("\nHealth: failing: dangling-call-arrows")
+    with pytest.raises(ValueError, match="the map was changed after its build"):  # an edited map with its summary
+        create_server(edited)
     assert info["other"].splitlines()[1:] == info["fresh"].splitlines()[1:]
 
 
@@ -489,3 +494,56 @@ def test_an_ambiguous_name_shows_the_first_line_of_each_definition(tmp_path):
     _build(root, tmp_path / "g.nt.gz")
     answer = _call(create_server(tmp_path / "g.nt.gz"), "callers_of", name="size").splitlines()
     assert answer[1:3] == ["app.py::Box.size (Function) app.py:21", "app.py::Shape.size (Function) app.py:31"]
+
+
+def _fresh_map(tmp_path):
+    """A map folder from the real `acte build`, its active subfolder, and the graph_info answer it gives."""
+    _write(tmp_path / "proj", CALLS)
+    main(["build", str(tmp_path / "proj"), "-o", str(tmp_path / "map"), "--no-jedi"])
+    sub = tmp_path / "map" / (tmp_path / "map" / "current").read_text().strip()
+    return tmp_path / "map", sub, _call(create_server(tmp_path / "map", profile="full"), "graph_info")
+
+
+def test_start_up_rebuilds_a_database_folder_that_does_not_fit_the_map(tmp_path):
+    folder, sub, want = _fresh_map(tmp_path)
+    facts = len(ox.Store.read_only(str(sub / "db")))
+
+    def missing():
+        shutil.rmtree(sub / "db")
+
+    def empty():  # as a fill stopped before its first fact leaves it
+        shutil.rmtree(sub / "db")
+        (sub / "db").mkdir()
+
+    def one_fact_less():
+        db = ox.Store(str(sub / "db"))
+        db.remove(ox.Quad(CODE["db.py::Database"], RDF.type, CODE.Class))
+        db.flush()
+        assert len(db) == facts - 1
+        del db
+
+    def will_not_open():  # as a folder from another pyoxigraph version
+        (sub / "db" / "CURRENT").write_text("not a database\n")
+
+    for spoil in (missing, empty, one_fact_less, will_not_open):
+        spoil()
+        assert _call(create_server(folder, profile="full"), "graph_info") == want, spoil.__name__
+        assert len(ox.Store.read_only(str(sub / "db"))) == facts, spoil.__name__
+        assert sorted(os.listdir(sub)) == ["db", "map.nt.gz"], spoil.__name__  # nothing left behind
+
+
+def test_start_up_refuses_a_map_changed_after_its_build(tmp_path, capsys):
+    folder, sub, _ = _fresh_map(tmp_path)
+    graph = load(sub / "map.nt.gz")
+    remove(graph, CODE["db.py::Database"], RDF.type, CODE.Class)
+    save(graph, sub / "map.nt.gz")  # the kept file edited by hand
+    save(graph, tmp_path / "edited.nt.gz")  # and the same map shared as one file
+    shutil.rmtree(sub / "db")
+    for path in (folder, tmp_path / "edited.nt.gz"):
+        with pytest.raises(ValueError, match="the map was changed after its build. Run acte build again."):
+            create_server(path)
+        with pytest.raises(SystemExit) as exit_:
+            main(["serve", str(path)])
+        assert exit_.value.code == 2
+        assert "facts but its build stored" in capsys.readouterr().err
+    assert sorted(os.listdir(sub)) == ["map.nt.gz"]  # the folder rebuilt from it is not kept

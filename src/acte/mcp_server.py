@@ -17,7 +17,7 @@ from pathlib import Path
 from mcp.server.mcpserver import MCPServer
 
 from acte.health import CHECKS, run_checks
-from acte.rdf_builder import CODE, RDF, subjects, text, value
+from acte.rdf_builder import CODE, RDF, open_checked, subjects, text, value
 from acte.sparql_engine import SPARQLEngine
 
 _BUDGET = 4000  # characters per answer, about 1,000 tokens
@@ -153,9 +153,9 @@ def stale_warning(built: str | None, now: str | None) -> str:
 
 def create_server(graph_path: str | Path, project: str | Path | None = None, profile: str = "small") -> MCPServer:
     """A server over the graph in *graph_path*, loaded once and read under one lock (the SDK runs sync tools on worker threads)."""
-    engine = SPARQLEngine.open(graph_path)
+    graph, size = open_checked(graph_path)  # the fact count, counted once: it reads the whole map
+    engine = SPARQLEngine(graph=graph)
     engine.symbols()  # builds the name index now, while the map opens, so the first question does not pay for it
-    size = len(engine.graph)  # counted once: it reads the whole map
     lock = threading.Lock()
     server = MCPServer("acte", version=version("acte"))
     built = value(engine.graph, CODE["build"], CODE.commit)

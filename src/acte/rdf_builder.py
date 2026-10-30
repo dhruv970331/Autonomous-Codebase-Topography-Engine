@@ -5,6 +5,7 @@ graph for SPARQL querying.
 """
 
 import gzip
+import json
 import os
 import shutil
 import time
@@ -119,10 +120,69 @@ MAP_FORMAT = 2  # code:mapFormat of the maps this ACTE builds; 2 = with Definiti
 
 def load_map(path: str | Path) -> Graph:
     """The map *path* written by ``acte build``; a ValueError when an older ACTE built it."""
-    graph = load(path)
+    return _same_format(load(path))
+
+
+def _same_format(graph: Graph) -> Graph:
     if value(graph, CODE["build"], CODE.mapFormat) != lit(MAP_FORMAT):
         raise ValueError("built by an older ACTE. Run acte build again.")
     return graph
+
+
+def stored_count(graph: Graph) -> int | None:
+    """The fact count ``acte build`` stored in *graph*'s summary, or None when there is no readable one."""
+    stored = value(graph, CODE["build"], CODE.summary)
+    try:
+        return None if stored is None else json.loads(text(stored))["triples"]
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
+def open_checked(path: str | Path) -> tuple[Graph, int]:
+    """The map at *path* and its fact count, counted once, for a server that will answer from it.
+
+    A map folder's database is rebuilt from its kept file when it is missing, will not open, or does not hold the
+    count its build stored. A ValueError when the map itself does not hold that count: it was changed after its
+    build. A map with no stored count (from an older ACTE) opens as it is."""
+    path = Path(path)
+    if not path.is_dir():
+        graph = load_map(path)
+        size, stored = len(graph), stored_count(graph)
+        if stored not in (None, size):
+            raise ValueError(f"it holds {size} facts but its build stored {stored}: the map was changed after its build. "
+                             "Run acte build again.")
+        return graph, size
+    sub = path / (path / "current").read_text().strip()
+    try:
+        graph = ox.Store.read_only(str(sub / "db"))
+        size = len(graph)
+    except Exception:  # noqa: BLE001 - any folder that will not open is rebuilt: a pyoxigraph 0.4 one raises RuntimeError
+        graph = None
+    if graph is not None and size and stored_count(graph) == size:
+        return _same_format(graph), size
+    graph = None  # closes it before the rebuild
+    new = sub / f".db.{os.getpid()}.new"
+    shutil.rmtree(new, ignore_errors=True)
+    graph = ox.Store(str(new))
+    try:
+        with gzip.open(sub / "map.nt.gz") as f:
+            graph.bulk_load(f, format=ox.RdfFormat.N_TRIPLES)
+        graph.flush()
+        size, stored = len(graph), stored_count(graph)
+        del graph
+        if stored is not None and stored != size:
+            raise ValueError(f"its kept file holds {size} facts but its build stored {stored}: the map was changed "
+                             "after its build. Run acte build again.")
+    except BaseException:
+        shutil.rmtree(new, ignore_errors=True)
+        raise
+    # swap: a non-empty folder cannot be renamed over another, so the old one is moved aside first
+    old = sub / f".db.{os.getpid()}.old"
+    if (sub / "db").exists():
+        os.rename(sub / "db", old)
+    os.rename(new, sub / "db")
+    shutil.rmtree(old, ignore_errors=True)
+    return _same_format(ox.Store.read_only(str(sub / "db"))), size
 
 
 def save(graph: Graph, path: str | Path) -> None:
