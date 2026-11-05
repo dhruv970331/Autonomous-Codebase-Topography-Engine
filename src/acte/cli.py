@@ -9,7 +9,9 @@ MAP is a map folder, or one map file: its map.nt.gz, or a .ttl map from an older
 """
 
 import argparse
+import bisect
 import contextlib
+import hashlib
 import json
 import os
 import subprocess
@@ -19,7 +21,7 @@ from pathlib import Path
 
 from acte import resolver
 from acte.analysis import import_cycles, rank, subsystems
-from acte.health import run_checks
+from acte.health import run_checks, scan
 from acte.mcp_server import create_server
 from acte.parser import EXTENSION_TO_LANGUAGE
 from acte.rdf_builder import (
@@ -32,12 +34,18 @@ from acte.rdf_builder import (
     check_map_folder,
     lit,
     load_map,
+    map_id,
+    nt_line,
+    read_json,
     save_map,
+    sorted_lines,
+    stored_summary,
+    subfolder,
     subjects,
     text,
     value,
 )
-from acte.sparql_engine import SPARQLEngine
+from acte.sparql_engine import CallLinks, SPARQLEngine
 
 # skipped when walking a directory that is not in a git work tree; hidden dirs are skipped too
 _SKIP_DIRS = {".git", ".venv", "venv", "env", "node_modules", "__pycache__", ".ipynb_checkpoints",
@@ -104,9 +112,9 @@ def _counts(graph: Graph) -> tuple[dict, dict]:
 
 def _summary(graph: Graph) -> tuple[dict, dict[str, list[dict]]]:
     """Print the counts and coverage rate of *graph*; return its coverage and health check results."""
-    counts, cov = _counts(graph)
+    counts, cov, checks = scan(graph)
     _print_counts(counts, cov)
-    return cov, run_checks(graph)
+    return cov, checks
 
 
 def _print_counts(counts: dict, cov: dict) -> None:
@@ -124,24 +132,51 @@ def _row(row: dict) -> dict:
     return {k: SPARQLEngine()._id(v) if v.startswith(str(CODE)) else v for k, v in row.items()}
 
 
-def _stats(graph: Graph, fmt: str = "text") -> int:
-    """Print the build metadata, summary, coverage breakdown and health of *graph*; 1 if a health check fails."""
+def _saved_results(path: str, graph: Graph) -> dict | None:
+    """The summary the build of the map folder *path* stored, while it still describes the map *graph* opened from
+    it: the kept file has the SHA-256 and the database the fact count saved at build, this acte version built it, and
+    no check failed (the summary holds no rows to show). None otherwise, and for a single map file."""
+    sub = subfolder(path)
+    if sub is None:
+        return None
+    try:
+        index = read_json(sub / "index.json.gz")
+        with open(sub / "map.nt.gz", "rb") as f:
+            if hashlib.file_digest(f, "sha256").hexdigest() != index["keptSha256"]:
+                return None
+        summary = stored_summary(graph)
+        if (len(graph), summary["mapId"]) != (index["triples"], index["mapId"]) \
+                or text(value(graph, CODE["build"], CODE.acteVersion)) != version("acte") or any(summary["health"].values()):
+            return None
+        return summary
+    except Exception:  # noqa: BLE001 - a missing or broken side file or summary: check for real
+        return None
+
+
+def _stats(graph: Graph, fmt: str = "text", saved: dict | None = None) -> int:
+    """Print the build metadata, summary, coverage breakdown and health of *graph*; 1 if a health check fails.
+    *saved*: the results its build stored (_saved_results), printed instead of checking the map again."""
     meta = CODE["build"]
     built = {prop: text(v) for prop in ("root", "commit", "acteVersion", "jediVersion")
              if (v := value(graph, meta, CODE[prop])) is not None}
     if fmt == "json":
-        counts, cov = _counts(graph)
-        failing = {name: [_row(r) for r in rows] for name, rows in run_checks(graph).items() if rows}
+        counts, cov, checks = (saved["counts"], saved["coverage"], {}) if saved else scan(graph)
+        failing = {name: [_row(r) for r in rows] for name, rows in checks.items() if rows}
         print(json.dumps({"build": built, **counts, "coverage": cov, "health": "failing" if failing else "ok",
-                          "failing": failing}, indent=2))
+                          "check": "quick" if saved else "full", "failing": failing}, indent=2))
         return 1 if failing else 0
     for prop, v in built.items():
         print(f"{prop}: {v}")
-    cov, checks = _summary(graph)
+    if saved:
+        cov, checks = saved["coverage"], {}
+        _print_counts(saved["counts"], cov)
+    else:
+        cov, checks = _summary(graph)
     for key in ("status", "tier", "reason"):
         print(f"{key}: {', '.join(f'{k} {n}' for k, n in cov[key].items()) or 'none'}")
     failing = {name: rows for name, rows in checks.items() if rows}
-    print(f"health: {'ok' if not failing else 'failing'}")
+    check = "saved at build: the map file and fact count are unchanged; --full checks again" if saved else "full check"
+    print(f"health: {'ok' if not failing else 'failing'} ({check})")
     for name, rows in failing.items():
         print(f"  {name}: {len(rows)} rows")
         for row in rows[:5]:
@@ -149,6 +184,23 @@ def _stats(graph: Graph, fmt: str = "text") -> int:
         if len(rows) > 5:
             print(f"    ... and {len(rows) - 5} more")
     return 1 if failing else 0
+
+
+def _to_save(graph: Graph, counts: dict, cov: dict, checks: dict) -> tuple[list[bytes], dict, dict | None]:
+    """Add the summary to *graph*; return the kept file's lines and the data of its name index and call links files."""
+    lines = sorted_lines(graph)  # the kept file's lines but the summary's, which holds their id: two builds still match
+    # for graph_info, which uses it only while the map still has this many triples (the count includes this one)
+    summary = {"counts": counts, "coverage": cov, "health": {name: len(rows) for name, rows in checks.items()},
+               "mapId": map_id(lines), "triples": len(graph) + 1}
+    fact = (CODE["build"], CODE.summary, lit(json.dumps(summary, sort_keys=True)))
+    add(graph, *fact)
+    bisect.insort(lines, nt_line(*fact))
+    head = {"mapId": summary["mapId"], "triples": summary["triples"]}  # the map the side files belong to
+    try:
+        links = {**head, **CallLinks(graph).data()}
+    except ValueError:  # a value the links read is given twice: the server answers from the store
+        links = None
+    return lines, {**head, **SPARQLEngine(graph=graph).index_data()}, links
 
 
 def _analyze(graph: Graph, top: int, fmt: str) -> None:
@@ -188,6 +240,8 @@ def main(argv: list[str] | None = None) -> int:
     st = sub.add_parser("stats", help="summarise a map written by build")
     st.add_argument("graph", help="the map folder, or a .nt.gz or .ttl map file")
     st.add_argument("--format", choices=["text", "json"], default="text", help="output format (default: text)")
+    st.add_argument("--full", action="store_true",
+                    help="read the whole map and run every check, even when the results saved at build still fit")
     im = sub.add_parser(
         "impact", help="list what a git diff may break",
         description="Map each line the diff of the work tree against BASE changes to the function or class that holds it, "
@@ -225,7 +279,7 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, SyntaxError, ValueError, RuntimeError) as exc:  # a parse error is a SyntaxError; load_map refuses with a ValueError; a broken db/ raises RuntimeError
             parser.error(f"cannot read {args.graph}: {exc}")
         if args.command == "stats":
-            return _stats(graph, args.format)
+            return _stats(graph, args.format, None if args.full else _saved_results(args.graph, graph))
         _analyze(graph, args.top, args.format)
         return 0
 
@@ -246,11 +300,7 @@ def main(argv: list[str] | None = None) -> int:
     graph = build(root, not args.no_jedi, args.jobs)
     counts, cov = _counts(graph)
     checks = run_checks(graph)
-    # for graph_info, which uses it only while the map still has this many triples (the count includes this one)
-    summary = {"counts": counts, "coverage": cov, "health": {name: len(rows) for name, rows in checks.items()},
-               "triples": len(graph) + 1}
-    add(graph, CODE["build"], CODE.summary, lit(json.dumps(summary, sort_keys=True)))
-    save_map(graph, args.output)
+    save_map(graph, args.output, *_to_save(graph, counts, cov, checks))  # held by no name here, so save_map can free them
     print(f"wrote {args.output}")
     _print_counts(counts, cov)
     failing = [name for name, rows in checks.items() if rows]

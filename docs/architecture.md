@@ -26,10 +26,13 @@ before any database folder opens: a database runs threads, and copying a process
 threads can hang.
 
 `acte build` saves the graph in a map folder (`-o`, default `acte-map`). Each build fills a
-new subfolder with two things: `map.nt.gz`, the graph as N-Triples with the lines sorted as
+new subfolder with four things: `map.nt.gz`, the graph as N-Triples with the lines sorted as
 bytes and gzipped with no time or file name in the header, so the same code always gives the
-same bytes; and `db/`, a pyoxigraph database filled from the same graph, which the other
-commands open read-only. Then it rewrites the small file `current` (a temporary file, then a
+same bytes; `db/`, a pyoxigraph database filled from the same graph, which the other
+commands open read-only; and two side files for the server, `index.json.gz` (the name index)
+and `links.json.gz` (the call links). The side files are JSON with sorted keys, gzipped the same
+way, never pickle. Each holds the map id and the fact count of the map it belongs to, and
+`index.json.gz` also holds the SHA-256 of `map.nt.gz`. Then it rewrites the small file `current` (a temporary file, then a
 rename) to name the new subfolder. The subfolder `current` named before is kept, because a
 running server may still read it; older ones are deleted. The subfolder's name is not part of
 the map. Every command that takes a map also accepts one map file, a `map.nt.gz` or a `.ttl`
@@ -283,8 +286,17 @@ over stdio, built on the official `mcp` SDK. Queries run one at a time under a l
 `small` profile (default) has `find_symbol`, `callers_of`, `callees_of` and `blast_radius`;
 `full` adds `functions_in_file`, `dependencies_of`, `orphan_functions` and `graph_info`.
 `execute_raw_sparql` is not offered: the model never writes SPARQL.
-The server builds the engine's name index right after opening the map, and never again, so
-changes to the map after that are not seen.
+Right after opening the map, the server loads the name index (every definition's id and bare
+name, and `symbols()`) and the call links from the side files, when their map id and fact count
+are those in the map's summary. Otherwise it builds both from the map and prints a one-line
+note; the side files never stop it from starting. The index is never built again, so changes to
+the map after that are not seen. The call links hold, per definition, the call sites that
+confirm a caller and those that list it as a candidate, each site's caller and line, each
+caller's name and file, and the number of unsure calls per called name. `callers_of` and
+`blast_radius` read those parts from memory, which gives the same rows as the queries they
+replace. Calls that may reach an override and creations of a subclass with an outside base stay
+queries on the store: they need the class tree. If a call site has two callers or two lines,
+the links are not used and every part is a query, as before.
 
 At start-up the server counts the map's facts once. A database folder that is missing, empty,
 will not open (a folder from another pyoxigraph version may not) or holds a different count
@@ -293,10 +305,15 @@ its place. If `map.nt.gz` does not hold the stored count either, the map was cha
 build and the server refuses to start.
 
 `acte build` stores one `code:summary` literal on the Build node: JSON with the counts, the
-coverage, the row count of each health check, and the graph's triple count. `graph_info` uses
+coverage, the row count of each health check, the graph's triple count, and the map id: the
+SHA-256 of every line of `map.nt.gz` except the summary's own, so two builds of the same code
+still give the same bytes. `graph_info` uses
 it only when it is valid JSON, the triple count matches the one counted at start-up, and the
 graph's `code:acteVersion` is the running version. Otherwise it computes everything again.
-`acte stats` always computes everything again.
+`acte stats` is quick by default: when the SHA-256 of `map.nt.gz` and the fact count of `db/`
+are those saved in `index.json.gz`, the map id matches, the running version built it and no
+check failed, it prints the stored results. Otherwise, and always with `--full` or for a single
+map file, it computes everything again from the map. The health line says which check ran.
 
 Each tool takes a name or path and returns plain text built for a small model:
 

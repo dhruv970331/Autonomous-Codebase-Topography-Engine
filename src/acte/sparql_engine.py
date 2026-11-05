@@ -38,6 +38,7 @@ from acte.rdf_builder import (
     query_rows,
     subjects,
     text,
+    triples,
 )
 
 _CODE_NS = "http://acte.local/code#"
@@ -138,6 +139,122 @@ class BlastAnswer:
     reasons: dict[str, int]  # summed over expanded nodes, plus "depth-limit"
 
 
+def coverage_counts(everything: list[tuple]) -> dict:
+    """SPARQLEngine.coverage() from its rows: one (status, tier, reason, target type, caller's filePath) per combination
+    of the values a call site has, None where it has none."""
+    edges = {CODE.Function: "calls", CODE.Class: "instantiates"}
+    rows = [r for r in everything if text(r[4]).endswith(".py")]  # as the resolver: only Python is resolved
+
+    def count(values):
+        return dict(sorted(Counter(text(v) for v in values if v is not None).items()))
+    status = count(r[0] for r in rows)
+    measured = len(rows) - status.get("external", 0)
+    return {
+        "edge": count(edges.get(r[3]) for r in rows),
+        "no_resolver": len(everything) - len(rows),
+        "rate": status.get("resolved", 0) / measured if measured else None,
+        "reason": count(r[2] for r in rows),
+        "status": status,
+        "tier": count(r[1] for r in rows),
+        "total": len(everything),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Call links
+# ---------------------------------------------------------------------------
+
+# the (status, reason) pairs of the calls that may reach a definition of the name they call, counted in a CallerAnswer
+_UNSURE = (("unresolved", "unknown-receiver"), ("unresolved", "unknown-base"), ("ambiguous", "ceiling"))
+
+
+class CallLinks:
+    """Who calls what, held in memory: what ``_caller_answer`` reads for the confirmed callers, the ambiguous possible
+    callers and the counts of unsure calls, without a trip to the store per call site.
+
+    Built from a map, or from the plain data ``acte build`` saves beside it. A ValueError when a call site has two
+    callers or two lines, or a caller two names or two files: the store's join would then give one row per
+    combination, which these links do not hold."""
+
+    def __init__(self, graph: Graph) -> None:
+        g = graph
+        recursive = {text(s) for s in subjects(g, CODE.recursive, lit(True))}
+        caller: dict[str, str] = {}
+        same: dict[str, str] = {}  # one string per caller, however many sites it has
+        for s, _, o in triples(g, None, CODE.inFunction):
+            if text(s) in caller:
+                raise ValueError(f"call site {text(s)} has two callers")
+            caller[text(s)] = same.setdefault(text(o), text(o))
+        sites = sorted(caller)  # numbered in IRI order, so the same map gives the same data
+        number = {s: i for i, s in enumerate(sites)}
+        self.callers_of_site = [caller[s] for s in sites]
+        self.lines: list[int | None] = [None] * len(sites)
+        for s, _, o in triples(g, None, CODE.line):
+            if (i := number.get(text(s))) is not None:
+                if self.lines[i] is not None:
+                    raise ValueError(f"call site {text(s)} has two lines")
+                self.lines[i] = int(text(o))
+        self.names: dict[str, str] = {}
+        self.files: dict[str, str] = {}
+        callers = set(self.callers_of_site)
+        for p, found in ((CODE.name, self.names), (CODE.filePath, self.files)):
+            for s, _, o in triples(g, None, p):
+                if text(s) in callers:
+                    if text(s) in found:
+                        raise ValueError(f"{text(s)} has two values of {text(p)}")
+                    found[text(s)] = text(o)
+        # confirmed: resolvedTo, then initTarget (the two branches of the query this replaces), recursive calls left out
+        self.confirmed: dict[str, list[int]] = defaultdict(list)
+        for p in (CODE.resolvedTo, CODE.initTarget):
+            for s, _, o in triples(g, None, p):
+                if text(s) not in recursive and (i := number.get(text(s))) is not None:
+                    self.confirmed[text(o)].append(i)
+        self.candidates: dict[str, list[int]] = defaultdict(list)
+        for s, _, o in triples(g, None, CODE.candidate):
+            if (i := number.get(text(s))) is not None:
+                self.candidates[text(o)].append(i)
+        status = defaultdict(set)
+        for st in {st for st, _ in _UNSURE}:
+            for s in subjects(g, CODE.status, lit(st)):
+                status[s].add(st)
+        counted = defaultdict(list)  # site -> the (status, reason) pairs it is counted under
+        for r in {r for _, r in _UNSURE}:
+            for s in subjects(g, CODE.reason, lit(r)):
+                counted[s] += [(st, r) for st in sorted(status.get(s, ())) if (st, r) in _UNSURE]
+        self.unsure: Counter = Counter()  # (called name, status, reason) -> calls
+        for s, _, o in triples(g, None, CODE.targetName):
+            for st, r in counted.get(s, ()):
+                self.unsure[(text(o), st, r)] += 1
+
+    def data(self) -> dict:
+        """The links as plain data, for ``acte build`` to save beside the map."""
+        return {"callers": self.callers_of_site, "lines": self.lines, "names": self.names, "files": self.files,
+                "confirmed": {t: sorted(v) for t, v in self.confirmed.items()},
+                "candidates": {t: sorted(v) for t, v in self.candidates.items()},
+                "unsure": [[*k, n] for k, n in sorted(self.unsure.items())]}
+
+    @classmethod
+    def from_data(cls, data: dict) -> "CallLinks":
+        """The links saved as data() of this same map."""
+        self = cls.__new__(cls)
+        self.callers_of_site, self.lines, self.names, self.files = data["callers"], data["lines"], data["names"], data["files"]
+        self.confirmed, self.candidates = data["confirmed"], data["candidates"]
+        self.unsure = Counter({(name, st, r): n for name, st, r, n in data["unsure"]})
+        return self
+
+    def callers(self, sites, reason: str | None = None) -> list[Caller]:
+        """One Caller per call site in *sites* whose caller has a name and a file, by file, line and caller: the rows
+        ``SPARQLEngine._callers`` gives for the same sites."""
+        rows = []
+        for i in sites:
+            f = self.callers_of_site[i]
+            name, file, line = self.names.get(f), self.files.get(f), self.lines[i]
+            if name is not None and file is not None and line is not None:
+                rows.append((file, line, f, name))
+        rows.sort(key=lambda r: r[:3])
+        return [Caller(urllib.parse.unquote(f[len(_CODE_NS):]), name, file, line, reason) for file, line, f, name in rows]
+
+
 # ---------------------------------------------------------------------------
 # Engine
 # ---------------------------------------------------------------------------
@@ -156,6 +273,7 @@ class SPARQLEngine:
     def __init__(self, graph: Graph | None = None) -> None:
         self.graph: Graph = graph if graph is not None else new_graph()
         self._index: tuple | None = None  # (symbols, by id, by bare name, by qualname), see _indexed()
+        self.links: CallLinks | None = None  # when set, "who calls this" reads confirmed and ambiguous callers from it
 
     @classmethod
     def open(cls, path: str | Path) -> "SPARQLEngine":
@@ -346,28 +464,14 @@ ORDER BY ?path
         languages with call resolution are measured; no_resolver counts the others, total all."""
         # triples() lookups give one row per combination of values, as the OPTIONALs of the old query
         # (kept in the tests as an oracle) did: it took 49 s on django under rdflib, the earlier store
-        g, edges = self.graph, {CODE.Function: "calls", CODE.Class: "instantiates"}
+        g = self.graph
         everything = [(status, tier, reason, kind, path)
                       for site in subjects(g, RDF.type, CODE.CallSite) for status in objects(g, site, CODE.status)
                       for tier in list(objects(g, site, CODE.tier)) or [None]
                       for reason in list(objects(g, site, CODE.reason)) or [None]
                       for kind in [k for t in objects(g, site, CODE.resolvedTo) for k in objects(g, t, RDF.type)] or [None]
                       for path in [p for f in objects(g, site, CODE.inFunction) for p in objects(g, f, CODE.filePath)] or [None]]
-        rows = [r for r in everything if text(r[4]).endswith(".py")]  # as the resolver: only Python is resolved
-
-        def count(values):
-            return dict(sorted(Counter(text(v) for v in values if v is not None).items()))
-        status = count(r[0] for r in rows)
-        measured = len(rows) - status.get("external", 0)
-        return {
-            "edge": count(edges.get(r[3]) for r in rows),
-            "no_resolver": len(everything) - len(rows),
-            "rate": status.get("resolved", 0) / measured if measured else None,
-            "reason": count(r[2] for r in rows),
-            "status": status,
-            "tier": count(r[1] for r in rows),
-            "total": len(everything),
-        }
+        return coverage_counts(everything)
 
     def execute_raw_sparql(self, query: str) -> list[dict[str, Any]]:
         """Escape hatch for dynamic graph exploration.
@@ -406,13 +510,27 @@ ORDER BY ?path
             g = self.graph  # triples() lookups: the same rows as a SPARQL query over every definition, several times faster
             defs = sorted((self._id(d), text(n)) for kind in (CODE.Function, CODE.Class)
                           for d in subjects(g, RDF.type, kind) for n in objects(g, d, CODE.name))
-            by_id, by_bare, by_qual = defaultdict(list), defaultdict(list), defaultdict(list)
-            for d in defs:  # each list keeps the sorted order
-                by_id[d[0]].append(d)
-                by_bare[d[1]].append(d)
-                by_qual[d[0].split("::", 1)[-1].replace(".<locals>", "")].append(d)
-            self._index = (self._symbols(), by_id, by_bare, by_qual)
+            self._index = self._make_index(defs, self._symbols())
         return self._index
+
+    @staticmethod
+    def _make_index(defs: list[tuple[str, str]], symbols: list[tuple[str, str, str, str, int]]) -> tuple:
+        by_id, by_bare, by_qual = defaultdict(list), defaultdict(list), defaultdict(list)
+        for d in defs:  # each list keeps the sorted order
+            by_id[d[0]].append(d)
+            by_bare[d[1]].append(d)
+            by_qual[d[0].split("::", 1)[-1].replace(".<locals>", "")].append(d)
+        return (symbols, by_id, by_bare, by_qual)
+
+    def index_data(self) -> dict:
+        """The name index as plain data, for ``acte build`` to save beside the map: the sorted (id, bare name) list
+        and symbols()."""
+        symbols, by_id, _, _ = self._indexed()
+        return {"defs": [list(d) for ds in by_id.values() for d in ds], "symbols": [list(s) for s in symbols]}
+
+    def load_index(self, data: dict) -> None:
+        """Use the name index *data* (from index_data() on this same map) instead of building it from the map."""
+        self._index = self._make_index([tuple(d) for d in data["defs"]], [tuple(s) for s in data["symbols"]])
 
     def _caller_answer(self, target: str, bare: str) -> CallerAnswer:
         """Confirmed callers, possible callers (R19) and the exact / lower-bound label (R23) of one definition."""
@@ -422,10 +540,15 @@ ORDER BY ?path
             reached.append(cls)
             names.append(cls.split("::", 1)[-1].rsplit(".", 1)[-1])
         values = " ".join(self._uri(t) for t in reached)
-        # D9: creating a class runs the __init__ its MRO finds, recorded by the resolver as initTarget
-        callers = self._callers(f"{{ ?site code:resolvedTo {uri} }} UNION {{ ?site code:initTarget {uri} }} "
-                                "FILTER NOT EXISTS { ?site code:recursive true }")
-        possible = self._callers(f"VALUES ?t {{ {values} }} ?site code:candidate ?t .", "ambiguous")
+        links = self.links
+        if links is not None:  # the same rows as the two queries below
+            callers = links.callers(links.confirmed.get(uri[1:-1], ()))
+            possible = links.callers([s for t in reached for s in links.candidates.get(self._uri(t)[1:-1], ())], "ambiguous")
+        else:
+            # D9: creating a class runs the __init__ its MRO finds, recorded by the resolver as initTarget
+            callers = self._callers(f"{{ ?site code:resolvedTo {uri} }} UNION {{ ?site code:initTarget {uri} }} "
+                                    "FILTER NOT EXISTS { ?site code:recursive true }")
+            possible = self._callers(f"VALUES ?t {{ {values} }} ?site code:candidate ?t .", "ambiguous")
         # A8: a call resolved to a method target overrides, through self / cls, a variable typed as that class
         # or jedi, may run target when the object is of target's class
         # The sites are picked with triples(), each as often as the SPARQL pattern it replaces matched it: rdflib,
@@ -441,8 +564,11 @@ ORDER BY ?path
         listed = Counter(c.reason for c in possible)
         reasons = {"ambiguous": listed["ambiguous"], "override": listed["override"]}
         # a method not found before an external or unknown base may be a project method after it in the MRO
-        # (one query: on the database folder, 4 to 10 times faster than a lookup per call site of the name)
-        q = _PREFIXES + f"""
+        if links is not None:
+            unsure = {r: sum(links.unsure.get((n, st, r), 0) for n in names) for st, r in _UNSURE}
+        else:
+            # (one query: on the database folder, 4 to 10 times faster than a lookup per call site of the name)
+            q = _PREFIXES + f"""
 SELECT ?status ?reason (COUNT(*) AS ?n) WHERE {{
     VALUES ?name {{ {" ".join(self._literal(n) for n in names)} }}
     VALUES (?status ?reason) {{ ("unresolved" "unknown-receiver") ("unresolved" "unknown-base") ("ambiguous" "ceiling") }}
@@ -452,7 +578,7 @@ SELECT ?status ?reason (COUNT(*) AS ?n) WHERE {{
 }}
 GROUP BY ?status ?reason
 """
-        unsure = {text(r["reason"]): int(text(r["n"])) for r in self.graph.query(q)}
+            unsure = {text(r["reason"]): int(text(r["n"])) for r in self.graph.query(q)}
         for reason in ("unknown-receiver", "unknown-base", "ceiling"):
             reasons[reason] = listed[reason] + unsure.get(reason, 0)
         reasons = {k: v for k, v in reasons.items() if v}

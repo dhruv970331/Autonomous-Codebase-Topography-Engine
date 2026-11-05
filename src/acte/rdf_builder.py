@@ -5,6 +5,7 @@ graph for SPARQL querying.
 """
 
 import gzip
+import hashlib
 import json
 import os
 import shutil
@@ -129,13 +130,25 @@ def _same_format(graph: Graph) -> Graph:
     return graph
 
 
-def stored_count(graph: Graph) -> int | None:
-    """The fact count ``acte build`` stored in *graph*'s summary, or None when there is no readable one."""
+def stored_summary(graph: Graph) -> dict | None:
+    """The summary ``acte build`` stored in *graph*, or None when there is no readable one."""
     stored = value(graph, CODE["build"], CODE.summary)
     try:
-        return None if stored is None else json.loads(text(stored))["triples"]
-    except (ValueError, KeyError, TypeError):
+        summary = None if stored is None else json.loads(text(stored))
+    except ValueError:
         return None
+    return summary if isinstance(summary, dict) else None
+
+
+def stored_count(graph: Graph) -> int | None:
+    """The fact count ``acte build`` stored in *graph*'s summary, or None when there is no readable one."""
+    return (stored_summary(graph) or {}).get("triples")
+
+
+def subfolder(path: str | Path) -> Path | None:
+    """The subfolder ``current`` names in the map folder *path*, or None when *path* is a single map file."""
+    path = Path(path)
+    return path / (path / "current").read_text().strip() if path.is_dir() else None
 
 
 def open_checked(path: str | Path) -> tuple[Graph, int]:
@@ -152,7 +165,7 @@ def open_checked(path: str | Path) -> tuple[Graph, int]:
             raise ValueError(f"it holds {size} facts but its build stored {stored}: the map was changed after its build. "
                              "Run acte build again.")
         return graph, size
-    sub = path / (path / "current").read_text().strip()
+    sub = subfolder(path)
     try:
         graph = ox.Store.read_only(str(sub / "db"))
         size = len(graph)
@@ -185,13 +198,47 @@ def open_checked(path: str | Path) -> tuple[Graph, int]:
     return _same_format(ox.Store.read_only(str(sub / "db"))), size
 
 
-def save(graph: Graph, path: str | Path) -> None:
-    """Write *graph* to *path* as the kept file: N-Triples lines sorted as bytes, gzip level 1 with no time or
-    file name in the header, so the same map always gives the same bytes."""
+def sorted_lines(graph: Graph) -> list[bytes]:
+    """The lines of *graph*'s kept file: its facts as N-Triples, sorted as bytes, without newlines."""
     lines = graph.dump(format=ox.RdfFormat.N_TRIPLES, from_graph=_DEFAULT).split(b"\n")[:-1]
     lines.sort()
+    return lines
+
+
+def nt_line(s, p, o) -> bytes:
+    """The fact (s, p, o) as its line in the kept file, without the newline."""
+    return ox.serialize([ox.Triple(s, p, o)], format=ox.RdfFormat.N_TRIPLES).rstrip(b"\n")
+
+
+def map_id(lines: list[bytes]) -> str:
+    """The SHA-256 of *lines* as the kept file writes them: the id ``acte build`` stores in the summary, made from
+    every line but the summary's own."""
+    digest = hashlib.sha256(b"\n".join(lines))
+    digest.update(b"\n" if lines else b"")
+    return digest.hexdigest()
+
+
+def save_json(data: dict, path: str | Path) -> None:
+    """Write *data* to *path* as a side file of the map: JSON with sorted keys, gzip level 1 with no time or file
+    name in the header, so the same map always gives the same bytes."""
+    body = json.dumps(data, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
     with open(path, "wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", compresslevel=1, mtime=0, filename="") as f:
-        f.write(b"\n".join(lines) + b"\n" if lines else b"")
+        f.write(body)
+
+
+def read_json(path: str | Path) -> dict:
+    with gzip.open(path, "rt", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save(graph: Graph, path: str | Path, lines: list[bytes] | None = None) -> None:
+    """Write *graph* to *path* as the kept file: N-Triples lines sorted as bytes, gzip level 1 with no time or
+    file name in the header, so the same map always gives the same bytes. *lines*: its sorted_lines(), if known."""
+    lines = sorted_lines(graph) if lines is None else lines
+    with open(path, "wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", compresslevel=1, mtime=0, filename="") as f:
+        if lines:  # two writes: one more copy of the joined lines would be the size of the map
+            f.write(b"\n".join(lines))
+            f.write(b"\n")
 
 
 def _write_new(path: Path, write) -> None:
@@ -222,10 +269,12 @@ def fill_db(graph: Graph, folder: Path) -> None:
     del db  # closes it
 
 
-def save_map(graph: Graph, folder: str | Path) -> None:
-    """Write *graph* as the map folder *folder*: a new subfolder with the kept file ``map.nt.gz`` and the database
-    folder ``db``, then the file ``current`` naming it. Old subfolders are deleted, but the one ``current`` named before stays: a running
-    server may still read it. A ValueError if *folder* is not a map folder (check_map_folder)."""
+def save_map(graph: Graph, folder: str | Path, lines: list[bytes] | None = None, index: dict | None = None,
+             links: dict | None = None) -> None:
+    """Write *graph* as the map folder *folder*: a new subfolder with the kept file ``map.nt.gz``, the database
+    folder ``db`` and the side files ``index.json.gz`` holding *index* plus the kept file's SHA-256 and
+    ``links.json.gz`` holding *links* (each when given), then the file ``current`` naming it. Old subfolders are deleted, but the one ``current`` named before stays: a running
+    server may still read it. A ValueError if *folder* is not a map folder (check_map_folder). *lines*: as for save()."""
     folder = Path(folder)
     check_map_folder(folder)
     folder.mkdir(parents=True, exist_ok=True)
@@ -235,7 +284,14 @@ def save_map(graph: Graph, folder: str | Path) -> None:
     new = folder / name
     new.mkdir()
     try:
-        _write_new(new / "map.nt.gz", lambda tmp: save(graph, tmp))
+        _write_new(new / "map.nt.gz", lambda tmp: save(graph, tmp, lines))
+        if index is not None:
+            with open(new / "map.nt.gz", "rb") as f:
+                index = {**index, "keptSha256": hashlib.file_digest(f, "sha256").hexdigest()}
+            _write_new(new / "index.json.gz", lambda tmp: save_json(index, tmp))
+        if links is not None:
+            _write_new(new / "links.json.gz", lambda tmp: save_json(links, tmp))
+        lines = index = links = None  # each about the size of the map: freed now if the caller holds no other reference
         fill_db(graph, new / "db")
         _write_new(current, lambda tmp: tmp.write_text(name + "\n"))
     except BaseException:

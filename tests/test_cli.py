@@ -1,3 +1,5 @@
+import gzip
+import hashlib
 import json
 import os
 import subprocess
@@ -145,7 +147,7 @@ def test_failed_write_keeps_the_old_output(tmp_path, monkeypatch, capsys):
     _build(capsys, tmp_path / "proj", out, "--no-jedi")
     before = sorted(os.listdir(out)), _kept(out).read_bytes()
 
-    def broken(graph, path):  # writes part of the map, then fails as a crash would
+    def broken(graph, path, lines=None):  # writes part of the map, then fails as a crash would
         Path(path).write_text("half")
         raise RuntimeError("disk full")
 
@@ -164,8 +166,21 @@ def test_a_new_build_keeps_the_map_it_replaces_and_deletes_older_ones(tmp_path, 
         names.append((out / "current").read_text().strip())
     assert len(set(names)) == 3
     assert sorted(os.listdir(out)) == sorted(["current", *names[1:]])  # a server may still read the one before
-    assert sorted(os.listdir(out / names[2])) == ["db", "map.nt.gz"]
-    assert _kept(out).read_bytes() == (out / names[1] / "map.nt.gz").read_bytes()  # the same code gives the same map
+    assert sorted(os.listdir(out / names[2])) == ["db", "index.json.gz", "links.json.gz", "map.nt.gz"]
+    for file in ("map.nt.gz", "index.json.gz", "links.json.gz"):  # the same code gives the same map
+        assert (out / names[2] / file).read_bytes() == (out / names[1] / file).read_bytes(), file
+
+
+def test_the_summary_holds_the_id_of_the_other_lines(tmp_path, capsys):
+    _write(tmp_path / "proj", PROJECT)
+    graph, _ = _build(capsys, tmp_path / "proj", tmp_path / "g", "--no-jedi")
+    kept = gzip.decompress(_kept(tmp_path / "g").read_bytes())
+    save(graph, tmp_path / "again.nt.gz")  # the summary line was put in its sorted place: the same as dumping afresh
+    assert gzip.decompress((tmp_path / "again.nt.gz").read_bytes()) == kept
+    others = [line for line in kept.split(b"\n")[:-1] if b"code#summary>" not in line]
+    assert len(others) == len(kept.split(b"\n")) - 2
+    summary = json.loads(text(value(graph, CODE["build"], CODE.summary)))
+    assert summary["mapId"] == hashlib.sha256(b"".join(line + b"\n" for line in others)).hexdigest()
 
 
 def test_build_refuses_to_write_into_a_folder_that_is_no_map(tmp_path, capsys):
@@ -191,7 +206,8 @@ def test_parallel_parse_writes_the_same_map(tmp_path, monkeypatch, capsys):
     src = Path(__file__).resolve().parents[1] / "src"
     main(["build", str(src), "-o", str(tmp_path / "one"), "--no-jedi", "--jobs", "1"])
     main(["build", str(src), "-o", str(tmp_path / "four"), "--no-jedi", "--jobs", "4"])
-    assert _kept(tmp_path / "one").read_bytes() == _kept(tmp_path / "four").read_bytes()
+    for file in ("map.nt.gz", "index.json.gz", "links.json.gz"):
+        assert (_kept(tmp_path / "one").parent / file).read_bytes() == (_kept(tmp_path / "four").parent / file).read_bytes(), file
 
 
 def test_default_output_is_in_the_working_directory(tmp_path, monkeypatch, capsys):
@@ -215,7 +231,7 @@ def test_stats_on_a_built_graph(tmp_path, capsys):
     assert capsys.readouterr().out.splitlines() == [
         "root: repo", f"commit: {_git(repo, 'rev-parse', 'HEAD')}", f"acteVersion: {version('acte')}",
         f"jediVersion: {jedi.__version__}", *SUMMARY, "coverage: 100.0%",
-        "status: resolved 3", "tier: T2 1, T3 1, TJ 1", "reason: none", "health: ok",
+        "status: resolved 3", "tier: T2 1, T3 1, TJ 1", "reason: none", "health: ok (saved at build: the map file and fact count are unchanged; --full checks again)",
     ]
 
 
@@ -228,8 +244,8 @@ def test_stats_on_a_broken_graph(tmp_path, capsys):
 
     assert main(["stats", str(tmp_path / "broken.nt.gz")]) == 1
     out = capsys.readouterr().out.splitlines()
-    assert out[out.index("health: failing"):] == [
-        "health: failing",
+    assert out[out.index("health: failing (full check)"):] == [
+        "health: failing (full check)",
         "  dangling-call-arrows: 1 rows",
         "    s=shop/models.py::make, p=instantiates, o=shop/models.py::A",
     ]
@@ -246,7 +262,7 @@ def test_stats_as_json(tmp_path, capsys):
         "files": 3, "functions": 3, "classes": 1, "call_sites": 3,
         "coverage": {"edge": {"calls": 1, "instantiates": 1}, "no_resolver": 0, "rate": 2 / 3, "reason": {"unknown-receiver": 1},
                      "status": {"resolved": 2, "unresolved": 1}, "tier": {"T2": 1, "T3": 1}, "total": 3},
-        "health": "ok", "failing": {},
+        "health": "ok", "check": "quick", "failing": {},
     }
 
     graph = load(_kept(tmp_path / "g"))
@@ -254,8 +270,51 @@ def test_stats_as_json(tmp_path, capsys):
     save(graph, tmp_path / "broken.nt.gz")
     assert main(["stats", str(tmp_path / "broken.nt.gz"), "--format", "json"]) == 1
     stats = json.loads(capsys.readouterr().out)
-    assert (stats["health"], stats["failing"]) == ("failing", {
+    assert (stats["health"], stats["check"], stats["failing"]) == ("failing", "full", {
         "dangling-call-arrows": [{"s": "shop/models.py::make", "p": "instantiates", "o": "shop/models.py::A"}]})
+
+
+def test_quick_stats_print_the_saved_results_only_while_they_fit_the_map(tmp_path, monkeypatch, capsys):
+    _write(tmp_path / "proj", PROJECT)
+    _build(capsys, tmp_path / "proj", tmp_path / "g", "--no-jedi")
+    folder, sub = tmp_path / "g", _kept(tmp_path / "g").parent
+
+    def stats(*flags):
+        code = main(["stats", str(folder), *flags])
+        return code, capsys.readouterr().out.splitlines()
+    full = stats("--full")
+    assert full[1][-1] == "health: ok (full check)"
+    with monkeypatch.context() as m:  # the quick check reads no check result from the map
+        m.setattr("acte.cli.run_checks", lambda graph: pytest.fail("a check ran"))
+        m.setattr("acte.cli._counts", lambda graph: pytest.fail("the map was counted again"))
+        quick = stats()
+    assert quick == (0, [*full[1][:-1], "health: ok (saved at build: the map file and fact count are unchanged; --full checks again)"])
+    assert json.loads("\n".join(stats("--format", "json")[1]))["check"] == "quick"
+
+    kept = (sub / "map.nt.gz").read_bytes()
+    graph = load(sub / "map.nt.gz")
+    remove(graph, CODE["shop/models.py::A"], RDF.type, CODE.Class)
+    save(graph, sub / "map.nt.gz")  # the kept file edited: the full check runs on the folder, which is unchanged
+    assert stats() == full
+    (sub / "map.nt.gz").write_bytes(kept)
+    assert stats() == quick
+
+    db = ox.Store(str(sub / "db"))  # the folder holds one fact less than at build
+    db.remove(ox.Quad(CODE["shop/models.py::A"], RDF.type, CODE.Class))
+    db.flush()
+    del db
+    code, out = stats()
+    assert code == 1 and out[out.index("health: failing (full check)") + 1] == "  dangling-call-arrows: 1 rows"
+
+
+def test_quick_stats_check_for_real_when_the_build_found_a_failing_check(tmp_path, monkeypatch, capsys):
+    _write(tmp_path / "proj", PROJECT)
+    with monkeypatch.context() as m:  # its summary holds the failing count, not the rows to show
+        m.setattr("acte.cli.run_checks", lambda graph: {"self-call-arrows": [{"s": "x"}], "callsite-status": []})
+        main(["build", str(tmp_path / "proj"), "-o", str(tmp_path / "g"), "--no-jedi"])
+    capsys.readouterr()
+    assert main(["stats", str(tmp_path / "g")]) == 0
+    assert capsys.readouterr().out.splitlines()[-1] == "health: ok (full check)"
 
 
 def test_stats_unknown_format(tmp_path, capsys):
