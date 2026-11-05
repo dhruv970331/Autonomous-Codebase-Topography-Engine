@@ -12,6 +12,7 @@ from acte.rdf_builder import (
     add,
     build_graph,
     has,
+    lit,
     new_graph,
     objects,
     remove,
@@ -21,7 +22,7 @@ from acte.rdf_builder import (
     triples,
 )
 from acte.resolver import CANDIDATE_CEILING, resolve
-from acte.sparql_engine import Caller, CallerAnswer, SPARQLEngine
+from acte.sparql_engine import Caller, CallerAnswer, CallLinks, SPARQLEngine
 
 SRC = Path(__file__).resolve().parents[1] / "src"
 
@@ -513,3 +514,24 @@ def test_coverage_matches_the_old_sparql_query(root):
     new, old = engine.coverage(), _coverage_by_sparql(engine)
     assert new["total"] > 0
     assert list(new.items()) == list(old.items())
+
+
+@pytest.mark.parametrize("root", [SRC, SRC.parent / "tests" / "data" / "pycg" / "snippets", SRC.parent / "tests" / "data" / "twice_defined"],
+                         ids=["src", "pycg", "twice_defined"])
+def test_call_links_give_the_answers_of_the_store(root):
+    graph = build(root, use_jedi=False)
+    store, linked = SPARQLEngine(graph=graph), SPARQLEngine(graph=graph)
+    linked.links = CallLinks.from_data(CallLinks(graph).data())  # as the server loads them from the saved file
+    ids = [s[0] for s in store.symbols()]
+    assert len(ids) > 10
+    for d in ids:
+        assert linked.callers_of(d) == store.callers_of(d), d
+        assert linked.blast_radius(d) == store.blast_radius(d), d
+
+
+def test_call_links_refuse_a_call_site_with_two_lines(tmp_path):
+    engine = _engine(tmp_path, {"a.py": "def f():\n    pass\n\n\ndef g():\n    f()\n"})
+    site = next(s for s, _, caller in triples(engine.graph, None, CODE.inFunction) if text(caller).endswith("a.py::g"))
+    add(engine.graph, site, CODE.line, lit(99))  # real output plus one edit: the store would give two rows
+    with pytest.raises(ValueError, match="has two lines"):
+        CallLinks(engine.graph)

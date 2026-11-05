@@ -41,7 +41,7 @@ from acte.rdf_builder import (
     text,
     value,
 )
-from acte.sparql_engine import SPARQLEngine
+from acte.sparql_engine import CallLinks, SPARQLEngine
 
 # skipped when walking a directory that is not in a git work tree; hidden dirs are skipped too
 _SKIP_DIRS = {".git", ".venv", "venv", "env", "node_modules", "__pycache__", ".ipynb_checkpoints",
@@ -155,6 +155,23 @@ def _stats(graph: Graph, fmt: str = "text") -> int:
     return 1 if failing else 0
 
 
+def _to_save(graph: Graph, counts: dict, cov: dict, checks: dict) -> tuple[list[bytes], dict, dict | None]:
+    """Add the summary to *graph*; return the kept file's lines and the data of its name index and call links files."""
+    lines = sorted_lines(graph)  # the kept file's lines but the summary's, which holds their id: two builds still match
+    # for graph_info, which uses it only while the map still has this many triples (the count includes this one)
+    summary = {"counts": counts, "coverage": cov, "health": {name: len(rows) for name, rows in checks.items()},
+               "mapId": map_id(lines), "triples": len(graph) + 1}
+    fact = (CODE["build"], CODE.summary, lit(json.dumps(summary, sort_keys=True)))
+    add(graph, *fact)
+    bisect.insort(lines, nt_line(*fact))
+    head = {"mapId": summary["mapId"], "triples": summary["triples"]}  # the map the side files belong to
+    try:
+        links = {**head, **CallLinks(graph).data()}
+    except ValueError:  # a value the links read is given twice: the server answers from the store
+        links = None
+    return lines, {**head, **SPARQLEngine(graph=graph).index_data()}, links
+
+
 def _analyze(graph: Graph, top: int, fmt: str) -> None:
     """Print the ranking, import cycles and subsystems of *graph*, as text or as one JSON object."""
     ranking, cycles, groups = rank(graph, top), import_cycles(graph), subsystems(graph)
@@ -250,15 +267,7 @@ def main(argv: list[str] | None = None) -> int:
     graph = build(root, not args.no_jedi, args.jobs)
     counts, cov = _counts(graph)
     checks = run_checks(graph)
-    lines = sorted_lines(graph)  # the kept file's lines but the summary's, which holds their id: two builds still match
-    # for graph_info, which uses it only while the map still has this many triples (the count includes this one)
-    summary = {"counts": counts, "coverage": cov, "health": {name: len(rows) for name, rows in checks.items()},
-               "mapId": map_id(lines), "triples": len(graph) + 1}
-    fact = (CODE["build"], CODE.summary, lit(json.dumps(summary, sort_keys=True)))
-    add(graph, *fact)
-    bisect.insort(lines, nt_line(*fact))
-    head = {"mapId": summary["mapId"], "triples": summary["triples"]}  # the map the side files belong to
-    save_map(graph, args.output, lines, {**head, **SPARQLEngine(graph=graph).index_data()})
+    save_map(graph, args.output, *_to_save(graph, counts, cov, checks))  # held by no name here, so save_map can free them
     print(f"wrote {args.output}")
     _print_counts(counts, cov)
     failing = [name for name, rows in checks.items() if rows]

@@ -166,8 +166,9 @@ def test_a_new_build_keeps_the_map_it_replaces_and_deletes_older_ones(tmp_path, 
         names.append((out / "current").read_text().strip())
     assert len(set(names)) == 3
     assert sorted(os.listdir(out)) == sorted(["current", *names[1:]])  # a server may still read the one before
-    assert sorted(os.listdir(out / names[2])) == ["db", "index.json.gz", "map.nt.gz"]
-    assert _kept(out).read_bytes() == (out / names[1] / "map.nt.gz").read_bytes()  # the same code gives the same map
+    assert sorted(os.listdir(out / names[2])) == ["db", "index.json.gz", "links.json.gz", "map.nt.gz"]
+    for file in ("map.nt.gz", "index.json.gz", "links.json.gz"):  # the same code gives the same map
+        assert (out / names[2] / file).read_bytes() == (out / names[1] / file).read_bytes(), file
 
 
 def test_the_summary_holds_the_id_of_the_other_lines(tmp_path, capsys):
@@ -205,7 +206,8 @@ def test_parallel_parse_writes_the_same_map(tmp_path, monkeypatch, capsys):
     src = Path(__file__).resolve().parents[1] / "src"
     main(["build", str(src), "-o", str(tmp_path / "one"), "--no-jedi", "--jobs", "1"])
     main(["build", str(src), "-o", str(tmp_path / "four"), "--no-jedi", "--jobs", "4"])
-    assert _kept(tmp_path / "one").read_bytes() == _kept(tmp_path / "four").read_bytes()
+    for file in ("map.nt.gz", "index.json.gz", "links.json.gz"):
+        assert (_kept(tmp_path / "one").parent / file).read_bytes() == (_kept(tmp_path / "four").parent / file).read_bytes(), file
 
 
 def test_default_output_is_in_the_working_directory(tmp_path, monkeypatch, capsys):

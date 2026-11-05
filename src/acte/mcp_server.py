@@ -19,7 +19,7 @@ from mcp.server.mcpserver import MCPServer
 
 from acte.health import CHECKS, run_checks
 from acte.rdf_builder import CODE, RDF, open_checked, read_json, stored_summary, subfolder, subjects, text, value
-from acte.sparql_engine import SPARQLEngine
+from acte.sparql_engine import CallLinks, SPARQLEngine
 
 _BUDGET = 4000  # characters per answer, about 1,000 tokens
 _MAX_MATCHES = 10
@@ -152,25 +152,39 @@ def stale_warning(built: str | None, now: str | None) -> str:
     return f"Warning: this map was built at commit {text(built)[:7]} but the project is now at {now[:7]}; answers may be out of date.\n"
 
 
-def open_engine(graph_path: str | Path) -> tuple[SPARQLEngine, int]:
-    """An engine over the map in *graph_path* with its name index ready, and the map's fact count, counted once.
+def _load_saved(load, path: Path, summary: dict) -> bool:
+    """Call load(data) with the side file *path* if it belongs to the map whose stored summary is *summary*: its map
+    id and fact count are the summary's. Whether it did."""
+    try:
+        data = read_json(path)
+        if summary.get("mapId") is None or (data["mapId"], data["triples"]) != (summary["mapId"], summary["triples"]):
+            return False
+        load(data)
+        return True
+    except Exception:  # noqa: BLE001 - a missing, broken or foreign side file never stops the server
+        return False
 
-    A map folder's saved name index is used only when it belongs to this map: its map id and fact count are those
-    of the map's summary. Otherwise the index is built from the map, with a one-line note on stderr."""
+
+def open_engine(graph_path: str | Path) -> tuple[SPARQLEngine, int]:
+    """An engine over the map in *graph_path* with its name index and call links ready, and the map's fact count, counted once.
+
+    A map folder's saved name index and call links are used only when they belong to this map. Otherwise they are
+    built from the map, with a one-line note on stderr."""
     graph, size = open_checked(graph_path)  # the fact count, counted once: it reads the whole map
     engine = SPARQLEngine(graph=graph)
     if (sub := subfolder(graph_path)) is not None:
         summary = stored_summary(graph) or {}
-        try:
-            index = read_json(sub / "index.json.gz")
-            if summary.get("mapId") is None or (index["mapId"], index["triples"]) != (summary["mapId"], summary["triples"]):
-                raise ValueError("it belongs to another map")
-            engine.load_index(index)
-        except Exception:  # noqa: BLE001 - a missing, broken or foreign index file never stops the server
-            engine._index = None
-            print(f"acte: the saved name index of {graph_path} is missing or does not fit the map; building it from the map",
-                  file=sys.stderr)
+        index = _load_saved(engine.load_index, sub / "index.json.gz", summary)
+        links = _load_saved(lambda data: setattr(engine, "links", CallLinks.from_data(data)), sub / "links.json.gz", summary)
+        if not (index and links):
+            print(f"acte: the saved name index or call links of {graph_path} are missing or do not fit the map; "
+                  "building them from the map", file=sys.stderr)
     engine.symbols()  # builds the name index now, if not loaded, so the first question does not pay for it
+    if engine.links is None:
+        try:
+            engine.links = CallLinks(graph)
+        except ValueError:  # a value the links read is given twice: answered from the store instead
+            pass
     return engine, size
 
 

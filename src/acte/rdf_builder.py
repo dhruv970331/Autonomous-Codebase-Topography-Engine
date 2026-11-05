@@ -269,10 +269,11 @@ def fill_db(graph: Graph, folder: Path) -> None:
     del db  # closes it
 
 
-def save_map(graph: Graph, folder: str | Path, lines: list[bytes] | None = None, index: dict | None = None) -> None:
+def save_map(graph: Graph, folder: str | Path, lines: list[bytes] | None = None, index: dict | None = None,
+             links: dict | None = None) -> None:
     """Write *graph* as the map folder *folder*: a new subfolder with the kept file ``map.nt.gz``, the database
-    folder ``db`` and the side file ``index.json.gz`` holding *index* plus the kept file's SHA-256 (when *index* is
-    given), then the file ``current`` naming it. Old subfolders are deleted, but the one ``current`` named before stays: a running
+    folder ``db`` and the side files ``index.json.gz`` holding *index* plus the kept file's SHA-256 and
+    ``links.json.gz`` holding *links* (each when given), then the file ``current`` naming it. Old subfolders are deleted, but the one ``current`` named before stays: a running
     server may still read it. A ValueError if *folder* is not a map folder (check_map_folder). *lines*: as for save()."""
     folder = Path(folder)
     check_map_folder(folder)
@@ -288,6 +289,9 @@ def save_map(graph: Graph, folder: str | Path, lines: list[bytes] | None = None,
             with open(new / "map.nt.gz", "rb") as f:
                 index = {**index, "keptSha256": hashlib.file_digest(f, "sha256").hexdigest()}
             _write_new(new / "index.json.gz", lambda tmp: save_json(index, tmp))
+        if links is not None:
+            _write_new(new / "links.json.gz", lambda tmp: save_json(links, tmp))
+        del lines, index, links  # each about the size of the map: freed now if the caller holds no other reference
         fill_db(graph, new / "db")
         _write_new(current, lambda tmp: tmp.write_text(name + "\n"))
     except BaseException:
