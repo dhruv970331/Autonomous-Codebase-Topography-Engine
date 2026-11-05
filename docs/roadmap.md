@@ -59,13 +59,17 @@ exist.
       at most 2.4 GB of memory, and the server is ready in about 5 s using 210 MB. "Who calls
       this" takes 2.8 ms and blast radius 3.4 ms (medians), with the same answers as before.
 
+- [x] Faster opening and a quick `acte stats`. `acte build` saves the name index and the call
+      links next to the map, and the server loads them when it starts. On the whole django
+      repository, measured against the version before on the same machine and day: the server
+      is ready in 1.9 s instead of 6.7 s, "who calls this" takes 2.7 ms instead of 4.3 ms and
+      blast radius 3.2 ms instead of 4.6 ms (medians), with the same answers. `acte stats` shows
+      the build's results in 1.9 s instead of 105 s while the map is unchanged; `acte stats
+      --full` checks everything again.
+
 Measured results are in the README.
 
 ## Next
-
-- [ ] Faster opening and a quick `acte stats` on large projects. Save the name index and the
-      call links at build, so the server opens in about 2 s, and let `acte stats` show the
-      build's results unless the map changed since.
 
 - [ ] Other languages. Call resolution for Java, JavaScript, TypeScript, TSX and Go, which
       now extract structure only.

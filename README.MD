@@ -94,17 +94,24 @@ Use `--no-jedi` to skip the jedi step. `--jobs N` parses files in N processes (d
 number of CPUs, at most 8; `--jobs 1` parses in one process).
 
 `-o` names the map folder (default `acte-map`). Each build fills a new subfolder in it with
-`map.nt.gz`, the graph as sorted N-Triples, and `db/`, a pyoxigraph database the other
-commands read. Only then does it rewrite the small file `current`, which names the subfolder
+`map.nt.gz`, the graph as sorted N-Triples, `db/`, a pyoxigraph database the other
+commands read, and two small files the server loads when it starts: `index.json.gz`, the
+names of all functions and classes, and `links.json.gz`, who calls what. Both are plain
+gzipped JSON. Only then does it rewrite the small file `current`, which names the subfolder
 in use, so a build that fails part way leaves the old map in place. The build keeps the
 subfolder it replaced, which a running server may still read, and deletes older ones.
-`map.nt.gz` is the same byte for byte whatever N is. `acte build` refuses to write into a
+`map.nt.gz` and the two small files are the same byte for byte whatever N is. `acte build` refuses to write into a
 folder that holds other files but no `current`. When it finishes, it prints the number of files,
 functions, classes and calls, how many calls it resolved, and the health check results.
 Calls in languages without call resolution, such as Go, are counted on a line of their
 own and left out of the coverage.
 
-`acte stats MAP` prints the same summary for a saved map. MAP is the map folder, or one map
+`acte stats MAP` prints the same summary for a saved map. By default it is a quick check: if
+`map.nt.gz` and the number of facts in `db/` are the same as at build, it prints the results the
+build saved. Otherwise, or if the build found a problem or another ACTE version built the map,
+it checks the map for real. `--full` always checks for real: it reads the
+whole database and runs every health check and the coverage again. The health line says which
+check ran. A single map file always gets the full check. MAP is the map folder, or one map
 file: a `map.nt.gz`, or a `.ttl` map from an ACTE that saved Turtle. `analyze`, `serve` and
 `impact --graph` take the same. It also shows how the graph was
 built (folder name, git commit, versions), and the first problem rows for any failed health
@@ -113,8 +120,9 @@ check. With `--format json` it prints the same data as one JSON object, with all
 Both commands exit with code 1 if a health check fails.
 
 `acte build` also stores the counts, coverage and health check results in the graph. The MCP
-tool `graph_info` reads them from there. `acte stats` always works them out again, so it also
-catches a graph that was edited after the build.
+tool `graph_info` and the quick `acte stats` read them from there. The quick check sees any
+change to `map.nt.gz` and a database with a different number of facts. It cannot see an edit to
+the database that keeps the same number of facts; `acte stats --full` catches that too.
 
 ### What does my change break?
 
@@ -210,6 +218,12 @@ from `map.nt.gz`. If `map.nt.gz` does not hold that number either, the map was c
 its build, and the server refuses to start: run `acte build` again. A single map file is
 read into memory and checked the same way.
 
+The server then loads `index.json.gz` and `links.json.gz`, if they belong to this map: each
+holds the map's id and number of facts, which must match those the build stored in the map.
+If a file is missing or belongs to another map, the server builds the same data from the map
+itself, which takes longer, and prints a one-line note. It never refuses to start because of
+them.
+
 | Tool | Profile | What it answers |
 |---|---|---|
 | `find_symbol` | small | functions and classes matching a name, allowing for case and typos |
@@ -224,7 +238,7 @@ read into memory and checked the same way.
 `small` is the default and offers the first four tools. `full` offers all eight.
 
 `graph_info` uses the numbers `acte build` stored in the graph. It works them out again if they
-are missing or unreadable, or if a different ACTE version built it. The server builds its name index when it opens the graph.
+are missing or unreadable, or if a different ACTE version built it.
 
 ### Python
 
@@ -294,8 +308,9 @@ project.
   outside the project, such as `dict`.
 - `orphan_functions` lists too much: entry points, `__init__` methods, properties, and functions
   reached only through unresolved calls.
-- Large projects are slow. On the whole django repository (3,030 Python files), a build without
-  jedi takes under 3 minutes, and opening the saved graph takes over a minute.
+- Large projects take a while to build. On the whole django repository (3,030 Python files), a
+  build without jedi takes about 70 s and up to 2.4 GB of memory. The server is then ready in
+  about 2 s.
 
 ## Design notes
 
