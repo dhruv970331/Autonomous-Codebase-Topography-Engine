@@ -21,7 +21,7 @@ from pathlib import Path
 
 from acte import resolver
 from acte.analysis import import_cycles, rank, subsystems
-from acte.health import run_checks
+from acte.health import run_checks, scan
 from acte.mcp_server import create_server
 from acte.parser import EXTENSION_TO_LANGUAGE
 from acte.rdf_builder import (
@@ -112,9 +112,9 @@ def _counts(graph: Graph) -> tuple[dict, dict]:
 
 def _summary(graph: Graph) -> tuple[dict, dict[str, list[dict]]]:
     """Print the counts and coverage rate of *graph*; return its coverage and health check results."""
-    counts, cov = _counts(graph)
+    counts, cov, checks = scan(graph)
     _print_counts(counts, cov)
-    return cov, run_checks(graph)
+    return cov, checks
 
 
 def _print_counts(counts: dict, cov: dict) -> None:
@@ -160,8 +160,8 @@ def _stats(graph: Graph, fmt: str = "text", saved: dict | None = None) -> int:
     built = {prop: text(v) for prop in ("root", "commit", "acteVersion", "jediVersion")
              if (v := value(graph, meta, CODE[prop])) is not None}
     if fmt == "json":
-        counts, cov = (saved["counts"], saved["coverage"]) if saved else _counts(graph)
-        failing = {} if saved else {name: [_row(r) for r in rows] for name, rows in run_checks(graph).items() if rows}
+        counts, cov, checks = (saved["counts"], saved["coverage"], {}) if saved else scan(graph)
+        failing = {name: [_row(r) for r in rows] for name, rows in checks.items() if rows}
         print(json.dumps({"build": built, **counts, "coverage": cov, "health": "failing" if failing else "ok",
                           "check": "quick" if saved else "full", "failing": failing}, indent=2))
         return 1 if failing else 0

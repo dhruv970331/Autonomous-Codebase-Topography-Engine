@@ -139,6 +139,27 @@ class BlastAnswer:
     reasons: dict[str, int]  # summed over expanded nodes, plus "depth-limit"
 
 
+def coverage_counts(everything: list[tuple]) -> dict:
+    """SPARQLEngine.coverage() from its rows: one (status, tier, reason, target type, caller's filePath) per combination
+    of the values a call site has, None where it has none."""
+    edges = {CODE.Function: "calls", CODE.Class: "instantiates"}
+    rows = [r for r in everything if text(r[4]).endswith(".py")]  # as the resolver: only Python is resolved
+
+    def count(values):
+        return dict(sorted(Counter(text(v) for v in values if v is not None).items()))
+    status = count(r[0] for r in rows)
+    measured = len(rows) - status.get("external", 0)
+    return {
+        "edge": count(edges.get(r[3]) for r in rows),
+        "no_resolver": len(everything) - len(rows),
+        "rate": status.get("resolved", 0) / measured if measured else None,
+        "reason": count(r[2] for r in rows),
+        "status": status,
+        "tier": count(r[1] for r in rows),
+        "total": len(everything),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Call links
 # ---------------------------------------------------------------------------
@@ -443,28 +464,14 @@ ORDER BY ?path
         languages with call resolution are measured; no_resolver counts the others, total all."""
         # triples() lookups give one row per combination of values, as the OPTIONALs of the old query
         # (kept in the tests as an oracle) did: it took 49 s on django under rdflib, the earlier store
-        g, edges = self.graph, {CODE.Function: "calls", CODE.Class: "instantiates"}
+        g = self.graph
         everything = [(status, tier, reason, kind, path)
                       for site in subjects(g, RDF.type, CODE.CallSite) for status in objects(g, site, CODE.status)
                       for tier in list(objects(g, site, CODE.tier)) or [None]
                       for reason in list(objects(g, site, CODE.reason)) or [None]
                       for kind in [k for t in objects(g, site, CODE.resolvedTo) for k in objects(g, t, RDF.type)] or [None]
                       for path in [p for f in objects(g, site, CODE.inFunction) for p in objects(g, f, CODE.filePath)] or [None]]
-        rows = [r for r in everything if text(r[4]).endswith(".py")]  # as the resolver: only Python is resolved
-
-        def count(values):
-            return dict(sorted(Counter(text(v) for v in values if v is not None).items()))
-        status = count(r[0] for r in rows)
-        measured = len(rows) - status.get("external", 0)
-        return {
-            "edge": count(edges.get(r[3]) for r in rows),
-            "no_resolver": len(everything) - len(rows),
-            "rate": status.get("resolved", 0) / measured if measured else None,
-            "reason": count(r[2] for r in rows),
-            "status": status,
-            "tier": count(r[1] for r in rows),
-            "total": len(everything),
-        }
+        return coverage_counts(everything)
 
     def execute_raw_sparql(self, query: str) -> list[dict[str, Any]]:
         """Escape hatch for dynamic graph exploration.

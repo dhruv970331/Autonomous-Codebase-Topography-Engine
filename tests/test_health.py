@@ -3,7 +3,8 @@ from pathlib import Path
 import pytest
 from pyoxigraph import BlankNode
 
-from acte.health import CHECKS, run_checks
+from acte.cli import _counts
+from acte.health import CHECKS, run_checks, scan
 from acte.rdf_builder import (
     CODE,
     RDF,
@@ -87,3 +88,22 @@ def test_blank_node_suspect_runs_the_whole_check(tmp_path):
     graph = build_graph(sorted(tmp_path / rel for rel in PROJECT), tmp_path, use_jedi=False)
     add(graph, BlankNode(), RDF.type, CODE.CallSite)
     assert _failing(graph) == {"callsite-status", "callsite-without-caller"}
+
+
+def test_one_pass_gives_the_counts_coverage_and_checks_of_the_lookups(tmp_path):
+    for rel, code in PROJECT.items():
+        (tmp_path / rel).write_text(code)
+    uri = KnowledgeGraphBuilder()._make_uri
+    app, run = uri(f"{tmp_path}/app.py"), uri(f"{tmp_path}/app.py::run")
+    breaks = {"healthy": lambda g, run, app: None, **MUTATIONS,
+              "blank site": lambda g, run, app: add(g, BlankNode(), RDF.type, CODE.CallSite),
+              # reversed: the external site loses its caller before its status
+              "every check": lambda g, run, app: [m(g, run, app) for m in reversed(MUTATIONS.values())]}
+    for name, spoil in breaks.items():
+        graph = build_graph(sorted(tmp_path / rel for rel in PROJECT), tmp_path, use_jedi=False)
+        spoil(graph, run, app)
+        counts, cov = _counts(graph)
+        assert scan(graph) == (counts, cov, run_checks(graph)), name
+        assert name != "every check" or all(run_checks(graph).values())
+    graph = build_graph(sorted(SRC.rglob("*.py")), SRC, use_jedi=False)
+    assert scan(graph) == (*_counts(graph), run_checks(graph))
