@@ -166,7 +166,7 @@ def test_a_new_build_keeps_the_map_it_replaces_and_deletes_older_ones(tmp_path, 
         names.append((out / "current").read_text().strip())
     assert len(set(names)) == 3
     assert sorted(os.listdir(out)) == sorted(["current", *names[1:]])  # a server may still read the one before
-    assert sorted(os.listdir(out / names[2])) == ["db", "map.nt.gz"]
+    assert sorted(os.listdir(out / names[2])) == ["db", "index.json.gz", "map.nt.gz"]
     assert _kept(out).read_bytes() == (out / names[1] / "map.nt.gz").read_bytes()  # the same code gives the same map
 
 

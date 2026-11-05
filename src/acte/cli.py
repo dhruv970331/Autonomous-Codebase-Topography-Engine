@@ -257,7 +257,8 @@ def main(argv: list[str] | None = None) -> int:
     fact = (CODE["build"], CODE.summary, lit(json.dumps(summary, sort_keys=True)))
     add(graph, *fact)
     bisect.insort(lines, nt_line(*fact))
-    save_map(graph, args.output, lines)
+    head = {"mapId": summary["mapId"], "triples": summary["triples"]}  # the map the side files belong to
+    save_map(graph, args.output, lines, {**head, **SPARQLEngine(graph=graph).index_data()})
     print(f"wrote {args.output}")
     _print_counts(counts, cov)
     failing = [name for name, rows in checks.items() if rows]

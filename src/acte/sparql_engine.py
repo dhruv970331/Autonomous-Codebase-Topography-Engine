@@ -406,13 +406,27 @@ ORDER BY ?path
             g = self.graph  # triples() lookups: the same rows as a SPARQL query over every definition, several times faster
             defs = sorted((self._id(d), text(n)) for kind in (CODE.Function, CODE.Class)
                           for d in subjects(g, RDF.type, kind) for n in objects(g, d, CODE.name))
-            by_id, by_bare, by_qual = defaultdict(list), defaultdict(list), defaultdict(list)
-            for d in defs:  # each list keeps the sorted order
-                by_id[d[0]].append(d)
-                by_bare[d[1]].append(d)
-                by_qual[d[0].split("::", 1)[-1].replace(".<locals>", "")].append(d)
-            self._index = (self._symbols(), by_id, by_bare, by_qual)
+            self._index = self._make_index(defs, self._symbols())
         return self._index
+
+    @staticmethod
+    def _make_index(defs: list[tuple[str, str]], symbols: list[tuple[str, str, str, str, int]]) -> tuple:
+        by_id, by_bare, by_qual = defaultdict(list), defaultdict(list), defaultdict(list)
+        for d in defs:  # each list keeps the sorted order
+            by_id[d[0]].append(d)
+            by_bare[d[1]].append(d)
+            by_qual[d[0].split("::", 1)[-1].replace(".<locals>", "")].append(d)
+        return (symbols, by_id, by_bare, by_qual)
+
+    def index_data(self) -> dict:
+        """The name index as plain data, for ``acte build`` to save beside the map: the sorted (id, bare name) list
+        and symbols()."""
+        symbols, by_id, _, _ = self._indexed()
+        return {"defs": [list(d) for ds in by_id.values() for d in ds], "symbols": [list(s) for s in symbols]}
+
+    def load_index(self, data: dict) -> None:
+        """Use the name index *data* (from index_data() on this same map) instead of building it from the map."""
+        self._index = self._make_index([tuple(d) for d in data["defs"]], [tuple(s) for s in data["symbols"]])
 
     def _caller_answer(self, target: str, bare: str) -> CallerAnswer:
         """Confirmed callers, possible callers (R19) and the exact / lower-bound label (R23) of one definition."""

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import shutil
@@ -20,11 +21,14 @@ from acte.rdf_builder import (
     add,
     lit,
     load,
+    read_json,
     remove,
     save,
+    save_json,
     text,
     value,
 )
+from acte.sparql_engine import SPARQLEngine
 
 PROJECT = {
     "db.py": "class Database:\n    def connect(self):\n        pass\n",
@@ -529,7 +533,7 @@ def test_start_up_rebuilds_a_database_folder_that_does_not_fit_the_map(tmp_path)
         spoil()
         assert _call(create_server(folder, profile="full"), "graph_info") == want, spoil.__name__
         assert len(ox.Store.read_only(str(sub / "db"))) == facts, spoil.__name__
-        assert sorted(os.listdir(sub)) == ["db", "map.nt.gz"], spoil.__name__  # nothing left behind
+        assert sorted(os.listdir(sub)) == ["db", "index.json.gz", "map.nt.gz"], spoil.__name__  # nothing left behind
 
 
 def test_start_up_refuses_a_map_changed_after_its_build(tmp_path, capsys):
@@ -546,4 +550,46 @@ def test_start_up_refuses_a_map_changed_after_its_build(tmp_path, capsys):
             main(["serve", str(path)])
         assert exit_.value.code == 2
         assert "facts but its build stored" in capsys.readouterr().err
-    assert sorted(os.listdir(sub)) == ["map.nt.gz"]  # the folder rebuilt from it is not kept
+    assert sorted(os.listdir(sub)) == ["index.json.gz", "map.nt.gz"]  # the folder rebuilt from it is not kept
+
+
+def _answers(path):
+    """Every tool's answer for every symbol of the map at *path*, from a fresh server."""
+    server = create_server(path, profile="full")
+    names = [s[0] for s in mcp_server.open_engine(path)[0].symbols()]
+    return [_call(server, t, name=n) for t in ("find_symbol", "callers_of", "callees_of", "blast_radius") for n in names]
+
+
+def test_the_build_saves_the_name_index_and_the_server_uses_it(tmp_path, monkeypatch, capsys):
+    folder, sub, _ = _fresh_map(tmp_path)
+    index = read_json(sub / "index.json.gz")
+    summary = json.loads(text(value(load(folder), CODE["build"], CODE.summary)))
+    assert (index["mapId"], index["triples"]) == (summary["mapId"], summary["triples"])
+    assert index["keptSha256"] == hashlib.sha256((sub / "map.nt.gz").read_bytes()).hexdigest()
+    built = SPARQLEngine(graph=load(folder))
+    assert [tuple(s) for s in index["symbols"]] == built.symbols()
+    want = _answers(folder)
+    capsys.readouterr()
+    monkeypatch.setattr(SPARQLEngine, "_symbols", lambda self: pytest.fail("the index was built from the map"))
+    assert _answers(folder) == want
+    assert capsys.readouterr().err == ""
+
+
+def test_a_missing_or_foreign_name_index_is_not_used(tmp_path, capsys):
+    folder, sub, _ = _fresh_map(tmp_path)
+    want = _answers(folder)
+    good = read_json(sub / "index.json.gz")
+    _write(tmp_path / "other", PROJECT)  # another project's map: its index names other symbols
+    main(["build", str(tmp_path / "other"), "-o", str(tmp_path / "other_map"), "--no-jedi"])
+    other = read_json(tmp_path / "other_map" / (tmp_path / "other_map" / "current").read_text().strip() / "index.json.gz")
+    assert other["mapId"] != good["mapId"] and other["triples"] != good["triples"]
+    capsys.readouterr()
+    for name, spoil in (("missing", None), ("another map's", other), ("another map's, same count", {**other, "triples": good["triples"]}),
+                        ("wrong count", {**good, "triples": good["triples"] + 1}), ("broken", b"not gzip")):
+        (sub / "index.json.gz").unlink(missing_ok=True)
+        if isinstance(spoil, bytes):
+            (sub / "index.json.gz").write_bytes(spoil)
+        elif spoil is not None:
+            save_json(spoil, sub / "index.json.gz")
+        assert _answers(folder) == want, name
+        assert "the saved name index of" in capsys.readouterr().err, name

@@ -8,6 +8,7 @@ import difflib
 import functools
 import json
 import subprocess
+import sys
 import threading
 import time
 from collections import Counter, defaultdict
@@ -17,7 +18,7 @@ from pathlib import Path
 from mcp.server.mcpserver import MCPServer
 
 from acte.health import CHECKS, run_checks
-from acte.rdf_builder import CODE, RDF, open_checked, subjects, text, value
+from acte.rdf_builder import CODE, RDF, open_checked, read_json, stored_summary, subfolder, subjects, text, value
 from acte.sparql_engine import SPARQLEngine
 
 _BUDGET = 4000  # characters per answer, about 1,000 tokens
@@ -151,11 +152,31 @@ def stale_warning(built: str | None, now: str | None) -> str:
     return f"Warning: this map was built at commit {text(built)[:7]} but the project is now at {now[:7]}; answers may be out of date.\n"
 
 
-def create_server(graph_path: str | Path, project: str | Path | None = None, profile: str = "small") -> MCPServer:
-    """A server over the graph in *graph_path*, loaded once and read under one lock (the SDK runs sync tools on worker threads)."""
+def open_engine(graph_path: str | Path) -> tuple[SPARQLEngine, int]:
+    """An engine over the map in *graph_path* with its name index ready, and the map's fact count, counted once.
+
+    A map folder's saved name index is used only when it belongs to this map: its map id and fact count are those
+    of the map's summary. Otherwise the index is built from the map, with a one-line note on stderr."""
     graph, size = open_checked(graph_path)  # the fact count, counted once: it reads the whole map
     engine = SPARQLEngine(graph=graph)
-    engine.symbols()  # builds the name index now, while the map opens, so the first question does not pay for it
+    if (sub := subfolder(graph_path)) is not None:
+        summary = stored_summary(graph) or {}
+        try:
+            index = read_json(sub / "index.json.gz")
+            if summary.get("mapId") is None or (index["mapId"], index["triples"]) != (summary["mapId"], summary["triples"]):
+                raise ValueError("it belongs to another map")
+            engine.load_index(index)
+        except Exception:  # noqa: BLE001 - a missing, broken or foreign index file never stops the server
+            engine._index = None
+            print(f"acte: the saved name index of {graph_path} is missing or does not fit the map; building it from the map",
+                  file=sys.stderr)
+    engine.symbols()  # builds the name index now, if not loaded, so the first question does not pay for it
+    return engine, size
+
+
+def create_server(graph_path: str | Path, project: str | Path | None = None, profile: str = "small") -> MCPServer:
+    """A server over the graph in *graph_path*, loaded once and read under one lock (the SDK runs sync tools on worker threads)."""
+    engine, size = open_engine(graph_path)
     lock = threading.Lock()
     server = MCPServer("acte", version=version("acte"))
     built = value(engine.graph, CODE["build"], CODE.commit)
