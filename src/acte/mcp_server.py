@@ -18,7 +18,17 @@ from pathlib import Path
 from mcp.server.mcpserver import MCPServer
 
 from acte.health import CHECKS, run_checks
-from acte.rdf_builder import CODE, RDF, open_checked, read_json, stored_summary, subfolder, subjects, text, value
+from acte.rdf_builder import (
+    CODE,
+    RDF,
+    open_checked,
+    read_json,
+    stored_summary,
+    subfolder,
+    subjects,
+    text,
+    value,
+)
 from acte.sparql_engine import CallLinks, SPARQLEngine
 
 _BUDGET = 4000  # characters per answer, about 1,000 tokens

@@ -291,7 +291,7 @@ def save_map(graph: Graph, folder: str | Path, lines: list[bytes] | None = None,
             _write_new(new / "index.json.gz", lambda tmp: save_json(index, tmp))
         if links is not None:
             _write_new(new / "links.json.gz", lambda tmp: save_json(links, tmp))
-        del lines, index, links  # each about the size of the map: freed now if the caller holds no other reference
+        lines = index = links = None  # each about the size of the map: freed now if the caller holds no other reference
         fill_db(graph, new / "db")
         _write_new(current, lambda tmp: tmp.write_text(name + "\n"))
     except BaseException:
