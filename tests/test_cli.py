@@ -1,3 +1,5 @@
+import gzip
+import hashlib
 import json
 import os
 import subprocess
@@ -145,7 +147,7 @@ def test_failed_write_keeps_the_old_output(tmp_path, monkeypatch, capsys):
     _build(capsys, tmp_path / "proj", out, "--no-jedi")
     before = sorted(os.listdir(out)), _kept(out).read_bytes()
 
-    def broken(graph, path):  # writes part of the map, then fails as a crash would
+    def broken(graph, path, lines=None):  # writes part of the map, then fails as a crash would
         Path(path).write_text("half")
         raise RuntimeError("disk full")
 
@@ -166,6 +168,18 @@ def test_a_new_build_keeps_the_map_it_replaces_and_deletes_older_ones(tmp_path, 
     assert sorted(os.listdir(out)) == sorted(["current", *names[1:]])  # a server may still read the one before
     assert sorted(os.listdir(out / names[2])) == ["db", "map.nt.gz"]
     assert _kept(out).read_bytes() == (out / names[1] / "map.nt.gz").read_bytes()  # the same code gives the same map
+
+
+def test_the_summary_holds_the_id_of_the_other_lines(tmp_path, capsys):
+    _write(tmp_path / "proj", PROJECT)
+    graph, _ = _build(capsys, tmp_path / "proj", tmp_path / "g", "--no-jedi")
+    kept = gzip.decompress(_kept(tmp_path / "g").read_bytes())
+    save(graph, tmp_path / "again.nt.gz")  # the summary line was put in its sorted place: the same as dumping afresh
+    assert gzip.decompress((tmp_path / "again.nt.gz").read_bytes()) == kept
+    others = [line for line in kept.split(b"\n")[:-1] if b"code#summary>" not in line]
+    assert len(others) == len(kept.split(b"\n")) - 2
+    summary = json.loads(text(value(graph, CODE["build"], CODE.summary)))
+    assert summary["mapId"] == hashlib.sha256(b"".join(line + b"\n" for line in others)).hexdigest()
 
 
 def test_build_refuses_to_write_into_a_folder_that_is_no_map(tmp_path, capsys):

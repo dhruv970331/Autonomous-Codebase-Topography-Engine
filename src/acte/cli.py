@@ -9,6 +9,7 @@ MAP is a map folder, or one map file: its map.nt.gz, or a .ttl map from an older
 """
 
 import argparse
+import bisect
 import contextlib
 import json
 import os
@@ -32,7 +33,10 @@ from acte.rdf_builder import (
     check_map_folder,
     lit,
     load_map,
+    map_id,
+    nt_line,
     save_map,
+    sorted_lines,
     subjects,
     text,
     value,
@@ -246,11 +250,14 @@ def main(argv: list[str] | None = None) -> int:
     graph = build(root, not args.no_jedi, args.jobs)
     counts, cov = _counts(graph)
     checks = run_checks(graph)
+    lines = sorted_lines(graph)  # the kept file's lines but the summary's, which holds their id: two builds still match
     # for graph_info, which uses it only while the map still has this many triples (the count includes this one)
     summary = {"counts": counts, "coverage": cov, "health": {name: len(rows) for name, rows in checks.items()},
-               "triples": len(graph) + 1}
-    add(graph, CODE["build"], CODE.summary, lit(json.dumps(summary, sort_keys=True)))
-    save_map(graph, args.output)
+               "mapId": map_id(lines), "triples": len(graph) + 1}
+    fact = (CODE["build"], CODE.summary, lit(json.dumps(summary, sort_keys=True)))
+    add(graph, *fact)
+    bisect.insort(lines, nt_line(*fact))
+    save_map(graph, args.output, lines)
     print(f"wrote {args.output}")
     _print_counts(counts, cov)
     failing = [name for name, rows in checks.items() if rows]

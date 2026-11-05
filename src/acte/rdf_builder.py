@@ -5,6 +5,7 @@ graph for SPARQL querying.
 """
 
 import gzip
+import hashlib
 import json
 import os
 import shutil
@@ -185,13 +186,34 @@ def open_checked(path: str | Path) -> tuple[Graph, int]:
     return _same_format(ox.Store.read_only(str(sub / "db"))), size
 
 
-def save(graph: Graph, path: str | Path) -> None:
-    """Write *graph* to *path* as the kept file: N-Triples lines sorted as bytes, gzip level 1 with no time or
-    file name in the header, so the same map always gives the same bytes."""
+def sorted_lines(graph: Graph) -> list[bytes]:
+    """The lines of *graph*'s kept file: its facts as N-Triples, sorted as bytes, without newlines."""
     lines = graph.dump(format=ox.RdfFormat.N_TRIPLES, from_graph=_DEFAULT).split(b"\n")[:-1]
     lines.sort()
+    return lines
+
+
+def nt_line(s, p, o) -> bytes:
+    """The fact (s, p, o) as its line in the kept file, without the newline."""
+    return ox.serialize([ox.Triple(s, p, o)], format=ox.RdfFormat.N_TRIPLES).rstrip(b"\n")
+
+
+def map_id(lines: list[bytes]) -> str:
+    """The SHA-256 of *lines* as the kept file writes them: the id ``acte build`` stores in the summary, made from
+    every line but the summary's own."""
+    digest = hashlib.sha256(b"\n".join(lines))
+    digest.update(b"\n" if lines else b"")
+    return digest.hexdigest()
+
+
+def save(graph: Graph, path: str | Path, lines: list[bytes] | None = None) -> None:
+    """Write *graph* to *path* as the kept file: N-Triples lines sorted as bytes, gzip level 1 with no time or
+    file name in the header, so the same map always gives the same bytes. *lines*: its sorted_lines(), if known."""
+    lines = sorted_lines(graph) if lines is None else lines
     with open(path, "wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb", compresslevel=1, mtime=0, filename="") as f:
-        f.write(b"\n".join(lines) + b"\n" if lines else b"")
+        if lines:  # two writes: one more copy of the joined lines would be the size of the map
+            f.write(b"\n".join(lines))
+            f.write(b"\n")
 
 
 def _write_new(path: Path, write) -> None:
@@ -222,10 +244,10 @@ def fill_db(graph: Graph, folder: Path) -> None:
     del db  # closes it
 
 
-def save_map(graph: Graph, folder: str | Path) -> None:
+def save_map(graph: Graph, folder: str | Path, lines: list[bytes] | None = None) -> None:
     """Write *graph* as the map folder *folder*: a new subfolder with the kept file ``map.nt.gz`` and the database
     folder ``db``, then the file ``current`` naming it. Old subfolders are deleted, but the one ``current`` named before stays: a running
-    server may still read it. A ValueError if *folder* is not a map folder (check_map_folder)."""
+    server may still read it. A ValueError if *folder* is not a map folder (check_map_folder). *lines*: as for save()."""
     folder = Path(folder)
     check_map_folder(folder)
     folder.mkdir(parents=True, exist_ok=True)
@@ -235,7 +257,7 @@ def save_map(graph: Graph, folder: str | Path) -> None:
     new = folder / name
     new.mkdir()
     try:
-        _write_new(new / "map.nt.gz", lambda tmp: save(graph, tmp))
+        _write_new(new / "map.nt.gz", lambda tmp: save(graph, tmp, lines))
         fill_db(graph, new / "db")
         _write_new(current, lambda tmp: tmp.write_text(name + "\n"))
     except BaseException:
