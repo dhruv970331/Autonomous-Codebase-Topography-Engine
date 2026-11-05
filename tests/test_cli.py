@@ -231,7 +231,7 @@ def test_stats_on_a_built_graph(tmp_path, capsys):
     assert capsys.readouterr().out.splitlines() == [
         "root: repo", f"commit: {_git(repo, 'rev-parse', 'HEAD')}", f"acteVersion: {version('acte')}",
         f"jediVersion: {jedi.__version__}", *SUMMARY, "coverage: 100.0%",
-        "status: resolved 3", "tier: T2 1, T3 1, TJ 1", "reason: none", "health: ok",
+        "status: resolved 3", "tier: T2 1, T3 1, TJ 1", "reason: none", "health: ok (saved at build: the map file and fact count are unchanged; --full checks again)",
     ]
 
 
@@ -244,8 +244,8 @@ def test_stats_on_a_broken_graph(tmp_path, capsys):
 
     assert main(["stats", str(tmp_path / "broken.nt.gz")]) == 1
     out = capsys.readouterr().out.splitlines()
-    assert out[out.index("health: failing"):] == [
-        "health: failing",
+    assert out[out.index("health: failing (full check)"):] == [
+        "health: failing (full check)",
         "  dangling-call-arrows: 1 rows",
         "    s=shop/models.py::make, p=instantiates, o=shop/models.py::A",
     ]
@@ -262,7 +262,7 @@ def test_stats_as_json(tmp_path, capsys):
         "files": 3, "functions": 3, "classes": 1, "call_sites": 3,
         "coverage": {"edge": {"calls": 1, "instantiates": 1}, "no_resolver": 0, "rate": 2 / 3, "reason": {"unknown-receiver": 1},
                      "status": {"resolved": 2, "unresolved": 1}, "tier": {"T2": 1, "T3": 1}, "total": 3},
-        "health": "ok", "failing": {},
+        "health": "ok", "check": "quick", "failing": {},
     }
 
     graph = load(_kept(tmp_path / "g"))
@@ -270,8 +270,51 @@ def test_stats_as_json(tmp_path, capsys):
     save(graph, tmp_path / "broken.nt.gz")
     assert main(["stats", str(tmp_path / "broken.nt.gz"), "--format", "json"]) == 1
     stats = json.loads(capsys.readouterr().out)
-    assert (stats["health"], stats["failing"]) == ("failing", {
+    assert (stats["health"], stats["check"], stats["failing"]) == ("failing", "full", {
         "dangling-call-arrows": [{"s": "shop/models.py::make", "p": "instantiates", "o": "shop/models.py::A"}]})
+
+
+def test_quick_stats_print_the_saved_results_only_while_they_fit_the_map(tmp_path, monkeypatch, capsys):
+    _write(tmp_path / "proj", PROJECT)
+    _build(capsys, tmp_path / "proj", tmp_path / "g", "--no-jedi")
+    folder, sub = tmp_path / "g", _kept(tmp_path / "g").parent
+
+    def stats(*flags):
+        code = main(["stats", str(folder), *flags])
+        return code, capsys.readouterr().out.splitlines()
+    full = stats("--full")
+    assert full[1][-1] == "health: ok (full check)"
+    with monkeypatch.context() as m:  # the quick check reads no check result from the map
+        m.setattr("acte.cli.run_checks", lambda graph: pytest.fail("a check ran"))
+        m.setattr("acte.cli._counts", lambda graph: pytest.fail("the map was counted again"))
+        quick = stats()
+    assert quick == (0, [*full[1][:-1], "health: ok (saved at build: the map file and fact count are unchanged; --full checks again)"])
+    assert json.loads("\n".join(stats("--format", "json")[1]))["check"] == "quick"
+
+    kept = (sub / "map.nt.gz").read_bytes()
+    graph = load(sub / "map.nt.gz")
+    remove(graph, CODE["shop/models.py::A"], RDF.type, CODE.Class)
+    save(graph, sub / "map.nt.gz")  # the kept file edited: the full check runs on the folder, which is unchanged
+    assert stats() == full
+    (sub / "map.nt.gz").write_bytes(kept)
+    assert stats() == quick
+
+    db = ox.Store(str(sub / "db"))  # the folder holds one fact less than at build
+    db.remove(ox.Quad(CODE["shop/models.py::A"], RDF.type, CODE.Class))
+    db.flush()
+    del db
+    code, out = stats()
+    assert code == 1 and out[out.index("health: failing (full check)") + 1] == "  dangling-call-arrows: 1 rows"
+
+
+def test_quick_stats_check_for_real_when_the_build_found_a_failing_check(tmp_path, monkeypatch, capsys):
+    _write(tmp_path / "proj", PROJECT)
+    with monkeypatch.context() as m:  # its summary holds the failing count, not the rows to show
+        m.setattr("acte.cli.run_checks", lambda graph: {"self-call-arrows": [{"s": "x"}], "callsite-status": []})
+        main(["build", str(tmp_path / "proj"), "-o", str(tmp_path / "g"), "--no-jedi"])
+    capsys.readouterr()
+    assert main(["stats", str(tmp_path / "g")]) == 0
+    assert capsys.readouterr().out.splitlines()[-1] == "health: ok (full check)"
 
 
 def test_stats_unknown_format(tmp_path, capsys):
