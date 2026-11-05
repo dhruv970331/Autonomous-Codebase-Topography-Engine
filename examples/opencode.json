@@ -19,7 +19,7 @@
   "mcp": {
     "acte": {
       "type": "local",
-      "command": ["acte", "serve", "acte-graph.ttl"],
+      "command": ["acte", "serve", "acte-map"],
       "enabled": true
     }
   },

@@ -2,7 +2,7 @@
   "mcpServers": {
     "acte": {
       "command": "acte",
-      "args": ["serve", "acte-graph.ttl"]
+      "args": ["serve", "acte-map"]
     }
   }
 }

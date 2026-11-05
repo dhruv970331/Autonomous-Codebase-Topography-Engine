@@ -1,9 +1,12 @@
 import json
+import os
+import shutil
 import subprocess
 from importlib.metadata import version
 from pathlib import Path
 
 import anyio
+import pyoxigraph as ox
 import pytest
 from mcp import Client
 
@@ -76,7 +79,7 @@ def _git(root, *args):
 
 @pytest.fixture(scope="module")
 def graph_of(tmp_path_factory):
-    """graph_of(files): the Turtle graph of a project made of *files*, built once per module."""
+    """graph_of(files): the kept file of the map of a project made of *files*, built once per module."""
     graphs = {}
 
     def get(files):
@@ -84,7 +87,7 @@ def graph_of(tmp_path_factory):
         if key not in graphs:
             root = tmp_path_factory.mktemp("proj")
             _write(root, files)
-            graphs[key] = root.parent / f"{root.name}.ttl"
+            graphs[key] = root.parent / f"{root.name}.nt.gz"
             with pytest.MonkeyPatch.context() as mp:
                 mp.setenv("GIT_CEILING_DIRECTORIES", str(root.parent))  # a work tree enclosing it must not be found
                 _build(root, graphs[key])
@@ -331,13 +334,13 @@ def test_graph_info_counts_other_languages_apart(serve):
 
 def test_graph_info_uses_the_stored_summary_only_while_it_fits_the_map(tmp_path, monkeypatch, capsys):
     _write(tmp_path / "proj", CALLS)
-    main(["build", str(tmp_path / "proj"), "-o", str(tmp_path / "fresh.ttl"), "--no-jedi"])  # the real `acte build`
-    fresh = load(tmp_path / "fresh.ttl")
+    main(["build", str(tmp_path / "proj"), "-o", str(tmp_path / "fresh"), "--no-jedi"])  # the real `acte build`
+    fresh = load(tmp_path / "fresh")
     summary = value(fresh, CODE["build"], CODE.summary)
     assert json.loads(text(summary))["triples"] == len(fresh)
 
     def edit(name, drop=(), extra=()):
-        g = load(tmp_path / "fresh.ttl")
+        g = load(next((tmp_path / "fresh").glob("*/map.nt.gz")))  # the kept file: the database folder opens read-only
         for t in drop:
             remove(g, *t)
         for t in extra:
@@ -345,20 +348,22 @@ def test_graph_info_uses_the_stored_summary_only_while_it_fits_the_map(tmp_path,
         save(g, tmp_path / name)
         return tmp_path / name
     meta = CODE["build"]
-    old = edit("old.ttl", drop=[(meta, CODE.summary, None)])  # a map from before code:summary
-    edited = edit("edited.ttl", drop=[(CODE["db.py::Database"], RDF.type, CODE.Class)])  # breaks dangling-call-arrows
-    edited_old = edit("edited_old.ttl", drop=[(CODE["db.py::Database"], RDF.type, CODE.Class), (meta, CODE.summary, None)])
-    bad = edit("bad.ttl", drop=[(meta, CODE.summary, None)], extra=[(meta, CODE.summary, lit("{not json"))])
-    other = edit("other.ttl", drop=[(meta, CODE.acteVersion, None)], extra=[(meta, CODE.acteVersion, lit("0.0.0"))])
+    old = edit("old.nt.gz", drop=[(meta, CODE.summary, None)])  # a map from before code:summary
+    edited = edit("edited.nt.gz", drop=[(CODE["db.py::Database"], RDF.type, CODE.Class)])  # breaks dangling-call-arrows
+    edited_old = edit("edited_old.nt.gz", drop=[(CODE["db.py::Database"], RDF.type, CODE.Class), (meta, CODE.summary, None)])
+    bad = edit("bad.nt.gz", drop=[(meta, CODE.summary, None)], extra=[(meta, CODE.summary, lit("{not json"))])
+    other = edit("other.nt.gz", drop=[(meta, CODE.acteVersion, None)], extra=[(meta, CODE.acteVersion, lit("0.0.0"))])
 
     checked = []
     monkeypatch.setattr(mcp_server, "run_checks", lambda g: checked.append(1) or run_checks(g))
     info = {name: _call(create_server(path, profile="full"), "graph_info")
-            for name, path in (("fresh", tmp_path / "fresh.ttl"), ("old", old), ("edited", edited), ("edited_old", edited_old),
+            for name, path in (("fresh", tmp_path / "fresh"), ("old", old), ("edited_old", edited_old),
                                ("bad", bad), ("other", other))}
-    assert len(checked) == 5  # every map but the fresh one is checked live
+    assert len(checked) == 4  # every map but the fresh one is checked live
     assert info["fresh"] == info["old"] == info["bad"] and info["fresh"].endswith("\nHealth: ok")
-    assert info["edited"] == info["edited_old"] and info["edited"].endswith("\nHealth: failing: dangling-call-arrows")
+    assert info["edited_old"].endswith("\nHealth: failing: dangling-call-arrows")
+    with pytest.raises(ValueError, match="the map was changed after its build"):  # an edited map with its summary
+        create_server(edited)
     assert info["other"].splitlines()[1:] == info["fresh"].splitlines()[1:]
 
 
@@ -375,7 +380,7 @@ def test_stale_warning_after_a_new_commit(tmp_path, monkeypatch):
     _git(root, "add", ".")
     _git(root, "commit", "-qm", "one")
     old = _git(root, "rev-parse", "HEAD")
-    graph = tmp_path / "graph.ttl"
+    graph = tmp_path / "graph.nt.gz"
     _build(root, graph)
     now = [1000.0]
     monkeypatch.setattr(mcp_server.time, "monotonic", lambda: now[0])  # git is asked at most every 5 s
@@ -401,7 +406,7 @@ def test_stale_warning_after_a_new_commit(tmp_path, monkeypatch):
 
 def test_name_index_is_built_when_the_map_opens(tmp_path, monkeypatch):
     from acte.sparql_engine import SPARQLEngine
-    root, graph = tmp_path / "proj", tmp_path / "graph.ttl"
+    root, graph = tmp_path / "proj", tmp_path / "graph.nt.gz"
     _write(root, CALLS)
     _build(root, graph)
     built = []
@@ -413,7 +418,7 @@ def test_name_index_is_built_when_the_map_opens(tmp_path, monkeypatch):
 
 def test_stale_check_runs_git_at_most_every_5_seconds(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
-    root, graph = tmp_path / "proj", tmp_path / "graph.ttl"
+    root, graph = tmp_path / "proj", tmp_path / "graph.nt.gz"
     _write(root, CALLS)
     _git(root, "init", "-q")
     _git(root, "add", ".")
@@ -486,6 +491,59 @@ def test_callers_of_init_behind_an_outside_base_in_plain_words(serve):
 def test_an_ambiguous_name_shows_the_first_line_of_each_definition(tmp_path):
     """Box.size (lines 21 and 25) and Shape.size (31 and 37) are each defined twice: each is shown at its first line."""
     root = Path(__file__).parent / "data" / "twice_defined"
-    _build(root, tmp_path / "g.ttl")
-    answer = _call(create_server(tmp_path / "g.ttl"), "callers_of", name="size").splitlines()
+    _build(root, tmp_path / "g.nt.gz")
+    answer = _call(create_server(tmp_path / "g.nt.gz"), "callers_of", name="size").splitlines()
     assert answer[1:3] == ["app.py::Box.size (Function) app.py:21", "app.py::Shape.size (Function) app.py:31"]
+
+
+def _fresh_map(tmp_path):
+    """A map folder from the real `acte build`, its active subfolder, and the graph_info answer it gives."""
+    _write(tmp_path / "proj", CALLS)
+    main(["build", str(tmp_path / "proj"), "-o", str(tmp_path / "map"), "--no-jedi"])
+    sub = tmp_path / "map" / (tmp_path / "map" / "current").read_text().strip()
+    return tmp_path / "map", sub, _call(create_server(tmp_path / "map", profile="full"), "graph_info")
+
+
+def test_start_up_rebuilds_a_database_folder_that_does_not_fit_the_map(tmp_path):
+    folder, sub, want = _fresh_map(tmp_path)
+    facts = len(ox.Store.read_only(str(sub / "db")))
+
+    def missing():
+        shutil.rmtree(sub / "db")
+
+    def empty():  # as a fill stopped before its first fact leaves it
+        shutil.rmtree(sub / "db")
+        (sub / "db").mkdir()
+
+    def one_fact_less():
+        db = ox.Store(str(sub / "db"))
+        db.remove(ox.Quad(CODE["db.py::Database"], RDF.type, CODE.Class))
+        db.flush()
+        assert len(db) == facts - 1
+        del db
+
+    def will_not_open():  # as a folder from another pyoxigraph version
+        (sub / "db" / "CURRENT").write_text("not a database\n")
+
+    for spoil in (missing, empty, one_fact_less, will_not_open):
+        spoil()
+        assert _call(create_server(folder, profile="full"), "graph_info") == want, spoil.__name__
+        assert len(ox.Store.read_only(str(sub / "db"))) == facts, spoil.__name__
+        assert sorted(os.listdir(sub)) == ["db", "map.nt.gz"], spoil.__name__  # nothing left behind
+
+
+def test_start_up_refuses_a_map_changed_after_its_build(tmp_path, capsys):
+    folder, sub, _ = _fresh_map(tmp_path)
+    graph = load(sub / "map.nt.gz")
+    remove(graph, CODE["db.py::Database"], RDF.type, CODE.Class)
+    save(graph, sub / "map.nt.gz")  # the kept file edited by hand
+    save(graph, tmp_path / "edited.nt.gz")  # and the same map shared as one file
+    shutil.rmtree(sub / "db")
+    for path in (folder, tmp_path / "edited.nt.gz"):
+        with pytest.raises(ValueError, match="the map was changed after its build. Run acte build again."):
+            create_server(path)
+        with pytest.raises(SystemExit) as exit_:
+            main(["serve", str(path)])
+        assert exit_.value.code == 2
+        assert "facts but its build stored" in capsys.readouterr().err
+    assert sorted(os.listdir(sub)) == ["map.nt.gz"]  # the folder rebuilt from it is not kept

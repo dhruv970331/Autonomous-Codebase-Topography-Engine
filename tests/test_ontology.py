@@ -64,8 +64,8 @@ def _graph(tmp_path):
     graph = build_graph(sorted(SRC.glob("*.py")), SRC.parent.parent, use_jedi=False)
     # the real `acte build` (with jedi, so the Build node has jediVersion; PROJECT has no call jedi is asked about),
     # so code:summary is covered too
-    main(["build", str(tmp_path), "-o", str(tmp_path / "g.ttl")])
-    for triple in triples(load(tmp_path / "g.ttl")):
+    main(["build", str(tmp_path), "-o", str(tmp_path / "map")])
+    for triple in triples(load(tmp_path / "map")):
         add(graph, *triple)
     return graph
 

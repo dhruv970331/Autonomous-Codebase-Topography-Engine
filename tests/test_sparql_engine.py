@@ -334,7 +334,7 @@ def test_resolution_rate_with_jedi():
 
 
 @pytest.mark.parametrize("use_jedi", [False, True])
-def test_coverage_matches_report_and_survives_turtle(tmp_path, use_jedi):
+def test_coverage_matches_report_and_survives_saving(tmp_path, use_jedi):
     if use_jedi:
         pytest.importorskip("jedi")
     results = [CodeParser().parse_file(p) for p in sorted(SRC.rglob("*.py"))]
@@ -343,8 +343,8 @@ def test_coverage_matches_report_and_survives_turtle(tmp_path, use_jedi):
     graph = KnowledgeGraphBuilder().build([n for r in results for n in r.nodes], [e for r in results for e in r.edges], resolution)
     coverage = SPARQLEngine(graph=graph).coverage()
     assert coverage == {k: report[k] for k in ("edge", "no_resolver", "rate", "reason", "status", "tier", "total")}
-    save(build(SRC, use_jedi), tmp_path / "g.ttl")  # the real `acte build`, which marks the map's format
-    assert SPARQLEngine.open(tmp_path / "g.ttl").coverage() == coverage
+    save(build(SRC, use_jedi), tmp_path / "g.nt.gz")  # the real `acte build`, which marks the map's format
+    assert SPARQLEngine.open(tmp_path / "g.nt.gz").coverage() == coverage
 
 
 MIXED = (
@@ -465,11 +465,11 @@ def test_definitions_index_matches_a_full_scan():
     for name in sorted(names):
         assert engine._definitions(name) == _uncached_definitions(engine, name), name
         assert _case_insensitive(name, engine.symbols()) == _case_insensitive(name, symbols), name
-    # a changed graph is indexed again
+    # the index is built once: a later edit to the map is not seen
     f = next(iter(subjects(engine.graph, RDF.type, CODE.Function)))
     remove(engine.graph, f)
-    assert engine._definitions(engine._id(f)) == _uncached_definitions(engine, engine._id(f)) == []
-    assert engine.symbols() == engine._symbols() != symbols
+    assert _uncached_definitions(engine, engine._id(f)) == [] != engine._definitions(engine._id(f))
+    assert engine._symbols() != engine.symbols() == symbols
 
 
 _COVERAGE_ORACLE = """
@@ -486,7 +486,7 @@ SELECT ?site ?status ?tier ?reason ?kind ?path WHERE {
 
 def _coverage_by_sparql(engine: SPARQLEngine) -> dict:
     """coverage() as it was before its triples() rewrite: the old SPARQL query, kept as an oracle."""
-    edges = {str(CODE.Function): "calls", str(CODE.Class): "instantiates"}
+    edges = {text(CODE.Function): "calls", text(CODE.Class): "instantiates"}
     everything = list(engine.graph.query(f"PREFIX code: <{CODE}>\n" + _COVERAGE_ORACLE))
     rows = [r for r in everything if r["path"] is not None and text(r["path"]).endswith(".py")]
 

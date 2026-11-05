@@ -6,8 +6,6 @@ one rule of the graph's shape; a healthy graph returns none.
 
 from importlib.resources import files
 
-from rdflib.plugins.sparql import prepareQuery
-
 from acte.rdf_builder import (
     CODE,
     RDF,
@@ -96,14 +94,11 @@ ORDER BY ?site ?caller
 SELECT DISTINCT ?term WHERE {{
     {{ ?s a ?term }} UNION {{ ?s ?term ?o }}
     FILTER (STRSTARTS(STR(?term), "{_CODE_NS}"))
-    FILTER (?term NOT IN ({", ".join(f"<{t}>" for t in _DECLARED)}))
+    FILTER (?term NOT IN ({", ".join(nt(t) for t in _DECLARED)}))
 }}
 ORDER BY ?term
 """,
 }
-
-
-_PREPARED = {name: prepareQuery(_PREFIXES + q) for name, q in CHECKS.items()}  # parsing dominates on small graphs
 
 
 def _statuses(graph: Graph, site) -> list:
@@ -137,7 +132,7 @@ _SUSPECTS = {
 
 def _rows(graph: Graph, name: str) -> list[dict]:
     """The offending rows of check *name*."""
-    query = _PREPARED[name]
+    query = _PREFIXES + CHECKS[name]
     if name in _SUSPECTS:
         var, find = _SUSPECTS[name]
         suspects = set(find(graph))

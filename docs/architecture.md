@@ -11,16 +11,29 @@ ACTE finds those calls once, stores them in a graph, and answers questions by qu
 graph. The answers come straight from the parsed code, so the same query always gives the
 same result, and each result can be checked.
 
-ACTE uses RDF instead of a graph database for two reasons. It needs no server: the graph
-lives in memory and is saved as one text file. And RDF is a W3C standard, so the `.ttl` file
-can be loaded into a triplestore as it is, if a project ever gets too big for memory.
+ACTE uses RDF instead of a graph database server for two reasons. It needs no server: the
+graph is built in memory in pyoxigraph, an RDF store that runs inside the program, and saved
+as files. And RDF is a W3C standard, so the saved map can be loaded into another triplestore as
+it is.
 
 ## Pipeline
 
 `build_graph(paths, root)` in `rdf_builder.py` runs the whole pipeline: parse every file,
 resolve calls across all of them, build one graph. With `jobs` above 1 and at least 50
 files, the files are parsed in a pool of processes and the results are put back in file
-order, so the graph is the same as with one process (`acte build --jobs`).
+order, so the graph is the same as with one process (`acte build --jobs`). The pool starts
+before any database folder opens: a database runs threads, and copying a process that runs
+threads can hang.
+
+`acte build` saves the graph in a map folder (`-o`, default `acte-map`). Each build fills a
+new subfolder with two things: `map.nt.gz`, the graph as N-Triples with the lines sorted as
+bytes and gzipped with no time or file name in the header, so the same code always gives the
+same bytes; and `db/`, a pyoxigraph database filled from the same graph, which the other
+commands open read-only. Then it rewrites the small file `current` (a temporary file, then a
+rename) to name the new subfolder. The subfolder `current` named before is kept, because a
+running server may still read it; older ones are deleted. The subfolder's name is not part of
+the map. Every command that takes a map also accepts one map file, a `map.nt.gz` or a `.ttl`
+map from an ACTE that saved Turtle, and reads it into memory.
 
 ### Layer 1: Extraction (`src/acte/parser.py`)
 
@@ -265,16 +278,23 @@ the depth limit with callers still beyond it makes the answer `lower-bound`
 
 ### Layer 4: MCP server (`src/acte/mcp_server.py`)
 
-`acte serve GRAPH.ttl` loads one graph, read-only, and offers the named queries as MCP tools
+`acte serve MAP` opens one map, read-only, and offers the named queries as MCP tools
 over stdio, built on the official `mcp` SDK. Queries run one at a time under a lock. The
 `small` profile (default) has `find_symbol`, `callers_of`, `callees_of` and `blast_radius`;
 `full` adds `functions_in_file`, `dependencies_of`, `orphan_functions` and `graph_info`.
 `execute_raw_sparql` is not offered: the model never writes SPARQL.
-The server builds the engine's name index right after loading the graph.
+The server builds the engine's name index right after opening the map, and never again, so
+changes to the map after that are not seen.
+
+At start-up the server counts the map's facts once. A database folder that is missing, empty,
+will not open (a folder from another pyoxigraph version may not) or holds a different count
+from the one stored at build is rebuilt from `map.nt.gz` into a new folder, which then takes
+its place. If `map.nt.gz` does not hold the stored count either, the map was changed after its
+build and the server refuses to start.
 
 `acte build` stores one `code:summary` literal on the Build node: JSON with the counts, the
 coverage, the row count of each health check, and the graph's triple count. `graph_info` uses
-it only when it is valid JSON, the triple count still matches the loaded graph, and the
+it only when it is valid JSON, the triple count matches the one counted at start-up, and the
 graph's `code:acteVersion` is the running version. Otherwise it computes everything again.
 `acte stats` always computes everything again.
 

@@ -145,17 +145,17 @@ class BlastAnswer:
 class SPARQLEngine:
     """Executes deterministic multi-hop queries against the ACTE knowledge graph.
 
-    Typical usage — load from a serialised Turtle file:
-        engine = SPARQLEngine.open("graph.ttl")
+    Typical usage — open a map written by ``acte build``:
+        engine = SPARQLEngine.open("acte-map")
         hits = engine.blast_radius("db_connect")
 
-    Or inject a live rdflib Graph directly (useful in tests / Colab):
+    Or inject a pyoxigraph Store directly (useful in tests / Colab):
         engine = SPARQLEngine(graph=builder.graph)
     """
 
     def __init__(self, graph: Graph | None = None) -> None:
         self.graph: Graph = graph if graph is not None else new_graph()
-        self._index: tuple | None = None  # (graph size, symbols, by id, by bare name, by qualname), see _indexed()
+        self._index: tuple | None = None  # (symbols, by id, by bare name, by qualname), see _indexed()
 
     @classmethod
     def open(cls, path: str | Path) -> "SPARQLEngine":
@@ -313,7 +313,7 @@ ORDER BY ?file ?start ?end ?name
 
     def symbols(self) -> list[tuple[str, str, str, str, int]]:
         """Return (id, kind, bare name, file, lineStart) of every Function and Class, sorted by id."""
-        return list(self._indexed()[1])
+        return list(self._indexed()[0])
 
     def _symbols(self) -> list[tuple[str, str, str, str, int]]:
         q = _PREFIXES + """
@@ -345,7 +345,7 @@ ORDER BY ?path
         of its target, so a recursive call counts too, as in ``report()``. Only calls in
         languages with call resolution are measured; no_resolver counts the others, total all."""
         # triples() lookups give one row per combination of values, as the OPTIONALs of the old query
-        # (kept in the tests as an oracle) did: rdflib's SPARQL engine took 49 s for it on django
+        # (kept in the tests as an oracle) did: it took 49 s on django under rdflib, the earlier store
         g, edges = self.graph, {CODE.Function: "calls", CODE.Class: "instantiates"}
         everything = [(status, tier, reason, kind, path)
                       for site in subjects(g, RDF.type, CODE.CallSite) for status in objects(g, site, CODE.status)
@@ -393,18 +393,16 @@ ORDER BY ?path
         An exact id wins. Otherwise a dotted *name* is a qualname (``<locals>``
         optional) and an undotted one matches every definition with that bare name.
         """
-        _, _, by_id, by_bare, by_qual = self._indexed()
+        _, by_id, by_bare, by_qual = self._indexed()
         exact = by_id.get(name, [])
         if exact or "." not in name:
             return list(exact or by_bare.get(name, []))
         return list(by_qual.get(name.replace(".<locals>", ""), []))
 
     def _indexed(self) -> tuple:
-        """The definitions index, built on first use and again when the graph has changed."""
-        # change check: the triple count. A change that keeps the count the same is not seen; the
-        # engine's users load a graph once and only read it.
-        size = len(self.graph)
-        if self._index is None or self._index[0] != size:
+        """The definitions index, built on first use and never again: edits to the map after the first question are not seen."""
+        # no change check: counting the facts would read the whole map on every question
+        if self._index is None:
             g = self.graph  # triples() lookups: the same rows as a SPARQL query over every definition, several times faster
             defs = sorted((self._id(d), text(n)) for kind in (CODE.Function, CODE.Class)
                           for d in subjects(g, RDF.type, kind) for n in objects(g, d, CODE.name))
@@ -413,7 +411,7 @@ ORDER BY ?path
                 by_id[d[0]].append(d)
                 by_bare[d[1]].append(d)
                 by_qual[d[0].split("::", 1)[-1].replace(".<locals>", "")].append(d)
-            self._index = (size, self._symbols(), by_id, by_bare, by_qual)
+            self._index = (self._symbols(), by_id, by_bare, by_qual)
         return self._index
 
     def _caller_answer(self, target: str, bare: str) -> CallerAnswer:
@@ -430,8 +428,8 @@ ORDER BY ?path
         possible = self._callers(f"VALUES ?t {{ {values} }} ?site code:candidate ?t .", "ambiguous")
         # A8: a call resolved to a method target overrides, through self / cls, a variable typed as that class
         # or jedi, may run target when the object is of target's class
-        # The sites are picked with triples(), each as often as the SPARQL pattern it replaces matched it: rdflib
-        # evaluated the tier and receiver literals over every call site first (about 3 s per call on django).
+        # The sites are picked with triples(), each as often as the SPARQL pattern it replaces matched it: rdflib,
+        # the earlier store, evaluated the tier and receiver literals over every call site first (about 3 s per call on django).
         g = self.graph
         sites = [s for t in self._overridden(target) for s in subjects(g, CODE.resolvedTo, t) for tier in objects(g, s, CODE.tier)
                  for r in ([None] if tier in (lit("T4b"), lit("TJ")) else objects(g, s, CODE.receiver) if tier == lit("T1") else [])
@@ -443,18 +441,27 @@ ORDER BY ?path
         listed = Counter(c.reason for c in possible)
         reasons = {"ambiguous": listed["ambiguous"], "override": listed["override"]}
         # a method not found before an external or unknown base may be a project method after it in the MRO
-        # (counted with triples(): SPARQL took 0.06 s per count)
-        for status, reason in (("unresolved", "unknown-receiver"), ("unresolved", "unknown-base"), ("ambiguous", "ceiling")):
-            reasons[reason] = listed[reason] + sum(
-                1 for n in names for site in subjects(g, CODE.targetName, lit(n))
-                if has(g, site, CODE.status, lit(status)) and has(g, site, CODE.reason, lit(reason)))
+        # (one query: on the database folder, 4 to 10 times faster than a lookup per call site of the name)
+        q = _PREFIXES + f"""
+SELECT ?status ?reason (COUNT(*) AS ?n) WHERE {{
+    VALUES ?name {{ {" ".join(self._literal(n) for n in names)} }}
+    VALUES (?status ?reason) {{ ("unresolved" "unknown-receiver") ("unresolved" "unknown-base") ("ambiguous" "ceiling") }}
+    ?site code:targetName ?name ;
+          code:status     ?status ;
+          code:reason     ?reason .
+}}
+GROUP BY ?status ?reason
+"""
+        unsure = {text(r["reason"]): int(text(r["n"])) for r in self.graph.query(q)}
+        for reason in ("unknown-receiver", "unknown-base", "ceiling"):
+            reasons[reason] = listed[reason] + unsure.get(reason, 0)
         reasons = {k: v for k, v in reasons.items() if v}
         return CallerAnswer(target, callers, possible, "lower-bound" if reasons else "exact", reasons)
 
     def _overridden(self, target: str) -> list:
         """Every Function of *target*'s name in a class its class reaches by ``code:inherits+``, other than *target*.
 
-        Walked with triples() lookups: as one SPARQL pattern, rdflib evaluated ``code:inherits+``
+        Walked with triples() lookups: as one SPARQL pattern, rdflib (the earlier store) evaluated ``code:inherits+``
         from every node in the graph (about 65 s on fastapi)."""
         g, uri = self.graph, iri(self._uri(target)[1:-1])
         found = []
@@ -556,11 +563,6 @@ ORDER BY ?file ?line ?caller
         return f"<{_CODE_NS}{safe}>"
 
     def _literal(self, value: str) -> str:
-        """Return an xsd:string typed SPARQL literal.
-
-        The ``^^xsd:string`` annotation is required because rdflib stores
-        Literal(..., datatype=XSD.string) as typed literals. A plain ``"foo"``
-        in SPARQL does not match ``"foo"^^xsd:string`` in rdflib's query engine.
-        """
+        """Return an xsd:string typed SPARQL literal, as the map writes every string."""
         escaped = value.replace("\\", "\\\\").replace('"', '\\"')
         return f'"{escaped}"^^xsd:string'

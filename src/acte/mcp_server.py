@@ -1,6 +1,6 @@
 """
 MCP server.
-`acte serve GRAPH.ttl` answers questions about one built graph over stdio. Each tool takes
+`acte serve MAP` answers questions about one built map over stdio. Each tool takes
 plain arguments and returns plain text; the LLM never writes SPARQL.
 """
 
@@ -17,7 +17,7 @@ from pathlib import Path
 from mcp.server.mcpserver import MCPServer
 
 from acte.health import CHECKS, run_checks
-from acte.rdf_builder import CODE, RDF, subjects, text, value
+from acte.rdf_builder import CODE, RDF, open_checked, subjects, text, value
 from acte.sparql_engine import SPARQLEngine
 
 _BUDGET = 4000  # characters per answer, about 1,000 tokens
@@ -126,16 +126,17 @@ def _head(project: str | Path) -> str | None:
     return (head.stdout.strip() or None) if head.returncode == 0 else None
 
 
-def _stored_summary(graph) -> tuple[dict, list[str], dict] | None:
+def _stored_summary(graph, size: int) -> tuple[dict, list[str], dict] | None:
     """The coverage, failing check names and counts `acte build` stored in *graph*, or None when there is no summary,
-    it is not valid JSON, the map's triple count has changed since (an edited map), or another acte version wrote it."""
+    it is not valid JSON, the map's triple count *size* differs from the stored one (an edited map), or another acte
+    version wrote it."""
     meta = CODE["build"]
     stored = value(graph, meta, CODE.summary)
     if stored is None or text(value(graph, meta, CODE.acteVersion)) != version("acte"):
         return None
     try:
         summary = json.loads(text(stored))
-        if summary["triples"] != len(graph):
+        if summary["triples"] != size:
             return None
         counts = {kind: summary["counts"][key] for kind, key in (("File", "files"), ("Function", "functions"), ("Class", "classes"))}
         return summary["coverage"], [name for name in CHECKS if summary["health"][name]], counts
@@ -152,7 +153,8 @@ def stale_warning(built: str | None, now: str | None) -> str:
 
 def create_server(graph_path: str | Path, project: str | Path | None = None, profile: str = "small") -> MCPServer:
     """A server over the graph in *graph_path*, loaded once and read under one lock (the SDK runs sync tools on worker threads)."""
-    engine = SPARQLEngine.open(graph_path)
+    graph, size = open_checked(graph_path)  # the fact count, counted once: it reads the whole map
+    engine = SPARQLEngine(graph=graph)
     engine.symbols()  # builds the name index now, while the map opens, so the first question does not pay for it
     lock = threading.Lock()
     server = MCPServer("acte", version=version("acte"))
@@ -335,7 +337,7 @@ def create_server(graph_path: str | Path, project: str | Path | None = None, pro
         g = engine.graph
         meta = CODE["build"]
         with lock:
-            if stored := _stored_summary(g):
+            if stored := _stored_summary(g, size):
                 cov, failing, counts = stored
             else:
                 cov = engine.coverage()

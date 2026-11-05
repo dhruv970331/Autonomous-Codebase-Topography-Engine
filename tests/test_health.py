@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import pytest
-from rdflib import BNode
+from pyoxigraph import BlankNode
 
 from acte.health import CHECKS, run_checks
 from acte.rdf_builder import (
@@ -11,7 +11,6 @@ from acte.rdf_builder import (
     add,
     build_graph,
     has,
-    iri,
     lit,
     remove,
     subjects,
@@ -53,7 +52,7 @@ def _site(g, status):
     return next(iter(subjects(g, CODE.status, lit(status))))
 
 
-NOWHERE = iri(CODE["nowhere"])
+NOWHERE = CODE["nowhere"]
 MUTATIONS = {
     "dangling-call-arrows": lambda g, run, app: add(g, run, CODE.calls, NOWHERE),
     "dangling-import-arrows": lambda g, run, app: add(g, app, CODE.importsFrom, NOWHERE),
@@ -86,5 +85,5 @@ def test_blank_node_suspect_runs_the_whole_check(tmp_path):
     for rel, code in PROJECT.items():
         (tmp_path / rel).write_text(code)
     graph = build_graph(sorted(tmp_path / rel for rel in PROJECT), tmp_path, use_jedi=False)
-    add(graph, BNode(), RDF.type, CODE.CallSite)
+    add(graph, BlankNode(), RDF.type, CODE.CallSite)
     assert _failing(graph) == {"callsite-status", "callsite-without-caller"}

@@ -323,14 +323,14 @@ def test_json_shape(repo, capsys):
 
 
 def test_graph_file_with_stale_commit(repo, tmp_path, capsys):
-    assert main(["build", str(repo), "-o", str(tmp_path / "g.ttl"), "--no-jedi"]) == 0
+    assert main(["build", str(repo), "-o", str(tmp_path / "g"), "--no-jedi"]) == 0
     old = _git(repo, "rev-parse", "HEAD")
     _edit(repo, "app.py", "return run()", "return run() or 1")
     _git(repo, "commit", "-qam", "edit main")
     new = _git(repo, "rev-parse", "HEAD")
     capsys.readouterr()
 
-    code, out, err = _impact(capsys, repo, "--graph", tmp_path / "g.ttl", "--base", "HEAD~1")
+    code, out, err = _impact(capsys, repo, "--graph", tmp_path / "g", "--base", "HEAD~1")
     assert (code, out[0]) == (0, "1 definition changed in 1 file; 0 others affected (exact)")
     assert err == f"Warning: this map was built at commit {old[:7]} but the project is now at {new[:7]}; answers may be out of date.\n"
 
@@ -353,9 +353,9 @@ def test_unknown_format(repo, capsys):
 
 
 def test_a_map_from_before_the_definition_records_is_refused(repo, tmp_path, capsys):
-    old = tmp_path / "old.ttl"
-    assert main(["build", str(repo), "-o", str(old), "--no-jedi"]) == 0
-    graph = load(old)
+    old = tmp_path / "old.nt.gz"
+    assert main(["build", str(repo), "-o", str(tmp_path / "map"), "--no-jedi"]) == 0
+    graph = load(next((tmp_path / "map").glob("*/map.nt.gz")))  # the kept file: the database folder opens read-only
     remove(graph, CODE["build"], CODE.mapFormat, None)
     save(graph, old)
     capsys.readouterr()

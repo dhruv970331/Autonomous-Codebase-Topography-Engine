@@ -15,7 +15,7 @@ exist.
       installed, handles more receivers (tier TJ).
 
 - [x] Command line. `acte build` walks a project (honouring `.gitignore` in a git repo)
-      and writes one Turtle graph; `acte stats` summarises a saved graph.
+      and writes one map; `acte stats` summarises a saved map.
 
 - [x] Validation. Health checks on every build, the PyCG benchmark, and pinned releases
       of rich, httpx, click and flask checked against recorded baselines.
@@ -53,11 +53,19 @@ exist.
 - [x] An accuracy check that does not depend on ACTE or jedi: the calls that really happen
       while django's own test suite runs.
 
+- [x] The map in pyoxigraph. `acte build` builds the map straight into pyoxigraph and saves
+      it as a map folder: a sorted N-Triples file and a database folder that the server opens
+      read-only. On the whole django repository (2.2 million facts), a build takes 50 s and
+      at most 2.4 GB of memory, and the server is ready in about 5 s using 210 MB. "Who calls
+      this" takes 2.8 ms and blast radius 3.4 ms (medians), with the same answers as before.
+
 Measured results are in the README.
 
 ## Next
 
-- [ ] Faster building and opening on large projects.
+- [ ] Faster opening and a quick `acte stats` on large projects. Save the name index and the
+      call links at build, so the server opens in about 2 s, and let `acte stats` show the
+      build's results unless the map changed since.
 
 - [ ] Other languages. Call resolution for Java, JavaScript, TypeScript, TSX and Go, which
       now extract structure only.
