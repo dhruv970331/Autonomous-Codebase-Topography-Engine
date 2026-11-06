@@ -32,14 +32,18 @@ calls on a typed local (`column = DownloadColumn(); column.render(task)` in rich
 So precision below 1.0 is not by itself a wrong link: check each ACTE-only link it prints.
 """
 import json
+import math
 import os
 import re
 import subprocess
 import time
 import urllib.parse
 from pathlib import Path
+from unittest import mock
 
 import jedi
+import jedi.inference.references
+import parso.cache
 import pytest
 
 from acte.cli import build
@@ -113,7 +117,12 @@ def _oracle(project: jedi.Project, root: Path, graph, ranges: dict, node) -> set
     name = text(value(graph, node, CODE.name))
     lines = (root / path).read_text(encoding="utf-8").splitlines()
     col = re.search(rf"\bdef\s+({re.escape(name)})\b", lines[line - 1]).start(1)
-    refs = jedi.Script(path=root / path, project=project).get_references(line, col)
+    # jedi stops searching other files after 30 that hold the name, so on bigger projects the key missed real
+    # callers; the limits are lifted for the key only, and put back so the jedi build is jedi as users run it.
+    # parso keeps every file it parses meanwhile, as in ACTE's jedi step, else past 600 files jedi raises KeyError
+    with (mock.patch.multiple(jedi.inference.references, _PARSED_FILE_LIMIT=math.inf, _OPENED_FILE_LIMIT=math.inf),
+          mock.patch.object(parso.cache, "_CACHED_FILE_MINIMUM_SURVIVAL", math.inf)):
+        refs = jedi.Script(path=root / path, project=project).get_references(line, col)
     # jedi gives a @classmethod's own name the path of builtins.pyi, so the position alone is checked
     if not any(r.is_definition() and (r.line, r.column) == (line, col) for r in refs):
         return None  # a spelling or position mismatch: the key would compare nothing (E4)
