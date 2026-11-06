@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 
 import pytest
@@ -1182,3 +1183,14 @@ def test_builtin_object_is_no_base(tmp_path):
     assert calls[("o.py::B.go", "p")] == ("resolved", "T1", "o.py::P.p", None)
     index = resolve([CodeParser().parse_file(tmp_path / "o.py")], tmp_path, use_jedi=False).index
     assert {k.split("::")[1]: v for k, v in index.bases.items()} == {"P": [], "A": [], "B": [f"{tmp_path}/o.py::P"]}
+
+
+def test_parso_keeps_files_during_the_jedi_step_only():
+    cache = pytest.importorskip("parso.cache")
+    from acte.resolver import _parso_keeps_files
+
+    before = cache._CACHED_FILE_MINIMUM_SURVIVAL
+    with pytest.raises(RuntimeError), _parso_keeps_files():
+        assert cache._CACHED_FILE_MINIMUM_SURVIVAL == math.inf
+        raise RuntimeError
+    assert cache._CACHED_FILE_MINIMUM_SURVIVAL == before
