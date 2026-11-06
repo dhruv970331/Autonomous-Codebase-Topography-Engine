@@ -8,6 +8,9 @@ ACTE_REAL_REPOS=slow, which runs every project:
 
     ACTE_REAL_REPOS=1 poetry run pytest tests/test_real_repos.py -s
 
+A project marked "no_jedi_only" (django: a jedi build takes over an hour) is built without jedi only, and its
+baseline counts, rate and seconds are those of the build without jedi.
+
 Each repo is shallow-cloned at its tag into $ACTE_CORPUS_DIR (default ~/.cache/acte-corpus)
 as <name>-<sha>, reused when present, and its HEAD checked against the pinned sha.
 
@@ -90,11 +93,15 @@ def _measure(root: Path, use_jedi: bool) -> tuple[dict, dict]:
 @pytest.mark.parametrize("name", REPOS)
 def test_real_repo(name):
     root = _checkout(name)
-    got, checks = _measure(root, use_jedi=True)
-    no_jedi, _ = _measure(root, use_jedi=False)  # reported, not asserted
-    print(f"\n{name}: {json.dumps(got)} rate without jedi {no_jedi['rate']:.4f} in {no_jedi['seconds']} s")
-
     want = BASELINE["repos"][name]
+    if want.get("no_jedi_only"):  # its baseline counts, rate and seconds are of the build without jedi
+        got, checks = _measure(root, use_jedi=False)
+        print(f"\n{name}: {json.dumps(got)} without jedi only")
+    else:
+        got, checks = _measure(root, use_jedi=True)
+        no_jedi, _ = _measure(root, use_jedi=False)  # reported, not asserted
+        print(f"\n{name}: {json.dumps(got)} rate without jedi {no_jedi['rate']:.4f} in {no_jedi['seconds']} s")
+
     assert {k: rows[:5] for k, rows in checks.items() if rows} == {}
     assert got["rate"] >= want["rate_floor"]
     for key in ("nodes", "call_sites", "resolved"):
@@ -152,9 +159,10 @@ def _ranges(graph) -> dict[str, list[tuple[int, int, str]]]:
     return out
 
 
-def _link_accuracy(root: Path) -> dict:
-    """Precision and recall of ACTE's confirmed callers against jedi's, over SAMPLE functions, for builds without and with jedi."""
-    graphs = {jedi_: build(root, jedi_) for jedi_ in (False, True)}
+def _link_accuracy(root: Path, jedi_build: bool = True) -> dict:
+    """Precision and recall of ACTE's confirmed callers against jedi's, over SAMPLE functions, for builds without and with jedi
+    (without only, if not *jedi_build*)."""
+    graphs = {jedi_: build(root, jedi_) for jedi_ in (False, True)[:1 + jedi_build]}
     engines = {k: SPARQLEngine(graph=g) for k, g in graphs.items()}
     graph, project = graphs[False], jedi.Project(root.resolve())
     ranges = _ranges(graph)
@@ -173,12 +181,12 @@ def _link_accuracy(root: Path) -> dict:
             continue
         assert oracle is not None, f"jedi does not find {fid} at its own position"
         acte = {j: {c.id for a in engines[j].callers_of(fid) for c in a.callers} for j in engines}
-        if oracle or acte[False] or acte[True]:  # nothing on either side measures nothing
+        if oracle or any(acte.values()):  # nothing on either side measures nothing
             rows.append((fid, oracle, acte))
         if len(rows) == SAMPLE:
             break
     out = {"sample": len(rows), "jedi_crashes": crashes, "disagreements": {}}
-    for j, key in ((False, ""), (True, "_jedi")):
+    for j, key in ((False, ""), (True, "_jedi"))[:len(engines)]:
         hit = sum(len(a[j] & o) for _, o, a in rows)
         out["precision" + key] = hit / sum(len(a[j]) for _, _, a in rows)
         out["recall" + key] = hit / sum(len(o) for _, o, _ in rows)
@@ -189,7 +197,7 @@ def _link_accuracy(root: Path) -> dict:
 
 @pytest.mark.parametrize("name", REPOS)
 def test_link_accuracy(name):
-    got = _link_accuracy(_checkout(name))
+    got = _link_accuracy(_checkout(name), not BASELINE["repos"][name].get("no_jedi_only"))
     print(f"\n{name}: " + json.dumps({k: v for k, v in got.items() if k != "disagreements"}))
     for kind, links in got["disagreements"].items():
         print(f"  {kind}: {len(links)}", *(f"\n    {x}" for x in links))
