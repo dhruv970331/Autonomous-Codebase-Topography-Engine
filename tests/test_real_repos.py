@@ -162,17 +162,22 @@ def _link_accuracy(root: Path) -> dict:
                     if text(value(graph, f, CODE.language)) == "python" and not re.fullmatch(r"__\w+__", text(value(graph, f, CODE.name)))),
                    key=_id)
     k = max(1, len(nodes) // SAMPLE)
-    rows = []
+    rows, crashes = [], 0
     for node in (nodes[i] for start in range(k) for i in range(start, len(nodes), k)):  # every k-th, then the next offset
         fid = _id(node)
-        oracle = _oracle(project, root, graph, ranges, node)
+        try:
+            oracle = _oracle(project, root, graph, ranges, node)
+        except Exception as e:  # noqa: BLE001 -- jedi can crash on one function (parso KeyError on django): counted
+            crashes += 1
+            print(f"\n  jedi crashed on {fid}: {e!r}")
+            continue
         assert oracle is not None, f"jedi does not find {fid} at its own position"
         acte = {j: {c.id for a in engines[j].callers_of(fid) for c in a.callers} for j in engines}
         if oracle or acte[False] or acte[True]:  # nothing on either side measures nothing
             rows.append((fid, oracle, acte))
         if len(rows) == SAMPLE:
             break
-    out = {"sample": len(rows), "disagreements": {}}
+    out = {"sample": len(rows), "jedi_crashes": crashes, "disagreements": {}}
     for j, key in ((False, ""), (True, "_jedi")):
         hit = sum(len(a[j] & o) for _, o, a in rows)
         out["precision" + key] = hit / sum(len(a[j]) for _, _, a in rows)
@@ -190,6 +195,7 @@ def test_link_accuracy(name):
         print(f"  {kind}: {len(links)}", *(f"\n    {x}" for x in links))
     want = BASELINE["repos"][name]
     assert got["sample"] == want["sample"]
+    assert got["jedi_crashes"] <= 0.1 * got["sample"], "jedi crashed on more than 10% of the sample"
     assert got["precision"] >= want["precision_floor"], got["disagreements"]["acte_only"]
 
 
