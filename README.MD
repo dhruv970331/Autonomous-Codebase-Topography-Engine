@@ -48,7 +48,7 @@ is still young.
 | RDF graph, saved as a map folder | Working |
 | Call resolution | Python only (see Limitations) |
 | Command line (`acte build`, `acte stats`, `acte impact`, `acte analyze`, `acte serve`) | Working |
-| Checks on real projects | Working (rich, httpx, click, flask, requests) |
+| Checks on real projects | Working (rich, httpx, click, flask, requests, fastapi, pydantic, sqlalchemy, django) |
 | MCP server | Working, tested with opencode and Claude Code |
 
 ## Quickstart
@@ -72,10 +72,10 @@ poetry install
 poetry run pytest -q
 ```
 
-To also test against pinned releases of rich, httpx, click, flask and requests, run
-`ACTE_REAL_REPOS=1 poetry run pytest tests/test_real_repos.py -s`. This is off by default.
-It needs git and network access the first time, and takes about 5 minutes.
-`ACTE_REAL_REPOS=slow` also runs projects marked slow (none are, yet).
+To also test against pinned releases of rich, httpx, click, flask, requests, fastapi and
+pydantic, run `ACTE_REAL_REPOS=1 poetry run pytest tests/test_real_repos.py -s`. This is off by
+default. It needs git and network access the first time, and takes about 25 minutes.
+`ACTE_REAL_REPOS=slow` also runs the slow ones, sqlalchemy and django, and takes about 80 minutes.
 
 ## Usage
 
@@ -269,18 +269,21 @@ PyCG call-graph benchmark (`tests/test_pycg.py`): 117 of 233 expected links foun
 
 Real projects (`tests/test_real_repos.py`, pinned releases):
 
-| Project | Files | Coverage | Link precision | Link recall |
-|---|---|---|---|---|
-| rich 13.9.4 | 190 | 88.9% | 0.98 | 0.94 |
-| httpx 0.28.1 | 60 | 87.4% | 0.99 | 0.96 |
-| click 8.1.8 | 16 | 84.2% | 0.98 | 0.76 |
-| flask 3.1.0 | 24 | 58.5% | 1.00 | 0.86 |
-| requests 2.34.2 | 19 | 78.0% | 1.00 | 0.88 |
+| Project | Files | Link precision | Link recall |
+|---|---|---|---|
+| rich 13.9.4 | 190 | 1.00 | 0.94 |
+| httpx 0.28.1 | 60 | 0.99 | 0.96 |
+| click 8.1.8 | 16 | 0.98 | 0.76 |
+| flask 3.1.0 | 24 | 1.00 | 0.86 |
+| requests 2.34.2 | 19 | 1.00 | 0.88 |
+| fastapi 0.162.0 | 1223 | 1.00 | 0.95 |
+| pydantic 2.14.1 | 458 | 1.00 | 0.64 |
+| sqlalchemy 2.1.6 | 258 | 1.00 | 0.93 |
+| django 6.1.2 | 3030 | 0.99 | 0.79 |
 
-Coverage is the share of calls ACTE resolved, with jedi on, leaving out calls to Python itself
-or a library. Precision and recall compare a build without jedi with jedi's own references on
+Precision and recall compare a build without jedi with jedi's own references on
 40 sampled functions. jedi also misses some references, so some links counted as wrong may be
-right.
+right. pydantic's numbers include pydantic-core, which is in the same repository.
 
 Real calls in django: the calls made while django's own test suite ran were recorded and
 compared with ACTE's map of the whole repository, built without jedi. 98.5% of ACTE's links

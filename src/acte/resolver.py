@@ -5,8 +5,10 @@ Used by `rdf_builder.build_graph`.
 """
 
 import builtins
+import math
 import sys
 from collections import Counter, defaultdict
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -23,6 +25,10 @@ try:
     import jedi
 except ImportError:  # jedi is optional (D7): without it tier TJ is skipped
     jedi = None
+try:
+    import parso.cache as parso_cache  # jedi's parser
+except ImportError:
+    parso_cache = None
 
 CANDIDATE_CEILING = 100
 CHAIN_LIMIT = 3  # attributes followed in `x.a.b.m()`; every chain T10 found on django has at most 2
@@ -258,8 +264,26 @@ def resolve(results: list[ParseResult], root: Path, use_jedi: bool = True) -> Re
     resolved = [_resolve_call(index, c) for c in calls]
     if not (use_jedi and jedi):
         return Resolution(resolved, index)
-    calls, unmapped, errors = _jedi_tier(index, resolved)
+    with _parso_keeps_files():
+        calls, unmapped, errors = _jedi_tier(index, resolved)
     return Resolution(calls, index, jedi.__version__, unmapped, errors)
+
+
+@contextmanager
+def _parso_keeps_files():
+    """Keep every file parso parses during the jedi step. parso stamps a parsed file with its change time on disk, so
+    once it holds 600 files it drops nearly all of them, even one parsed a moment ago, and jedi raises KeyError; in a
+    long process the retry in _jedi_tier did not win those calls back. The setting is private: a parso without it is
+    left alone."""
+    old = getattr(parso_cache, "_CACHED_FILE_MINIMUM_SURVIVAL", None)
+    if old is None:
+        yield
+        return
+    parso_cache._CACHED_FILE_MINIMUM_SURVIVAL = math.inf
+    try:
+        yield
+    finally:
+        parso_cache._CACHED_FILE_MINIMUM_SURVIVAL = old
 
 
 def _jedi_tier(index: SymbolIndex, resolved: list[CallResolution]) -> tuple[list[CallResolution], int, int]:
@@ -281,7 +305,7 @@ def _jedi_tier(index: SymbolIndex, resolved: list[CallResolution]) -> tuple[list
         try:
             try:
                 found = scripts[call.file_path].goto(call.line, col, follow_imports=True)
-            except KeyError:  # parso drops files unused for 10 minutes once it holds over 600: parse this one again, once
+            except KeyError:  # parso dropped this file (it drops files by their disk change time): parse it again, once
                 scripts[call.file_path] = jedi.Script(path=call.file_path, project=project)
                 found = scripts[call.file_path].goto(call.line, col, follow_imports=True)
         except Exception:  # noqa: BLE001 -- a jedi failure on one call must not stop the run; it is counted

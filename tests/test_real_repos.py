@@ -8,6 +8,9 @@ ACTE_REAL_REPOS=slow, which runs every project:
 
     ACTE_REAL_REPOS=1 poetry run pytest tests/test_real_repos.py -s
 
+A project marked "no_jedi_only" (django: a jedi build takes over an hour) is built without jedi only, and its
+baseline counts, rate and seconds are those of the build without jedi.
+
 Each repo is shallow-cloned at its tag into $ACTE_CORPUS_DIR (default ~/.cache/acte-corpus)
 as <name>-<sha>, reused when present, and its HEAD checked against the pinned sha.
 
@@ -32,14 +35,18 @@ calls on a typed local (`column = DownloadColumn(); column.render(task)` in rich
 So precision below 1.0 is not by itself a wrong link: check each ACTE-only link it prints.
 """
 import json
+import math
 import os
 import re
 import subprocess
 import time
 import urllib.parse
 from pathlib import Path
+from unittest import mock
 
 import jedi
+import jedi.inference.references
+import parso.cache
 import pytest
 
 from acte.cli import build
@@ -86,11 +93,15 @@ def _measure(root: Path, use_jedi: bool) -> tuple[dict, dict]:
 @pytest.mark.parametrize("name", REPOS)
 def test_real_repo(name):
     root = _checkout(name)
-    got, checks = _measure(root, use_jedi=True)
-    no_jedi, _ = _measure(root, use_jedi=False)  # reported, not asserted
-    print(f"\n{name}: {json.dumps(got)} rate without jedi {no_jedi['rate']:.4f} in {no_jedi['seconds']} s")
-
     want = BASELINE["repos"][name]
+    if want.get("no_jedi_only"):  # its baseline counts, rate and seconds are of the build without jedi
+        got, checks = _measure(root, use_jedi=False)
+        print(f"\n{name}: {json.dumps(got)} without jedi only")
+    else:
+        got, checks = _measure(root, use_jedi=True)
+        no_jedi, _ = _measure(root, use_jedi=False)  # reported, not asserted
+        print(f"\n{name}: {json.dumps(got)} rate without jedi {no_jedi['rate']:.4f} in {no_jedi['seconds']} s")
+
     assert {k: rows[:5] for k, rows in checks.items() if rows} == {}
     assert got["rate"] >= want["rate_floor"]
     for key in ("nodes", "call_sites", "resolved"):
@@ -113,7 +124,12 @@ def _oracle(project: jedi.Project, root: Path, graph, ranges: dict, node) -> set
     name = text(value(graph, node, CODE.name))
     lines = (root / path).read_text(encoding="utf-8").splitlines()
     col = re.search(rf"\bdef\s+({re.escape(name)})\b", lines[line - 1]).start(1)
-    refs = jedi.Script(path=root / path, project=project).get_references(line, col)
+    # jedi stops searching other files after 30 that hold the name, so on bigger projects the key missed real
+    # callers; the limits are lifted for the key only, and put back so the jedi build is jedi as users run it.
+    # parso keeps every file it parses meanwhile, as in ACTE's jedi step, else past 600 files jedi raises KeyError
+    with (mock.patch.multiple(jedi.inference.references, _PARSED_FILE_LIMIT=math.inf, _OPENED_FILE_LIMIT=math.inf),
+          mock.patch.object(parso.cache, "_CACHED_FILE_MINIMUM_SURVIVAL", math.inf)):
+        refs = jedi.Script(path=root / path, project=project).get_references(line, col)
     # jedi gives a @classmethod's own name the path of builtins.pyi, so the position alone is checked
     if not any(r.is_definition() and (r.line, r.column) == (line, col) for r in refs):
         return None  # a spelling or position mismatch: the key would compare nothing (E4)
@@ -143,9 +159,10 @@ def _ranges(graph) -> dict[str, list[tuple[int, int, str]]]:
     return out
 
 
-def _link_accuracy(root: Path) -> dict:
-    """Precision and recall of ACTE's confirmed callers against jedi's, over SAMPLE functions, for builds without and with jedi."""
-    graphs = {jedi_: build(root, jedi_) for jedi_ in (False, True)}
+def _link_accuracy(root: Path, jedi_build: bool = True) -> dict:
+    """Precision and recall of ACTE's confirmed callers against jedi's, over SAMPLE functions, for builds without and with jedi
+    (without only, if not *jedi_build*)."""
+    graphs = {jedi_: build(root, jedi_) for jedi_ in (False, True)[:1 + jedi_build]}
     engines = {k: SPARQLEngine(graph=g) for k, g in graphs.items()}
     graph, project = graphs[False], jedi.Project(root.resolve())
     ranges = _ranges(graph)
@@ -153,18 +170,23 @@ def _link_accuracy(root: Path) -> dict:
                     if text(value(graph, f, CODE.language)) == "python" and not re.fullmatch(r"__\w+__", text(value(graph, f, CODE.name)))),
                    key=_id)
     k = max(1, len(nodes) // SAMPLE)
-    rows = []
+    rows, crashes = [], 0
     for node in (nodes[i] for start in range(k) for i in range(start, len(nodes), k)):  # every k-th, then the next offset
         fid = _id(node)
-        oracle = _oracle(project, root, graph, ranges, node)
+        try:
+            oracle = _oracle(project, root, graph, ranges, node)
+        except Exception as e:  # noqa: BLE001 -- jedi can crash on one function (parso KeyError on django): counted
+            crashes += 1
+            print(f"\n  jedi crashed on {fid}: {e!r}")
+            continue
         assert oracle is not None, f"jedi does not find {fid} at its own position"
         acte = {j: {c.id for a in engines[j].callers_of(fid) for c in a.callers} for j in engines}
-        if oracle or acte[False] or acte[True]:  # nothing on either side measures nothing
+        if oracle or any(acte.values()):  # nothing on either side measures nothing
             rows.append((fid, oracle, acte))
         if len(rows) == SAMPLE:
             break
-    out = {"sample": len(rows), "disagreements": {}}
-    for j, key in ((False, ""), (True, "_jedi")):
+    out = {"sample": len(rows), "jedi_crashes": crashes, "disagreements": {}}
+    for j, key in ((False, ""), (True, "_jedi"))[:len(engines)]:
         hit = sum(len(a[j] & o) for _, o, a in rows)
         out["precision" + key] = hit / sum(len(a[j]) for _, _, a in rows)
         out["recall" + key] = hit / sum(len(o) for _, o, _ in rows)
@@ -175,12 +197,13 @@ def _link_accuracy(root: Path) -> dict:
 
 @pytest.mark.parametrize("name", REPOS)
 def test_link_accuracy(name):
-    got = _link_accuracy(_checkout(name))
+    got = _link_accuracy(_checkout(name), not BASELINE["repos"][name].get("no_jedi_only"))
     print(f"\n{name}: " + json.dumps({k: v for k, v in got.items() if k != "disagreements"}))
     for kind, links in got["disagreements"].items():
         print(f"  {kind}: {len(links)}", *(f"\n    {x}" for x in links))
     want = BASELINE["repos"][name]
     assert got["sample"] == want["sample"]
+    assert got["jedi_crashes"] <= 0.1 * got["sample"], "jedi crashed on more than 10% of the sample"
     assert got["precision"] >= want["precision_floor"], got["disagreements"]["acte_only"]
 
 

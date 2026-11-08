@@ -1,6 +1,6 @@
 name: real-repos
 
-# slow: clones pinned rich, httpx, click and flask; run by hand from the Actions tab
+# slow: clones pinned rich, httpx, click, flask, requests, fastapi and pydantic; run by hand from the Actions tab
 on:
   workflow_dispatch:
 
