@@ -1,12 +1,14 @@
 {
-  "source_tree": "cdca861eb23850aab128608272a35a76ce227107",
+  "source_tree": "0dc294462114fc5fe2ea3c0c917d68cf555a7af1",
   "questions": [
     {
       "id": "c01",
       "type": "callers",
       "question": "Which functions call _git?",
       "expected": [
-        "acte/cli.py::source_files"
+        "acte/cli.py::source_files",
+        "acte/impact.py::changed_lines",
+        "acte/impact.py::run"
       ]
     },
     {
@@ -14,7 +16,7 @@
       "type": "callers",
       "question": "Who calls run_checks?",
       "expected": [
-        "acte/cli.py::_summary",
+        "acte/cli.py::main",
         "acte/mcp_server.py::create_server.<locals>.graph_info"
       ]
     },
@@ -33,7 +35,10 @@
       "question": "Where is _resolve_call called from?",
       "expected": [
         "acte/resolver.py::resolve",
-        "acte/resolver.py::_typed"
+        "acte/resolver.py::_typed",
+        "acte/resolver.py::SymbolIndex._base",
+        "acte/resolver.py::_class_of",
+        "acte/resolver.py::_super_class"
       ]
     },
     {
@@ -44,7 +49,9 @@
         "acte/mcp_server.py::create_server.<locals>.one_definition",
         "acte/mcp_server.py::create_server.<locals>.find_symbol",
         "acte/mcp_server.py::create_server.<locals>.functions_in_file",
-        "acte/mcp_server.py::create_server.<locals>.orphan_functions"
+        "acte/mcp_server.py::create_server.<locals>.orphan_functions",
+        "acte/mcp_server.py::open_engine",
+        "acte/analysis.py::rank"
       ]
     },
     {
@@ -56,7 +63,9 @@
         "acte/parser.py::CodeParser._extract_bindings",
         "acte/parser.py::CodeParser._match_captures",
         "acte/parser.py::CodeParser._callee_type",
-        "acte/parser.py::CodeParser._annotation_type"
+        "acte/parser.py::CodeParser._annotation_type",
+        "acte/parser.py::CodeParser._extract_from_tree",
+        "acte/parser.py::CodeParser._class_bases"
       ]
     },
     {
@@ -65,7 +74,8 @@
       "question": "Which functions call _binding_scope?",
       "expected": [
         "acte/resolver.py::_resolve_call",
-        "acte/resolver.py::_resolve_receiver"
+        "acte/resolver.py::_resolve_receiver",
+        "acte/resolver.py::_super_class"
       ]
     },
     {
@@ -73,7 +83,7 @@
       "type": "callers",
       "question": "Who calls SPARQLEngine.coverage?",
       "expected": [
-        "acte/cli.py::_summary",
+        "acte/cli.py::_counts",
         "acte/mcp_server.py::create_server.<locals>.graph_info"
       ]
     },
@@ -93,7 +103,7 @@
       "expected": [
         "acte/resolver.py::_resolve_call",
         "acte/resolver.py::_resolve_receiver",
-        "acte/resolver.py::_imported_variable",
+        "acte/resolver.py::_follow_import",
         "acte/resolver.py::_decide"
       ]
     },
@@ -112,9 +122,18 @@
       "question": "Which of our own functions does the command line's main function call?",
       "expected": [
         "acte/mcp_server.py::create_server",
+        "acte/rdf_builder.py::load_map",
         "acte/cli.py::_stats",
+        "acte/cli.py::_saved_results",
+        "acte/cli.py::_analyze",
+        "acte/impact.py::run",
+        "acte/rdf_builder.py::check_map_folder",
         "acte/cli.py::build",
-        "acte/cli.py::_summary"
+        "acte/cli.py::_counts",
+        "acte/health.py::run_checks",
+        "acte/rdf_builder.py::save_map",
+        "acte/cli.py::_to_save",
+        "acte/cli.py::_print_counts"
       ]
     },
     {
@@ -122,9 +141,12 @@
       "type": "callees",
       "question": "What does _stats call?",
       "expected": [
-        "acte/cli.py::_summary",
-        "acte/sparql_engine.py::SPARQLEngine",
-        "acte/sparql_engine.py::SPARQLEngine._id"
+        "acte/rdf_builder.py::value",
+        "acte/rdf_builder.py::text",
+        "acte/health.py::scan",
+        "acte/cli.py::_row",
+        "acte/cli.py::_print_counts",
+        "acte/cli.py::_summary"
       ]
     },
     {
@@ -134,6 +156,8 @@
       "expected": [
         "acte/parser.py::CodeParser",
         "acte/parser.py::CodeParser.parse_file",
+        "acte/parser.py::CodeParser.detect_language",
+        "acte/parser.py::CodeParser._get_parser",
         "acte/rdf_builder.py::KnowledgeGraphBuilder",
         "acte/rdf_builder.py::KnowledgeGraphBuilder.build",
         "acte/resolver.py::resolve"
@@ -147,6 +171,7 @@
         "acte/resolver.py::SymbolIndex",
         "acte/resolver.py::_resolve_call",
         "acte/resolver.py::Resolution",
+        "acte/resolver.py::_parso_keeps_files",
         "acte/resolver.py::_jedi_tier"
       ]
     },
@@ -168,8 +193,15 @@
       "question": "What does _caller_answer call?",
       "expected": [
         "acte/sparql_engine.py::SPARQLEngine._uri",
+        "acte/sparql_engine.py::CallLinks.callers",
         "acte/sparql_engine.py::SPARQLEngine._callers",
+        "acte/sparql_engine.py::SPARQLEngine._overridden",
+        "acte/rdf_builder.py::subjects",
+        "acte/rdf_builder.py::objects",
+        "acte/rdf_builder.py::lit",
+        "acte/rdf_builder.py::nt",
         "acte/sparql_engine.py::SPARQLEngine._literal",
+        "acte/rdf_builder.py::text",
         "acte/sparql_engine.py::CallerAnswer"
       ]
     },
@@ -181,6 +213,7 @@
         "acte/resolver.py::_bindings",
         "acte/resolver.py::CallResolution",
         "acte/resolver.py::SymbolIndex.module_files",
+        "acte/resolver.py::_follow_import",
         "acte/resolver.py::_star_exports",
         "acte/resolver.py::_pick"
       ]
@@ -192,7 +225,8 @@
       "expected": [
         "acte/sparql_engine.py::SPARQLEngine._uri",
         "acte/sparql_engine.py::CallSiteResult",
-        "acte/sparql_engine.py::SPARQLEngine._id"
+        "acte/sparql_engine.py::SPARQLEngine._id",
+        "acte/rdf_builder.py::text"
       ]
     },
     {
@@ -200,10 +234,8 @@
       "type": "blast",
       "question": "If I change run_checks, what could break, up to two levels of callers?",
       "expected": [
-        "acte/cli.py::_summary",
-        "acte/mcp_server.py::create_server.<locals>.graph_info",
-        "acte/cli.py::_stats",
-        "acte/cli.py::main"
+        "acte/cli.py::main",
+        "acte/mcp_server.py::create_server.<locals>.graph_info"
       ]
     },
     {
@@ -212,7 +244,8 @@
       "question": "What is affected within two hops if I change source_files?",
       "expected": [
         "acte/cli.py::build",
-        "acte/cli.py::main"
+        "acte/cli.py::main",
+        "acte/impact.py::run"
       ]
     },
     {
@@ -221,7 +254,9 @@
       "question": "If I modify _head in the MCP server, what is affected up to two call levels away?",
       "expected": [
         "acte/mcp_server.py::create_server.<locals>.stale",
-        "acte/mcp_server.py::create_server.<locals>.tool.<locals>.register.<locals>.answer"
+        "acte/mcp_server.py::create_server.<locals>.tool.<locals>.register.<locals>.answer",
+        "acte/impact.py::run",
+        "acte/cli.py::main"
       ]
     },
     {
@@ -231,7 +266,10 @@
       "expected": [
         "acte/resolver.py::_resolve_call",
         "acte/resolver.py::_typed",
-        "acte/resolver.py::resolve"
+        "acte/resolver.py::resolve",
+        "acte/resolver.py::SymbolIndex._base",
+        "acte/resolver.py::_class_of",
+        "acte/resolver.py::_super_class"
       ]
     },
     {
@@ -241,7 +279,9 @@
       "expected": [
         "acte/mcp_server.py::create_server.<locals>.known_file",
         "acte/mcp_server.py::create_server.<locals>.dependencies_of",
-        "acte/mcp_server.py::create_server.<locals>.functions_in_file"
+        "acte/mcp_server.py::create_server.<locals>.functions_in_file",
+        "acte/analysis.py::subsystems",
+        "acte/cli.py::_analyze"
       ]
     },
     {
@@ -252,7 +292,8 @@
         "acte/rdf_builder.py::KnowledgeGraphBuilder._add_node",
         "acte/rdf_builder.py::KnowledgeGraphBuilder._add_edge",
         "acte/rdf_builder.py::KnowledgeGraphBuilder._add_call",
-        "acte/rdf_builder.py::KnowledgeGraphBuilder.build"
+        "acte/rdf_builder.py::KnowledgeGraphBuilder.build",
+        "acte/rdf_builder.py::build_graph"
       ]
     },
     {
@@ -260,11 +301,9 @@
       "type": "blast",
       "question": "If I add a field to the LocalBinding dataclass, which functions are affected within two hops?",
       "expected": [
-        "acte/parser.py::CodeParser._extract_bindings.<locals>.bind",
         "acte/parser.py::CodeParser._extract_from_tree",
-        "acte/parser.py::CodeParser.parse_file",
-        "acte/parser.py::CodeParser._extract_bindings",
-        "acte/parser.py::CodeParser._extract_bindings.<locals>.unbind"
+        "acte/parser.py::CodeParser._bind",
+        "acte/parser.py::CodeParser.parse_file"
       ]
     },
     {
@@ -361,8 +400,9 @@
         "acte/resolver.py::resolve"
       ],
       "forbidden": [
-        "acte/cli.py::_summary",
-        "acte/cli.py::_stats"
+        "acte/cli.py::_counts",
+        "acte/cli.py::_row",
+        "acte/cli.py::_to_save"
       ]
     },
     {
