@@ -299,6 +299,9 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"cannot write {args.output}: {exc}")
     graph = build(root, not args.no_jedi, args.jobs)
     counts, cov = _counts(graph)
+    if not counts["files"]:  # an empty map would pass every health check and answer nothing
+        parser.error(f"no file in {args.path} could be read: it has no supported source files, or the tree-sitter "
+                     "grammars did not load (they download on first use, so run once with internet access)")
     checks = run_checks(graph)
     save_map(graph, args.output, *_to_save(graph, counts, cov, checks))  # held by no name here, so save_map can free them
     print(f"wrote {args.output}")

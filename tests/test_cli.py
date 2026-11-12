@@ -193,6 +193,22 @@ def test_build_refuses_to_write_into_a_folder_that_is_no_map(tmp_path, capsys):
     assert sorted(os.listdir(tmp_path / "proj")) == ["app.py", "shop"]
 
 
+@pytest.mark.parametrize("grammars", [True, False])
+def test_build_stops_when_no_file_can_be_read(tmp_path, capsys, monkeypatch, grammars):
+    """No source file at all, or files whose grammar does not load: no map is written."""
+    if grammars:
+        (tmp_path / "proj").mkdir()
+        (tmp_path / "proj" / "notes.txt").write_text("no code here\n")
+    else:
+        _write(tmp_path / "proj", PROJECT)
+        monkeypatch.setattr("acte.parser.CodeParser._get_parser", lambda self, language: None)
+    with pytest.raises(SystemExit) as exit_:
+        main(["build", str(tmp_path / "proj"), "-o", str(tmp_path / "map"), "--no-jedi", "--jobs", "1"])
+    assert exit_.value.code == 2
+    assert f"no file in {tmp_path / 'proj'} could be read" in capsys.readouterr().err
+    assert not (tmp_path / "map").exists()
+
+
 def test_old_turtle_maps_and_kept_files_open_like_the_folder(tmp_path, capsys):
     _write(tmp_path / "proj", PROJECT)
     graph, _ = _build(capsys, tmp_path / "proj", tmp_path / "g", "--no-jedi")
