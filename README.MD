@@ -101,7 +101,10 @@ gzipped JSON. Only then does it rewrite the small file `current`, which names th
 in use, so a build that fails part way leaves the old map in place. The build keeps the
 subfolder it replaced, which a running server may still read, and deletes older ones.
 `map.nt.gz` and the two small files are the same byte for byte whatever N is. `acte build` refuses to write into a
-folder that holds other files but no `current`. When it finishes, it prints the number of files,
+folder that holds other files but no `current`. If it can read no file at all, it stops with
+an error and writes no map: either the folder has no supported source files, or the
+tree-sitter grammars did not load. The grammars are downloaded the first time ACTE reads a
+language, so that first build needs internet access. When it finishes, it prints the number of files,
 functions, classes and calls, how many calls it resolved, and the health check results.
 Calls in languages without call resolution, such as Go, are counted on a line of their
 own and left out of the coverage.
